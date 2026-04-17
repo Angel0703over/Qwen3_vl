@@ -1,3 +1,5 @@
+"""Input construction and local model loading helpers for Qwen3-VL experiments."""
+
 import glob
 import os
 
@@ -5,7 +7,7 @@ from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
 
 from qwen_vl_utils import process_vision_info
 
-from qwen3vl_tp_runtime.core.config import FRAME_DIR, MODEL_PATH
+from qwen3vl_tp_runtime.hexgen_core.config import FRAME_DIR, MODEL_PATH
 
 
 def list_frames(num_frames: int, frame_dir: str = FRAME_DIR) -> list[str]:

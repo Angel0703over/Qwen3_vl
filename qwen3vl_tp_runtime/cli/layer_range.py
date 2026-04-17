@@ -1,3 +1,5 @@
+"""CLI for preparing and replaying a contiguous decoder-layer range under TP."""
+
 import argparse
 import sys
 from pathlib import Path
@@ -5,17 +7,19 @@ from pathlib import Path
 if __package__ is None or __package__ == "":
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from qwen3vl_tp_runtime.core.capture import capture_layer_range_bundle, load_bundle, move_bundle
-from qwen3vl_tp_runtime.core.config import LAYER_RANGE_BUNDLE_PATH
-from qwen3vl_tp_runtime.core.forward import (
+from qwen3vl_tp_runtime.hexgen_core import LAYER_RANGE_BUNDLE_PATH, get_device, init_dist
+from qwen3vl_tp_runtime.models.qwen3vl import (
     compose_layer_bundle,
+    dtype_from_name,
     forward_layer_range,
     forward_layer_range_tp,
+    load_bundle,
+    move_bundle,
+    resolve_comm_dtype,
     trace_decoder_layer,
     trace_decoder_layer_tp,
 )
-from qwen3vl_tp_runtime.core.dist import get_device, init_dist
-from qwen3vl_tp_runtime.core.ops import dtype_from_name, resolve_comm_dtype
+from qwen3vl_tp_runtime.models.qwen3vl.capture import capture_layer_range_bundle
 
 
 def run_prepare(args):

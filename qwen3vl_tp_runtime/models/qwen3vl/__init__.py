@@ -1,18 +1,18 @@
-"""Model-facing exports grouped by concrete model family implementations."""
+"""Qwen3-VL model package containing capture, inputs, ops, and replay kernels."""
 
-from qwen3vl_tp_runtime.models.qwen3vl import (
-    apply_deepstack,
-    apply_rope,
-    attn_eager,
-    build_causal_mask,
-    build_inputs,
+from qwen3vl_tp_runtime.models.qwen3vl.capture import (
     capture_decoder_layer_params,
     capture_full_layer_bundle,
     capture_layer_range_bundle,
     capture_text_stage_bundle,
-    cast_cpu,
+    load_bundle,
+    move_bundle,
+    resolve_runtime_tensors,
+    run_forward_with_runtime_hook,
+)
+from qwen3vl_tp_runtime.models.qwen3vl.forward import (
+    apply_deepstack,
     compose_layer_bundle,
-    dtype_from_name,
     forward_attention,
     forward_attention_tp,
     forward_decoder_layer,
@@ -24,22 +24,23 @@ from qwen3vl_tp_runtime.models.qwen3vl import (
     forward_text_stage,
     forward_text_stage_tp,
     get_deepstack_embeds,
-    list_frames,
-    load_bundle,
-    load_model,
-    load_processor,
-    move_bundle,
-    repeat_kv,
-    resolve_comm_dtype,
-    resolve_runtime_tensors,
-    resolve_save_dtype,
-    rms_norm,
-    rotate_half,
-    run_forward_with_runtime_hook,
     trace_decoder_layer,
     trace_decoder_layer_tp,
     trace_text_stage,
     trace_text_stage_tp,
+)
+from qwen3vl_tp_runtime.models.qwen3vl.inputs import build_inputs, list_frames, load_model, load_processor
+from qwen3vl_tp_runtime.models.qwen3vl.ops import (
+    apply_rope,
+    attn_eager,
+    build_causal_mask,
+    cast_cpu,
+    dtype_from_name,
+    repeat_kv,
+    resolve_comm_dtype,
+    resolve_save_dtype,
+    rms_norm,
+    rotate_half,
 )
 
 __all__ = [
@@ -57,8 +58,6 @@ __all__ = [
     "load_processor",
     "compose_layer_bundle",
     "apply_deepstack",
-    "apply_rope",
-    "attn_eager",
     "get_deepstack_embeds",
     "forward_attention",
     "forward_attention_tp",
@@ -81,5 +80,7 @@ __all__ = [
     "build_causal_mask",
     "rms_norm",
     "rotate_half",
+    "apply_rope",
     "repeat_kv",
+    "attn_eager",
 ]

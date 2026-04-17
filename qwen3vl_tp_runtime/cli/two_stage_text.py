@@ -1,3 +1,5 @@
+"""CLI for the legacy two-stage pipeline prototype kept for focused PP debugging."""
+
 import argparse
 import sys
 from pathlib import Path
@@ -7,12 +9,22 @@ import torch.distributed as dist
 if __package__ is None or __package__ == "":
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from qwen3vl_tp_runtime.core.capture import capture_text_stage_bundle, load_bundle, move_bundle
-from qwen3vl_tp_runtime.core.config import TEXT_STAGE0_BUNDLE_PATH, TEXT_STAGE1_BUNDLE_PATH
-from qwen3vl_tp_runtime.core.dist import get_device, init_dist
-from qwen3vl_tp_runtime.core.ops import dtype_from_name, resolve_comm_dtype
-from qwen3vl_tp_runtime.core.stage import get_stage_input, get_stage_output, run_stage
-from qwen3vl_tp_runtime.core.transport import recv_hidden_states, send_hidden_states
+from qwen3vl_tp_runtime.hexgen_core import (
+    TEXT_STAGE0_BUNDLE_PATH,
+    TEXT_STAGE1_BUNDLE_PATH,
+    get_device,
+    init_dist,
+    recv_hidden_states,
+    send_hidden_states,
+)
+from qwen3vl_tp_runtime.hexgen_core.stage import get_stage_input, get_stage_output, run_stage
+from qwen3vl_tp_runtime.models.qwen3vl import (
+    capture_text_stage_bundle,
+    dtype_from_name,
+    load_bundle,
+    move_bundle,
+    resolve_comm_dtype,
+)
 
 
 def tensor_diff_stats(lhs, rhs):

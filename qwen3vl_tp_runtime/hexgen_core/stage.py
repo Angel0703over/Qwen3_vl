@@ -1,0 +1,258 @@
+"""Stage bundle views, multimodal handoff helpers, and stage execution dispatch."""
+
+from dataclasses import dataclass
+from typing import Any
+
+import torch
+
+from qwen3vl_tp_runtime.hexgen_core.schema import StageHandoffPayload
+from qwen3vl_tp_runtime.models.qwen3vl.forward import (
+    forward_text_stage,
+    forward_text_stage_tp,
+    trace_text_stage,
+    trace_text_stage_tp,
+)
+
+
+@dataclass(slots=True)
+class StageBundleView:
+    """A lightweight object wrapper around one captured stage bundle."""
+
+    payload: dict[str, Any]
+
+    @property
+    def stage_type(self) -> str:
+        stage_type = self.payload.get("stage_type")
+        if stage_type is not None:
+            return stage_type
+        module_name = self.payload.get("module_name")
+        if module_name == "text_stage":
+            return "text"
+        raise ValueError(f"无法从 stage bundle 中识别 stage_type，module_name={module_name!r}")
+
+    @property
+    def stage_input(self) -> torch.Tensor:
+        return self.payload["stage_input"] if "stage_input" in self.payload else self.payload["layer_input"]
+
+    @property
+    def stage_output(self) -> torch.Tensor:
+        return self.payload["stage_output"] if "stage_output" in self.payload else self.payload["layer_output"]
+
+    def with_stage_type(self, stage_type: str) -> "StageBundleView":
+        bundle = dict(self.payload)
+        bundle["stage_type"] = stage_type
+        if "stage_input" not in bundle and "layer_input" in bundle:
+            bundle["stage_input"] = bundle["layer_input"]
+        if "stage_output" not in bundle and "layer_output" in bundle:
+            bundle["stage_output"] = bundle["layer_output"]
+        return StageBundleView(bundle)
+
+
+def as_stage_bundle_view(stage_bundle: dict[str, Any] | StageBundleView) -> StageBundleView:
+    if isinstance(stage_bundle, StageBundleView):
+        return stage_bundle
+    return StageBundleView(stage_bundle)
+
+
+def get_stage_type(stage_bundle: dict[str, Any] | StageBundleView) -> str:
+    return as_stage_bundle_view(stage_bundle).stage_type
+
+
+def get_stage_input(stage_bundle: dict[str, Any] | StageBundleView) -> torch.Tensor:
+    return as_stage_bundle_view(stage_bundle).stage_input
+
+
+def get_stage_output(stage_bundle: dict[str, Any] | StageBundleView) -> torch.Tensor:
+    return as_stage_bundle_view(stage_bundle).stage_output
+
+
+def build_stage_bundle(stage_type: str, bundle: dict[str, Any]) -> dict[str, Any]:
+    return as_stage_bundle_view(bundle).with_stage_type(stage_type).payload
+
+
+def build_stage_handoff_target_dtypes(
+    stage_bundle: dict[str, Any] | StageBundleView,
+) -> dict[str, torch.dtype]:
+    bundle_view = as_stage_bundle_view(stage_bundle)
+    bundle = bundle_view.payload
+    target_dtypes = {
+        StageHandoffPayload.HIDDEN_STATES_KEY: bundle_view.stage_input.dtype,
+    }
+
+    visual_pos_masks = bundle.get("visual_pos_masks")
+    if isinstance(visual_pos_masks, torch.Tensor):
+        target_dtypes[StageHandoffPayload.VISUAL_POS_MASKS_KEY] = visual_pos_masks.dtype
+
+    deepstack_by_layer = bundle.get("deepstack_by_layer")
+    if isinstance(deepstack_by_layer, dict):
+        for layer_idx, tensor in deepstack_by_layer.items():
+            if tensor is not None:
+                target_dtypes[StageHandoffPayload.deepstack_key(int(layer_idx))] = tensor.dtype
+
+    multimodal_meta = bundle.get("multimodal_meta")
+    if isinstance(multimodal_meta, dict):
+        for name, tensor in multimodal_meta.items():
+            if tensor is not None:
+                target_dtypes[StageHandoffPayload.multimodal_meta_key(str(name))] = tensor.dtype
+
+    return target_dtypes
+
+
+def build_stage_handoff_payload(
+    hidden_states: torch.Tensor | None,
+    stage_bundle: dict[str, Any] | StageBundleView,
+    multimodal_meta: dict[str, torch.Tensor | None] | None = None,
+) -> StageHandoffPayload:
+    bundle = as_stage_bundle_view(stage_bundle).payload
+    deepstack_by_layer = bundle.get("deepstack_by_layer")
+    bundle_multimodal_meta = bundle.get("multimodal_meta")
+
+    merged_meta: dict[str, torch.Tensor | None] = {}
+    if isinstance(bundle_multimodal_meta, dict):
+        merged_meta.update(bundle_multimodal_meta)
+    if multimodal_meta:
+        merged_meta.update(multimodal_meta)
+
+    return StageHandoffPayload(
+        hidden_states=hidden_states,
+        visual_pos_masks=bundle.get("visual_pos_masks"),
+        deepstack_feature_pack=(
+            {int(layer_idx): tensor for layer_idx, tensor in deepstack_by_layer.items()}
+            if isinstance(deepstack_by_layer, dict)
+            else {}
+        ),
+        multimodal_meta=merged_meta,
+    )
+
+
+def apply_stage_handoff_payload(
+    stage_bundle: dict[str, Any] | StageBundleView,
+    handoff_payload: StageHandoffPayload | None,
+    *,
+    prefer_local_bundle: bool = True,
+) -> dict[str, Any]:
+    bundle = dict(as_stage_bundle_view(stage_bundle).payload)
+    if handoff_payload is None:
+        return bundle
+
+    if handoff_payload.hidden_states is not None:
+        bundle["stage_input"] = handoff_payload.hidden_states
+        bundle["layer_input"] = handoff_payload.hidden_states
+
+    if handoff_payload.visual_pos_masks is not None:
+        current_visual_pos_masks = bundle.get("visual_pos_masks")
+        if not prefer_local_bundle or current_visual_pos_masks is None:
+            bundle["visual_pos_masks"] = handoff_payload.visual_pos_masks
+
+    if handoff_payload.deepstack_feature_pack:
+        current_deepstack = bundle.get("deepstack_by_layer")
+        has_local_deepstack = isinstance(current_deepstack, dict) and bool(current_deepstack)
+        if not prefer_local_bundle or not has_local_deepstack:
+            bundle["deepstack_by_layer"] = dict(sorted(handoff_payload.deepstack_feature_pack.items()))
+            bundle["deepstack_layer_indices"] = sorted(handoff_payload.deepstack_feature_pack)
+
+    if handoff_payload.multimodal_meta:
+        incoming_meta = dict(handoff_payload.multimodal_meta)
+        current_meta = bundle.get("multimodal_meta")
+        if isinstance(current_meta, dict):
+            merged_meta = dict(incoming_meta)
+            if prefer_local_bundle:
+                merged_meta.update(current_meta)
+            else:
+                current_meta = dict(current_meta)
+                current_meta.update(incoming_meta)
+                merged_meta = current_meta
+        else:
+            merged_meta = incoming_meta
+
+        bundle["multimodal_meta"] = merged_meta
+        for name, tensor in merged_meta.items():
+            if not prefer_local_bundle or bundle.get(name) is None:
+                bundle[name] = tensor
+
+    return bundle
+
+
+def run_stage(stage_input: torch.Tensor, stage_bundle: dict[str, Any] | StageBundleView) -> torch.Tensor:
+    bundle_view = as_stage_bundle_view(stage_bundle)
+    if bundle_view.stage_type == "text":
+        return forward_text_stage(stage_input, bundle_view.payload)
+    raise NotImplementedError(f"暂不支持的 stage_type: {bundle_view.stage_type}")
+
+
+def run_stage_tp(
+    stage_input: torch.Tensor,
+    stage_bundle: dict[str, Any] | StageBundleView,
+    rank: int,
+    world_size: int,
+    comm_dtype: torch.dtype,
+    tp_group=None,
+    tp_src_rank: int = 0,
+    tp_attn_math_mode: str = "orig",
+    tp_mlp_math_mode: str = "float32",
+) -> torch.Tensor:
+    bundle_view = as_stage_bundle_view(stage_bundle)
+    if bundle_view.stage_type == "text":
+        return forward_text_stage_tp(
+            stage_input,
+            bundle_view.payload,
+            rank,
+            world_size,
+            comm_dtype,
+            tp_group=tp_group,
+            tp_src_rank=tp_src_rank,
+            attn_math_mode=tp_attn_math_mode,
+            mlp_math_mode=tp_mlp_math_mode,
+        )
+    raise NotImplementedError(f"暂不支持的 stage_type: {bundle_view.stage_type}")
+
+
+def trace_stage(stage_input: torch.Tensor, stage_bundle: dict[str, Any] | StageBundleView):
+    bundle_view = as_stage_bundle_view(stage_bundle)
+    if bundle_view.stage_type == "text":
+        return trace_text_stage(stage_input, bundle_view.payload)
+    raise NotImplementedError(f"暂不支持的 stage_type: {bundle_view.stage_type}")
+
+
+def trace_stage_tp(
+    stage_input: torch.Tensor,
+    stage_bundle: dict[str, Any] | StageBundleView,
+    rank: int,
+    world_size: int,
+    comm_dtype: torch.dtype,
+    tp_group=None,
+    tp_src_rank: int = 0,
+    tp_attn_math_mode: str = "orig",
+    tp_mlp_math_mode: str = "float32",
+):
+    bundle_view = as_stage_bundle_view(stage_bundle)
+    if bundle_view.stage_type == "text":
+        return trace_text_stage_tp(
+            stage_input,
+            bundle_view.payload,
+            rank,
+            world_size,
+            comm_dtype,
+            tp_group=tp_group,
+            tp_src_rank=tp_src_rank,
+            attn_math_mode=tp_attn_math_mode,
+            mlp_math_mode=tp_mlp_math_mode,
+        )
+    raise NotImplementedError(f"暂不支持的 stage_type: {bundle_view.stage_type}")
+
+
+__all__ = [
+    "StageBundleView",
+    "as_stage_bundle_view",
+    "get_stage_type",
+    "get_stage_input",
+    "get_stage_output",
+    "build_stage_bundle",
+    "build_stage_handoff_target_dtypes",
+    "build_stage_handoff_payload",
+    "apply_stage_handoff_payload",
+    "run_stage",
+    "run_stage_tp",
+    "trace_stage",
+    "trace_stage_tp",
+]

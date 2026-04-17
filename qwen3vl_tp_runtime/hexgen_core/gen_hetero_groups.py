@@ -1,3 +1,8 @@
+"""HexGen-style helpers for deriving PP/TP groups and point-to-point plans."""
+
+from qwen3vl_tp_runtime.hexgen_core.schema import HybridLayout
+
+
 def parse_tp_degrees(values: list[int]) -> list[int]:
     if not values:
         raise ValueError("至少要提供一个 TP 度数。")
@@ -57,15 +62,18 @@ def build_p2p_lists(stage_rank_groups: list[list[int]], pp_rank_groups: list[lis
     }
 
 
-def build_hybrid_layout(tp_degrees: list[int]) -> dict:
+def build_hybrid_layout(tp_degrees: list[int]) -> HybridLayout:
     stage_rank_groups = build_stage_rank_groups(tp_degrees)
     pp_rank_groups = build_pp_rank_groups(stage_rank_groups)
     p2p_lists = build_p2p_lists(stage_rank_groups, pp_rank_groups)
-    return {
-        "tp_degrees": tp_degrees,
-        "stage_rank_groups": stage_rank_groups,
-        "pp_rank_groups": pp_rank_groups,
-        "world_size": sum(tp_degrees),
-        "num_stages": len(tp_degrees),
-        **p2p_lists,
-    }
+    return HybridLayout(
+        tp_degrees=tp_degrees,
+        stage_rank_groups=stage_rank_groups,
+        pp_rank_groups=pp_rank_groups,
+        world_size=sum(tp_degrees),
+        num_stages=len(tp_degrees),
+        send_list=p2p_lists["send_list"],
+        recv_list=p2p_lists["recv_list"],
+        send_empty_list=p2p_lists["send_empty_list"],
+        recv_empty_list=p2p_lists["recv_empty_list"],
+    )

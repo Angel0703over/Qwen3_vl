@@ -1,3 +1,5 @@
+"""Default local paths used by the prototype capture and runtime entrypoints."""
+
 MODEL_PATH = "/mnt/ssd/models/Qwen/Qwen3-VL-4B-Instruct"
 FRAME_DIR = "/mnt/ssd/code/Qwen3_vl/frames"
 FULL_LAYER_BUNDLE_PATH = "/mnt/ssd/code/Qwen3_vl/qwen3vl_full_layer_case.pt"

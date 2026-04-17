@@ -1,3 +1,5 @@
+"""CLI for preparing and executing the HexGen-style hybrid PP+TP text runtime."""
+
 import argparse
 import sys
 from pathlib import Path
@@ -7,15 +9,17 @@ import torch.distributed as dist
 if __package__ is None or __package__ == "":
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from qwen3vl_tp_runtime.core.config import TEXT_HYBRID_BUNDLE_DIR, TEXT_HYBRID_MANIFEST_PATH
-from qwen3vl_tp_runtime.core.dist import get_device, init_dist
-from qwen3vl_tp_runtime.core.hybrid import (
+from qwen3vl_tp_runtime.hexgen_core import (
+    TEXT_HYBRID_BUNDLE_DIR,
+    TEXT_HYBRID_MANIFEST_PATH,
+    get_device,
+    init_dist,
     load_hybrid_manifest,
     parse_tp_degrees,
     prepare_text_hybrid,
     run_text_hybrid_rank,
+    parse_stage_ranges,
 )
-from qwen3vl_tp_runtime.core.pipeline import parse_stage_ranges
 
 
 def format_trace_stat(name, stats):
@@ -86,19 +90,19 @@ def run_prepare(args):
 
     print(f"[prepare] manifest saved to {args.manifest_path}")
     print(
-        f"[prepare] num_stages={manifest['num_stages']} world_size={manifest['world_size']} "
-        f"stage_ranges={manifest['stage_ranges']} tp_degrees={manifest['tp_degrees']}"
+        f"[prepare] num_stages={manifest.num_stages} world_size={manifest.world_size} "
+        f"stage_ranges={manifest.stage_ranges} tp_degrees={manifest.tp_degrees}"
     )
-    for stage_meta, rank_group in zip(manifest["stages"], manifest["stage_rank_groups"]):
+    for stage_meta, rank_group in zip(manifest.stages, manifest.stage_rank_groups):
         print(
-            f"[prepare-stage] stage={stage_meta['stage_idx']} "
-            f"start_idx={stage_meta['start_idx']} end_idx={stage_meta['end_idx']} "
-            f"num_layers={stage_meta['num_layers']} ranks={rank_group}"
+            f"[prepare-stage] stage={stage_meta.stage_idx} "
+            f"start_idx={stage_meta.start_idx} end_idx={stage_meta.end_idx} "
+            f"num_layers={stage_meta.num_layers} ranks={rank_group}"
         )
-    for boundary in manifest["boundaries"]:
+    for boundary in manifest.boundaries:
         print(
-            f"[prepare-boundary] src_stage={boundary['src_stage_idx']} dst_stage={boundary['dst_stage_idx']} "
-            f"max_diff={boundary['max_diff']} mean_diff={boundary['mean_diff']}"
+            f"[prepare-boundary] src_stage={boundary.src_stage_idx} dst_stage={boundary.dst_stage_idx} "
+            f"max_diff={boundary.max_diff} mean_diff={boundary.mean_diff}"
         )
 
 

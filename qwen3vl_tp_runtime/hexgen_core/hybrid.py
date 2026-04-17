@@ -1,3 +1,5 @@
+"""Hybrid PP+TP runtime built around HexGen-style lane groups and rank contexts."""
+
 import torch
 import torch.distributed as dist
 
@@ -8,15 +10,13 @@ from qwen3vl_tp_runtime.hexgen_core.gen_hetero_groups import (
     build_stage_rank_groups,
     parse_tp_degrees,
 )
-from qwen3vl_tp_runtime.core.dist import broadcast_cpu
-from qwen3vl_tp_runtime.core.pipeline import (
-    load_pipeline_manifest,
-    load_stage_bundle_by_index,
-    prepare_text_pipeline,
-    tensor_diff_stats,
-)
-from qwen3vl_tp_runtime.core.ops import resolve_comm_dtype
-from qwen3vl_tp_runtime.core.stage import (
+from qwen3vl_tp_runtime.hexgen_core.distributed import broadcast_cpu
+from qwen3vl_tp_runtime.hexgen_core.pipeline import load_stage_bundle_by_index, prepare_text_pipeline, tensor_diff_stats
+from qwen3vl_tp_runtime.hexgen_core.schema import HybridRankContext, StageHandoffPayload, TextHybridManifest
+from qwen3vl_tp_runtime.hexgen_core.stage import (
+    apply_stage_handoff_payload,
+    build_stage_handoff_payload,
+    build_stage_handoff_target_dtypes,
     get_stage_input,
     get_stage_output,
     run_stage,
@@ -24,7 +24,8 @@ from qwen3vl_tp_runtime.core.stage import (
     trace_stage,
     trace_stage_tp,
 )
-from qwen3vl_tp_runtime.core.transport import recv_hidden_states, send_hidden_states
+from qwen3vl_tp_runtime.hexgen_core.transport import recv_payload, send_payload
+from qwen3vl_tp_runtime.models.qwen3vl.ops import resolve_comm_dtype
 
 
 def _build_rank_group_index(rank_groups: list[list[int]], world_size: int) -> list[int]:
@@ -47,7 +48,7 @@ def prepare_text_hybrid(
     manifest_path: str,
     num_frames: int = 8,
     save_dtype: str = "auto",
-) -> dict:
+) -> TextHybridManifest:
     pipeline_manifest = prepare_text_pipeline(
         stage_ranges=stage_ranges,
         bundle_dir=bundle_dir,
@@ -56,33 +57,31 @@ def prepare_text_hybrid(
         save_dtype=save_dtype,
     )
     tp_degrees = parse_tp_degrees(tp_degrees)
-    if len(tp_degrees) != pipeline_manifest["num_stages"]:
+    if len(tp_degrees) != pipeline_manifest.num_stages:
         raise ValueError(
-            f"stage 数是 {pipeline_manifest['num_stages']}，但 TP 度数拿到 {len(tp_degrees)} 个。"
+            f"stage 数是 {pipeline_manifest.num_stages}，但 TP 度数拿到 {len(tp_degrees)} 个。"
         )
 
     layout = build_hybrid_layout(tp_degrees)
-    manifest = dict(pipeline_manifest)
-    manifest["runtime"] = "text_hybrid"
-    manifest["tp_degrees"] = layout["tp_degrees"]
-    manifest["stage_rank_groups"] = layout["stage_rank_groups"]
-    manifest["pp_rank_groups"] = layout["pp_rank_groups"]
-    manifest["send_list"] = layout["send_list"]
-    manifest["recv_list"] = layout["recv_list"]
-    manifest["send_empty_list"] = layout["send_empty_list"]
-    manifest["recv_empty_list"] = layout["recv_empty_list"]
-    manifest["world_size"] = layout["world_size"]
-    torch.save(manifest, manifest_path)
+    manifest = TextHybridManifest.from_pipeline_manifest(pipeline_manifest, layout)
+    torch.save(manifest.to_dict(), manifest_path)
     return manifest
 
 
-def load_hybrid_manifest(manifest_path: str) -> dict:
-    manifest = load_pipeline_manifest(manifest_path)
-    if "tp_degrees" not in manifest:
+def load_hybrid_manifest(manifest_path: str) -> TextHybridManifest:
+    manifest = torch.load(manifest_path, map_location="cpu")
+    if isinstance(manifest, TextHybridManifest):
+        return manifest
+
+    manifest_dict = manifest.to_dict() if hasattr(manifest, "to_dict") else manifest
+    if "tp_degrees" not in manifest_dict:
         raise ValueError("manifest 里没有 tp_degrees，不能按 hybrid 运行。")
 
-    layout = build_hybrid_layout(parse_tp_degrees(manifest["tp_degrees"]))
-    if "stage_rank_groups" in manifest and manifest["stage_rank_groups"] != layout["stage_rank_groups"]:
+    layout = build_hybrid_layout(parse_tp_degrees(manifest_dict["tp_degrees"]))
+    if (
+        "stage_rank_groups" in manifest_dict
+        and manifest_dict["stage_rank_groups"] != layout.stage_rank_groups
+    ):
         raise ValueError("manifest 里的 stage_rank_groups 和 tp_degrees 不一致。")
 
     for key in (
@@ -95,8 +94,10 @@ def load_hybrid_manifest(manifest_path: str) -> dict:
         "world_size",
         "num_stages",
     ):
-        manifest.setdefault(key, layout[key])
-    return manifest
+        if key not in manifest_dict:
+            manifest_dict[key] = getattr(layout, key)
+    manifest_dict.setdefault("runtime", "text_hybrid")
+    return TextHybridManifest.from_dict(manifest_dict)
 
 
 def init_stage_groups(stage_rank_groups: list[list[int]]) -> list:
@@ -114,7 +115,7 @@ def resolve_rank_stage(
     recv_list: list[list[int]] | None = None,
     send_empty_list: list[list[bool]] | None = None,
     recv_empty_list: list[list[bool]] | None = None,
-) -> dict:
+) -> HybridRankContext:
     world_size = sum(len(ranks) for ranks in stage_rank_groups)
     if pp_rank_groups is None:
         pp_rank_groups = build_pp_rank_groups(stage_rank_groups)
@@ -136,23 +137,103 @@ def resolve_rank_stage(
 
     for stage_idx, ranks in enumerate(stage_rank_groups):
         if rank in ranks:
-            return {
-                "stage_idx": stage_idx,
-                "stage_ranks": ranks,
-                "tp_degree": len(ranks),
-                "local_rank": ranks.index(rank),
-                "leader_rank": ranks[0],
-                "prev_leader_rank": None if stage_idx == 0 else stage_rank_groups[stage_idx - 1][0],
-                "next_leader_rank": None if stage_idx + 1 >= len(stage_rank_groups) else stage_rank_groups[stage_idx + 1][0],
-                "stage_group": stage_groups[stage_idx],
-                "pp_group_idx": pp_group_index_by_rank[rank],
-                "current_pp_group": current_pp_group,
-                "send_list": send_list[rank],
-                "recv_list": recv_list[rank],
-                "send_empty_list": send_empty_list[rank],
-                "recv_empty_list": recv_empty_list[rank],
-            }
+            return HybridRankContext(
+                stage_idx=stage_idx,
+                stage_ranks=ranks,
+                tp_degree=len(ranks),
+                local_rank=ranks.index(rank),
+                leader_rank=ranks[0],
+                prev_leader_rank=None if stage_idx == 0 else stage_rank_groups[stage_idx - 1][0],
+                next_leader_rank=None if stage_idx + 1 >= len(stage_rank_groups) else stage_rank_groups[stage_idx + 1][0],
+                stage_group=stage_groups[stage_idx],
+                pp_group_idx=pp_group_index_by_rank[rank],
+                current_pp_group=current_pp_group,
+                send_list=send_list[rank],
+                recv_list=recv_list[rank],
+                send_empty_list=send_empty_list[rank],
+                recv_empty_list=recv_empty_list[rank],
+            )
     raise ValueError(f"rank={rank} 不在任何 stage rank group 里。")
+
+
+def _recv_stage_handoff_for_rank(
+    rank: int,
+    rank_stage: HybridRankContext,
+    device: torch.device,
+    bundle: dict,
+) -> tuple[StageHandoffPayload | None, list[str]]:
+    if len(rank_stage.recv_list) != len(rank_stage.recv_empty_list):
+        raise ValueError("recv_list 和 recv_empty_list 的长度不一致。")
+
+    incoming_handoff = None
+    payload_keys: list[str] = []
+    target_dtypes = build_stage_handoff_target_dtypes(bundle)
+
+    for src, expect_empty in zip(rank_stage.recv_list, rank_stage.recv_empty_list):
+        payload = recv_payload(
+            src=src,
+            device=device,
+            target_dtypes=target_dtypes,
+        )
+        handoff = StageHandoffPayload.from_transport_payload(payload)
+
+        if expect_empty:
+            if handoff is not None:
+                raise ValueError(
+                    f"rank={rank} 期望从 src={src} 收到空 payload，但拿到了非空 payload。"
+                )
+            continue
+
+        if handoff is None or handoff.hidden_states is None:
+            raise ValueError(f"rank={rank} 没有从 src={src} 收到有效的 hidden_states payload。")
+        if rank_stage.local_rank != 0:
+            raise ValueError(
+                f"rank={rank} 不是 stage leader，但从 src={src} 收到了非空 stage payload。"
+            )
+        if incoming_handoff is not None:
+            raise ValueError(f"rank={rank} 收到了多个非空 stage payload，当前实现只支持一个。")
+
+        incoming_handoff = handoff
+        payload_keys = [] if payload is None else list(payload.keys())
+
+    return incoming_handoff, payload_keys
+
+
+def _send_stage_handoff_for_rank(
+    rank: int,
+    rank_stage: HybridRankContext,
+    handoff: StageHandoffPayload | None,
+    comm_dtype: torch.dtype,
+) -> tuple[tuple[int, ...] | None, list[str], dict[str, tuple[int, ...] | None]]:
+    if len(rank_stage.send_list) != len(rank_stage.send_empty_list):
+        raise ValueError("send_list 和 send_empty_list 的长度不一致。")
+
+    outgoing_payload = None if handoff is None else handoff.to_transport_payload()
+    non_empty_summary = None
+    for dst, is_empty in zip(rank_stage.send_list, rank_stage.send_empty_list):
+        if is_empty:
+            send_payload(None, dst=dst, comm_dtype=comm_dtype)
+            continue
+
+        if handoff is None or handoff.hidden_states is None:
+            raise ValueError(f"rank={rank} 需要向 dst={dst} 发送非空 payload，但 handoff 为空。")
+        if rank_stage.local_rank != 0:
+            raise ValueError(
+                f"rank={rank} 不是 stage leader，但被要求向 dst={dst} 发送非空 stage payload。"
+            )
+        if non_empty_summary is not None:
+            raise ValueError(f"rank={rank} 被要求发送多个非空 stage payload，当前实现只支持一个。")
+
+        non_empty_summary = send_payload(outgoing_payload, dst=dst, comm_dtype=comm_dtype)
+
+    if non_empty_summary is None:
+        return None, [], {}
+
+    return (
+        non_empty_summary.tensor_shapes.get(StageHandoffPayload.HIDDEN_STATES_KEY),
+        non_empty_summary.payload_keys,
+        non_empty_summary.tensor_shapes,
+    )
 
 
 def _flat_index_to_tuple(flat_idx: int, shape: tuple[int, ...]) -> tuple[int, ...]:
@@ -461,11 +542,55 @@ def build_stage_traces(
     return traces, outlier_dump
 
 
+class TextHybridRunner:
+    """Stateful rank runner for HexGen-style hybrid PP+TP execution."""
+
+    def __init__(
+        self,
+        manifest: TextHybridManifest,
+        device: torch.device,
+        compute_dtype_arg: str,
+        comm_dtype_arg: str,
+        tp_attn_math_mode: str = "orig",
+        tp_mlp_math_mode: str = "float32",
+        compare_direct: bool = False,
+        trace_layers: bool = False,
+        dump_layer: int | None = None,
+        dump_topk: int = 5,
+    ) -> None:
+        self.manifest = manifest
+        self.device = device
+        self.compute_dtype_arg = compute_dtype_arg
+        self.comm_dtype_arg = comm_dtype_arg
+        self.tp_attn_math_mode = tp_attn_math_mode
+        self.tp_mlp_math_mode = tp_mlp_math_mode
+        self.compare_direct = compare_direct
+        self.trace_layers = trace_layers
+        self.dump_layer = dump_layer
+        self.dump_topk = dump_topk
+
+    def run_rank(self, rank: int, world_size: int) -> dict:
+        return run_text_hybrid_rank(
+            rank=rank,
+            world_size=world_size,
+            manifest=self.manifest,
+            device=self.device,
+            compute_dtype_arg=self.compute_dtype_arg,
+            comm_dtype_arg=self.comm_dtype_arg,
+            tp_attn_math_mode=self.tp_attn_math_mode,
+            tp_mlp_math_mode=self.tp_mlp_math_mode,
+            compare_direct=self.compare_direct,
+            trace_layers=self.trace_layers,
+            dump_layer=self.dump_layer,
+            dump_topk=self.dump_topk,
+        )
+
+
 def run_text_hybrid_rank(
     *,
     rank: int,
     world_size: int,
-    manifest: dict,
+    manifest: TextHybridManifest,
     device: torch.device,
     compute_dtype_arg: str,
     comm_dtype_arg: str,
@@ -476,48 +601,54 @@ def run_text_hybrid_rank(
     dump_layer: int | None = None,
     dump_topk: int = 5,
 ) -> dict:
-    if world_size != manifest["world_size"]:
-        raise ValueError(f"WORLD_SIZE={world_size}，但 hybrid manifest 需要 {manifest['world_size']}。")
+    if world_size != manifest.world_size:
+        raise ValueError(f"WORLD_SIZE={world_size}，但 hybrid manifest 需要 {manifest.world_size}。")
 
-    stage_groups = init_stage_groups(manifest["stage_rank_groups"])
+    stage_groups = init_stage_groups(manifest.stage_rank_groups)
     rank_stage = resolve_rank_stage(
         rank,
-        manifest["stage_rank_groups"],
+        manifest.stage_rank_groups,
         stage_groups,
-        pp_rank_groups=manifest.get("pp_rank_groups"),
-        send_list=manifest.get("send_list"),
-        recv_list=manifest.get("recv_list"),
-        send_empty_list=manifest.get("send_empty_list"),
-        recv_empty_list=manifest.get("recv_empty_list"),
+        pp_rank_groups=manifest.pp_rank_groups,
+        send_list=manifest.send_list,
+        recv_list=manifest.recv_list,
+        send_empty_list=manifest.send_empty_list,
+        recv_empty_list=manifest.recv_empty_list,
     )
 
     bundle, compute_dtype = load_stage_bundle_by_index(
         manifest,
-        rank_stage["stage_idx"],
+        rank_stage.stage_idx,
         device,
         compute_dtype_arg,
     )
     comm_dtype = resolve_comm_dtype(comm_dtype_arg, compute_dtype)
 
     reference_input = get_stage_input(bundle)
-    if rank_stage["stage_idx"] == 0 and rank_stage["local_rank"] == 0:
-        leader_input = reference_input
-    elif rank_stage["local_rank"] == 0:
-        leader_input = recv_hidden_states(
-            src=rank_stage["prev_leader_rank"],
-            device=device,
-            hidden_dtype=reference_input.dtype,
-            comm_dtype=comm_dtype,
-        )
+    incoming_handoff, received_payload_keys = _recv_stage_handoff_for_rank(
+        rank,
+        rank_stage,
+        device,
+        bundle,
+    )
+    if incoming_handoff is not None:
+        bundle = apply_stage_handoff_payload(bundle, incoming_handoff)
+
+    if rank_stage.stage_idx == 0:
+        leader_input = reference_input if rank_stage.local_rank == 0 else None
+    elif rank_stage.local_rank == 0:
+        if incoming_handoff is None or incoming_handoff.hidden_states is None:
+            raise ValueError(f"rank={rank} 是非首 stage leader，但没有收到非空 stage payload。")
+        leader_input = get_stage_input(bundle)
     else:
         leader_input = None
 
     stage_input = broadcast_cpu(
         reference_tensor=reference_input,
         tensor=leader_input,
-        src=rank_stage["leader_rank"],
+        src=rank_stage.leader_rank,
         comm_dtype=comm_dtype,
-        group=rank_stage["stage_group"],
+        group=rank_stage.stage_group,
     )
     boundary_max, boundary_mean = tensor_diff_stats(stage_input, reference_input)
 
@@ -534,11 +665,11 @@ def run_text_hybrid_rank(
     stage_output = run_stage_tp(
         stage_input,
         bundle,
-        rank=rank_stage["local_rank"],
-        world_size=rank_stage["tp_degree"],
+        rank=rank_stage.local_rank,
+        world_size=rank_stage.tp_degree,
         comm_dtype=comm_dtype,
-        tp_group=rank_stage["stage_group"],
-        tp_src_rank=rank_stage["leader_rank"],
+        tp_group=rank_stage.stage_group,
+        tp_src_rank=rank_stage.leader_rank,
         tp_attn_math_mode=tp_attn_math_mode,
         tp_mlp_math_mode=tp_mlp_math_mode,
     )
@@ -546,9 +677,17 @@ def run_text_hybrid_rank(
     if direct_output is not None:
         tp_direct_max, tp_direct_mean = tensor_diff_stats(stage_output, direct_output)
 
-    sent_shape = None
-    if rank_stage["local_rank"] == 0 and rank_stage["next_leader_rank"] is not None:
-        sent_shape = send_hidden_states(stage_output, dst=rank_stage["next_leader_rank"], comm_dtype=comm_dtype)
+    outgoing_handoff = (
+        build_stage_handoff_payload(stage_output, bundle)
+        if any(not is_empty for is_empty in rank_stage.send_empty_list)
+        else None
+    )
+    sent_shape, sent_payload_keys, sent_tensor_shapes = _send_stage_handoff_for_rank(
+        rank,
+        rank_stage,
+        outgoing_handoff,
+        comm_dtype,
+    )
 
     traces = None
     outlier_dump = None
@@ -557,11 +696,11 @@ def run_text_hybrid_rank(
             reference_input=reference_input,
             stage_input=stage_input,
             bundle=bundle,
-            local_rank=rank_stage["local_rank"],
-            tp_degree=rank_stage["tp_degree"],
+            local_rank=rank_stage.local_rank,
+            tp_degree=rank_stage.tp_degree,
             comm_dtype=comm_dtype,
-            tp_group=rank_stage["stage_group"],
-            leader_rank=rank_stage["leader_rank"],
+            tp_group=rank_stage.stage_group,
+            leader_rank=rank_stage.leader_rank,
             tp_attn_math_mode=tp_attn_math_mode,
             tp_mlp_math_mode=tp_mlp_math_mode,
             dump_layer=dump_layer,
@@ -570,14 +709,14 @@ def run_text_hybrid_rank(
 
     return {
         "rank": rank,
-        "stage_idx": rank_stage["stage_idx"],
-        "stage_ranks": rank_stage["stage_ranks"],
-        "local_rank": rank_stage["local_rank"],
-        "tp_degree": rank_stage["tp_degree"],
-        "leader_rank": rank_stage["leader_rank"],
-        "pp_group_idx": rank_stage["pp_group_idx"],
-        "current_pp_group": rank_stage["current_pp_group"],
-        "num_stages": manifest["num_stages"],
+        "stage_idx": rank_stage.stage_idx,
+        "stage_ranks": rank_stage.stage_ranks,
+        "local_rank": rank_stage.local_rank,
+        "tp_degree": rank_stage.tp_degree,
+        "leader_rank": rank_stage.leader_rank,
+        "pp_group_idx": rank_stage.pp_group_idx,
+        "current_pp_group": rank_stage.current_pp_group,
+        "num_stages": manifest.num_stages,
         "start_idx": bundle["start_idx"],
         "end_idx": bundle["end_idx"],
         "num_layers": len(bundle["layers"]),
@@ -588,6 +727,9 @@ def run_text_hybrid_rank(
         "input_shape": tuple(stage_input.shape),
         "output_shape": tuple(stage_output.shape),
         "sent_shape": sent_shape,
+        "received_payload_keys": received_payload_keys,
+        "sent_payload_keys": sent_payload_keys,
+        "sent_tensor_shapes": sent_tensor_shapes,
         "boundary_max_diff": boundary_max,
         "boundary_mean_diff": boundary_mean,
         "direct_max_diff": direct_max,
@@ -596,11 +738,24 @@ def run_text_hybrid_rank(
         "stage_mean_diff": stage_mean,
         "tp_direct_max_diff": tp_direct_max,
         "tp_direct_mean_diff": tp_direct_mean,
-        "next_leader_rank": rank_stage["next_leader_rank"],
-        "send_list": rank_stage["send_list"],
-        "recv_list": rank_stage["recv_list"],
-        "send_empty_list": rank_stage["send_empty_list"],
-        "recv_empty_list": rank_stage["recv_empty_list"],
+        "next_leader_rank": rank_stage.next_leader_rank,
+        "send_list": rank_stage.send_list,
+        "recv_list": rank_stage.recv_list,
+        "send_empty_list": rank_stage.send_empty_list,
+        "recv_empty_list": rank_stage.recv_empty_list,
         "traces": traces,
         "outlier_dump": outlier_dump,
     }
+
+
+__all__ = [
+    "TextHybridManifest",
+    "HybridRankContext",
+    "prepare_text_hybrid",
+    "load_hybrid_manifest",
+    "init_stage_groups",
+    "resolve_rank_stage",
+    "build_stage_traces",
+    "TextHybridRunner",
+    "run_text_hybrid_rank",
+]

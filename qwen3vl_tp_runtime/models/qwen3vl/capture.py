@@ -1,22 +1,24 @@
+"""Capture utilities that extract replayable Qwen3-VL bundles from the real model."""
+
 from pathlib import Path
 
 import torch
 from transformers.masking_utils import create_causal_mask
 
-from qwen3vl_tp_runtime.core.config import (
+from qwen3vl_tp_runtime.hexgen_core.config import (
     FRAME_DIR,
     FULL_LAYER_BUNDLE_PATH,
     LAYER_RANGE_BUNDLE_PATH,
     MODEL_PATH,
     TEXT_STAGE_BUNDLE_PATH,
 )
-from qwen3vl_tp_runtime.core.forward import (
+from qwen3vl_tp_runtime.models.qwen3vl.forward import (
     forward_decoder_layer,
     forward_layer_range,
     forward_text_stage,
 )
-from qwen3vl_tp_runtime.core.inputs import build_inputs, list_frames, load_model, load_processor
-from qwen3vl_tp_runtime.core.ops import build_causal_mask, cast_cpu, resolve_save_dtype
+from qwen3vl_tp_runtime.models.qwen3vl.inputs import build_inputs, list_frames, load_model, load_processor
+from qwen3vl_tp_runtime.models.qwen3vl.ops import build_causal_mask, cast_cpu, resolve_save_dtype
 
 
 def load_bundle(bundle_path: str = FULL_LAYER_BUNDLE_PATH):

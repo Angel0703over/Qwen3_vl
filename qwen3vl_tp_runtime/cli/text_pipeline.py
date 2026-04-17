@@ -1,3 +1,5 @@
+"""CLI for preparing and executing a plain sequential text pipeline prototype."""
+
 import argparse
 import sys
 from pathlib import Path
@@ -7,9 +9,11 @@ import torch.distributed as dist
 if __package__ is None or __package__ == "":
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from qwen3vl_tp_runtime.core.config import TEXT_PIPELINE_BUNDLE_DIR, TEXT_PIPELINE_MANIFEST_PATH
-from qwen3vl_tp_runtime.core.dist import get_device, init_dist
-from qwen3vl_tp_runtime.core.pipeline import (
+from qwen3vl_tp_runtime.hexgen_core import (
+    TEXT_PIPELINE_BUNDLE_DIR,
+    TEXT_PIPELINE_MANIFEST_PATH,
+    get_device,
+    init_dist,
     load_pipeline_manifest,
     parse_stage_ranges,
     prepare_text_pipeline,
@@ -29,19 +33,19 @@ def run_prepare(args):
 
     print(f"[prepare] manifest saved to {args.manifest_path}")
     print(
-        f"[prepare] num_stages={manifest['num_stages']} "
-        f"stage_ranges={manifest['stage_ranges']} save_dtype={manifest['save_dtype']}"
+        f"[prepare] num_stages={manifest.num_stages} "
+        f"stage_ranges={manifest.stage_ranges} save_dtype={manifest.save_dtype}"
     )
-    for stage_meta in manifest["stages"]:
+    for stage_meta in manifest.stages:
         print(
-            f"[prepare-stage] stage={stage_meta['stage_idx']} "
-            f"start_idx={stage_meta['start_idx']} end_idx={stage_meta['end_idx']} "
-            f"num_layers={stage_meta['num_layers']} bundle_path={stage_meta['bundle_path']}"
+            f"[prepare-stage] stage={stage_meta.stage_idx} "
+            f"start_idx={stage_meta.start_idx} end_idx={stage_meta.end_idx} "
+            f"num_layers={stage_meta.num_layers} bundle_path={stage_meta.bundle_path}"
         )
-    for boundary in manifest["boundaries"]:
+    for boundary in manifest.boundaries:
         print(
-            f"[prepare-boundary] src_stage={boundary['src_stage_idx']} dst_stage={boundary['dst_stage_idx']} "
-            f"max_diff={boundary['max_diff']} mean_diff={boundary['mean_diff']}"
+            f"[prepare-boundary] src_stage={boundary.src_stage_idx} dst_stage={boundary.dst_stage_idx} "
+            f"max_diff={boundary.max_diff} mean_diff={boundary.mean_diff}"
         )
 
 

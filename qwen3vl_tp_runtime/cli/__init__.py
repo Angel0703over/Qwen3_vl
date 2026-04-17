@@ -1,3 +1,5 @@
+"""CLI entrypoint exports for the prototype runtime workflows."""
+
 from qwen3vl_tp_runtime.cli.full_layer import main as full_layer_main
 from qwen3vl_tp_runtime.cli.layer_range import main as layer_range_main
 from qwen3vl_tp_runtime.cli.text_hybrid import main as text_hybrid_main

@@ -1,3 +1,5 @@
+"""CLI for preparing and replaying a single Qwen3-VL decoder layer under TP."""
+
 import argparse
 import sys
 from pathlib import Path
@@ -5,11 +7,16 @@ from pathlib import Path
 if __package__ is None or __package__ == "":
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from qwen3vl_tp_runtime.core.capture import capture_full_layer_bundle, load_bundle, move_bundle
-from qwen3vl_tp_runtime.core.config import FULL_LAYER_BUNDLE_PATH
-from qwen3vl_tp_runtime.core.forward import forward_decoder_layer, forward_decoder_layer_tp
-from qwen3vl_tp_runtime.core.dist import get_device, init_dist
-from qwen3vl_tp_runtime.core.ops import dtype_from_name, resolve_comm_dtype
+from qwen3vl_tp_runtime.hexgen_core import FULL_LAYER_BUNDLE_PATH, get_device, init_dist
+from qwen3vl_tp_runtime.models.qwen3vl import (
+    capture_full_layer_bundle,
+    dtype_from_name,
+    forward_decoder_layer,
+    forward_decoder_layer_tp,
+    load_bundle,
+    move_bundle,
+    resolve_comm_dtype,
+)
 
 
 def run_prepare(args):

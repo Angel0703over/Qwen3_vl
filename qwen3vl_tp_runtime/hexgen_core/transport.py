@@ -1,5 +1,9 @@
+"""Typed transport helpers for multi-tensor stage handoff and dummy communication."""
+
 import torch
 import torch.distributed as dist
+
+from qwen3vl_tp_runtime.hexgen_core.schema import PayloadSummary
 
 TensorPayload = dict[str, torch.Tensor | None]
 
@@ -85,16 +89,11 @@ def send_payload(
     payload: TensorPayload | None,
     dst: int,
     comm_dtype: torch.dtype,
-) -> dict:
+) -> PayloadSummary:
     # payload 为 None 表示“空通信占位”，用于和异构 PP 的 dummy send/recv 对齐。
     if payload is None:
         _send_scalar(1, dst)
-        return {
-            "is_empty": True,
-            "num_tensors": 0,
-            "payload_keys": [],
-            "tensor_shapes": {},
-        }
+        return PayloadSummary(is_empty=True, num_tensors=0, payload_keys=[], tensor_shapes={})
 
     _send_scalar(0, dst)
     items = list(payload.items())
@@ -116,12 +115,12 @@ def send_payload(
         dist.send(payload_cpu, dst=dst)
         tensor_shapes[name] = tuple(payload_cpu.shape)
 
-    return {
-        "is_empty": False,
-        "num_tensors": len(items),
-        "payload_keys": [name for name, _ in items],
-        "tensor_shapes": tensor_shapes,
-    }
+    return PayloadSummary(
+        is_empty=False,
+        num_tensors=len(items),
+        payload_keys=[name for name, _ in items],
+        tensor_shapes=tensor_shapes,
+    )
 
 
 def recv_payload(
@@ -162,7 +161,7 @@ def send_tensor(
 ) -> tuple[int, ...] | None:
     payload = None if tensor is None else {_SINGLE_TENSOR_KEY: tensor}
     summary = send_payload(payload, dst=dst, comm_dtype=comm_dtype)
-    return summary["tensor_shapes"].get(_SINGLE_TENSOR_KEY)
+    return summary.tensor_shapes.get(_SINGLE_TENSOR_KEY)
 
 
 def recv_tensor(
@@ -196,7 +195,7 @@ def send_hidden_states(
 ) -> tuple[int, ...] | None:
     payload = None if hidden_states is None else {_HIDDEN_STATES_KEY: hidden_states}
     summary = send_payload(payload, dst=dst, comm_dtype=comm_dtype)
-    return summary["tensor_shapes"].get(_HIDDEN_STATES_KEY)
+    return summary.tensor_shapes.get(_HIDDEN_STATES_KEY)
 
 
 def recv_hidden_states(
@@ -225,6 +224,7 @@ def recv_hidden_states(
 
 __all__ = [
     "TensorPayload",
+    "PayloadSummary",
     "send_payload",
     "recv_payload",
     "send_tensor",

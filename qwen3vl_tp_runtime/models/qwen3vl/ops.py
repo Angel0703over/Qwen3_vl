@@ -1,3 +1,5 @@
+"""Low-level tensor ops used by the Qwen3-VL replay and TP kernels."""
+
 import torch
 import torch.nn.functional as F
 

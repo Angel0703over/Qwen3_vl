@@ -1,3 +1,5 @@
+"""Small distributed runtime helpers for local prototype execution with gloo."""
+
 import os
 import socket
 

@@ -1,10 +1,12 @@
+"""Qwen3-VL text decoder forward and TP replay kernels."""
+
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 from transformers.activations import ACT2FN
 
-from qwen3vl_tp_runtime.core.dist import all_reduce_cpu
-from qwen3vl_tp_runtime.core.ops import apply_rope, attn_eager, rms_norm
+from qwen3vl_tp_runtime.hexgen_core.distributed import all_reduce_cpu
+from qwen3vl_tp_runtime.models.qwen3vl.ops import apply_rope, attn_eager, rms_norm
 
 
 def compose_layer_bundle(layer_bundle: dict, runtime_bundle: dict) -> dict:
