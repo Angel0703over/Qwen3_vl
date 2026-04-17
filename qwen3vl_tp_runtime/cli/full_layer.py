@@ -60,7 +60,15 @@ def run_tp(args):
     layer_input = bundle["layer_input"]
     reference_output = bundle["layer_output"]
     direct_output = forward_decoder_layer(layer_input, bundle)
-    tp_output = forward_decoder_layer_tp(layer_input, bundle, rank, world_size, comm_dtype)
+    tp_output = forward_decoder_layer_tp(
+        layer_input,
+        bundle,
+        rank,
+        world_size,
+        comm_dtype,
+        attn_math_mode=args.tp_attn_math,
+        mlp_math_mode=args.tp_mlp_math,
+    )
 
     direct_max = (direct_output - reference_output).abs().max().item()
     direct_mean = (direct_output - reference_output).abs().mean().item()
@@ -76,7 +84,8 @@ def run_tp(args):
         f"[config] rank={rank} device={device} world_size={world_size} layer={bundle['layer_idx']} "
         f"num_heads={bundle['num_attention_heads']} num_kv_heads={bundle['num_key_value_heads']} "
         f"local_q_heads={local_q_heads} local_kv_heads={local_kv_heads} head_dim={bundle['head_dim']} "
-        f"hidden_act={bundle['hidden_act']} attn_impl={bundle.get('attn_implementation', 'unknown')}"
+        f"hidden_act={bundle['hidden_act']} attn_impl={bundle.get('attn_implementation', 'unknown')} "
+        f"tp_attn_math={args.tp_attn_math} tp_mlp_math={args.tp_mlp_math}"
     )
     print(
         f"[config] layer_input_shape={tuple(layer_input.shape)} layer_output_shape={tuple(reference_output.shape)} "
@@ -109,6 +118,8 @@ def build_parser():
     tp_parser.add_argument("--device", choices=["cpu", "cuda"], default="cpu")
     tp_parser.add_argument("--compute-dtype", choices=["auto", "float32", "bfloat16"], default="auto")
     tp_parser.add_argument("--comm-dtype", choices=["auto", "float32", "bfloat16"], default="auto")
+    tp_parser.add_argument("--tp-attn-math", choices=["float32", "orig"], default="orig")
+    tp_parser.add_argument("--tp-mlp-math", choices=["float32", "orig"], default="float32")
     return parser
 
 

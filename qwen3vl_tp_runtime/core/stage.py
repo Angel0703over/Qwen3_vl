@@ -53,6 +53,8 @@ def run_stage_tp(
     comm_dtype: torch.dtype,
     tp_group=None,
     tp_src_rank: int = 0,
+    tp_attn_math_mode: str = "orig",
+    tp_mlp_math_mode: str = "float32",
 ) -> torch.Tensor:
     stage_type = get_stage_type(stage_bundle)
     if stage_type == "text":
@@ -64,6 +66,8 @@ def run_stage_tp(
             comm_dtype,
             tp_group=tp_group,
             tp_src_rank=tp_src_rank,
+            attn_math_mode=tp_attn_math_mode,
+            mlp_math_mode=tp_mlp_math_mode,
         )
     raise NotImplementedError(f"暂不支持的 stage_type: {stage_type}")
 
@@ -83,6 +87,8 @@ def trace_stage_tp(
     comm_dtype: torch.dtype,
     tp_group=None,
     tp_src_rank: int = 0,
+    tp_attn_math_mode: str = "orig",
+    tp_mlp_math_mode: str = "float32",
 ):
     stage_type = get_stage_type(stage_bundle)
     if stage_type == "text":
@@ -94,5 +100,7 @@ def trace_stage_tp(
             comm_dtype,
             tp_group=tp_group,
             tp_src_rank=tp_src_rank,
+            attn_math_mode=tp_attn_math_mode,
+            mlp_math_mode=tp_mlp_math_mode,
         )
     raise NotImplementedError(f"暂不支持的 stage_type: {stage_type}")

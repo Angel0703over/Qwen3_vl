@@ -40,11 +40,14 @@ def get_deepstack_embeds(stage_bundle: dict, layer_idx: int) -> torch.Tensor | N
     return deepstack_by_layer.get(layer_idx)
 
 
-def _resolve_tp_math_dtype(hidden_states: torch.Tensor) -> tuple[torch.dtype, torch.dtype]:
+def _resolve_tp_math_dtype(hidden_states: torch.Tensor, math_mode: str) -> tuple[torch.dtype, torch.dtype]:
     orig_dtype = hidden_states.dtype
-    math_dtype = torch.float32 if orig_dtype in (torch.float16, torch.bfloat16) else orig_dtype
-    wire_dtype = torch.float32 if math_dtype == torch.float32 else orig_dtype
-    return orig_dtype, math_dtype if math_dtype is not None else orig_dtype, wire_dtype
+    if math_mode == "orig":
+        return orig_dtype, orig_dtype
+    if math_mode == "float32":
+        math_dtype = torch.float32 if orig_dtype in (torch.float16, torch.bfloat16) else orig_dtype
+        return orig_dtype, math_dtype
+    raise ValueError(f"不支持的 TP math_mode: {math_mode!r}")
 
 
 def _cast_optional_tensor(
@@ -97,11 +100,12 @@ def forward_attention_tp(
     comm_dtype: torch.dtype,
     tp_group=None,
     tp_src_rank: int = 0,
+    math_mode: str = "orig",
 ) -> torch.Tensor:
     num_heads = bundle["num_attention_heads"]
     num_kv_heads = bundle["num_key_value_heads"]
     head_dim = bundle["head_dim"]
-    orig_dtype, math_dtype, wire_dtype = _resolve_tp_math_dtype(hidden_states)
+    orig_dtype, math_dtype = _resolve_tp_math_dtype(hidden_states, math_mode)
     device = hidden_states.device
 
     if num_heads % world_size != 0 or num_kv_heads % world_size != 0:
@@ -185,12 +189,12 @@ def forward_attention_tp(
         local_o,
         device,
         math_dtype,
-        wire_dtype,
+        comm_dtype,
         group=tp_group,
     )
-    reduced_cpu = reduced.detach().to("cpu", dtype=wire_dtype)
+    reduced_cpu = reduced.detach().to("cpu", dtype=comm_dtype)
     if rank == 0 and bundle["o_bias"] is not None:
-        reduced_cpu = reduced_cpu + bundle["o_bias"].to("cpu", dtype=wire_dtype)
+        reduced_cpu = reduced_cpu + bundle["o_bias"].to("cpu", dtype=comm_dtype)
     dist.broadcast(reduced_cpu, src=tp_src_rank, group=tp_group)
     return reduced_cpu.to(device=device, dtype=orig_dtype)
 
@@ -225,9 +229,10 @@ def trace_mlp_tp(
     comm_dtype: torch.dtype,
     tp_group=None,
     tp_src_rank: int = 0,
+    math_mode: str = "float32",
 ) -> dict:
     intermediate_size = bundle["gate_weight"].shape[0]
-    orig_dtype, math_dtype, wire_dtype = _resolve_tp_math_dtype(hidden_states)
+    orig_dtype, math_dtype = _resolve_tp_math_dtype(hidden_states, math_mode)
     device = hidden_states.device
     if intermediate_size % world_size != 0:
         raise ValueError("当前 TP MLP 要求 intermediate_size 能被 world_size 整除。")
@@ -260,12 +265,12 @@ def trace_mlp_tp(
         local_down,
         device,
         math_dtype,
-        wire_dtype,
+        comm_dtype,
         group=tp_group,
     )
-    reduced_cpu = reduced.detach().to("cpu", dtype=wire_dtype)
+    reduced_cpu = reduced.detach().to("cpu", dtype=comm_dtype)
     if rank == 0 and bundle["down_bias"] is not None:
-        reduced_cpu = reduced_cpu + bundle["down_bias"].to("cpu", dtype=wire_dtype)
+        reduced_cpu = reduced_cpu + bundle["down_bias"].to("cpu", dtype=comm_dtype)
     dist.broadcast(reduced_cpu, src=tp_src_rank, group=tp_group)
     mlp_output = reduced_cpu.to(device=device, dtype=orig_dtype)
 
@@ -285,9 +290,10 @@ def forward_mlp_tp(
     comm_dtype: torch.dtype,
     tp_group=None,
     tp_src_rank: int = 0,
+    math_mode: str = "float32",
 ) -> torch.Tensor:
     intermediate_size = bundle["gate_weight"].shape[0]
-    orig_dtype, math_dtype, wire_dtype = _resolve_tp_math_dtype(hidden_states)
+    orig_dtype, math_dtype = _resolve_tp_math_dtype(hidden_states, math_mode)
     device = hidden_states.device
     if intermediate_size % world_size != 0:
         raise ValueError("当前 TP MLP 要求 intermediate_size 能被 world_size 整除。")
@@ -332,12 +338,12 @@ def forward_mlp_tp(
         local_down,
         device,
         math_dtype,
-        wire_dtype,
+        comm_dtype,
         group=tp_group,
     )
-    reduced_cpu = reduced.detach().to("cpu", dtype=wire_dtype)
+    reduced_cpu = reduced.detach().to("cpu", dtype=comm_dtype)
     if rank == 0 and bundle["down_bias"] is not None:
-        reduced_cpu = reduced_cpu + bundle["down_bias"].to("cpu", dtype=wire_dtype)
+        reduced_cpu = reduced_cpu + bundle["down_bias"].to("cpu", dtype=comm_dtype)
     dist.broadcast(reduced_cpu, src=tp_src_rank, group=tp_group)
     return reduced_cpu.to(device=device, dtype=orig_dtype)
 
@@ -385,6 +391,8 @@ def forward_decoder_layer_tp(
     comm_dtype: torch.dtype,
     tp_group=None,
     tp_src_rank: int = 0,
+    attn_math_mode: str = "orig",
+    mlp_math_mode: str = "float32",
 ) -> torch.Tensor:
     attn_input = rms_norm(layer_input, bundle["input_ln_weight"], bundle["input_ln_eps"])
     attn_output = forward_attention_tp(
@@ -395,6 +403,7 @@ def forward_decoder_layer_tp(
         comm_dtype,
         tp_group=tp_group,
         tp_src_rank=tp_src_rank,
+        math_mode=attn_math_mode,
     )
     after_attn = layer_input + attn_output
 
@@ -407,6 +416,7 @@ def forward_decoder_layer_tp(
         comm_dtype,
         tp_group=tp_group,
         tp_src_rank=tp_src_rank,
+        math_mode=mlp_math_mode,
     )
     return after_attn + mlp_output
 
@@ -419,6 +429,8 @@ def trace_decoder_layer_tp(
     comm_dtype: torch.dtype,
     tp_group=None,
     tp_src_rank: int = 0,
+    attn_math_mode: str = "orig",
+    mlp_math_mode: str = "float32",
 ) -> dict:
     attn_input = rms_norm(layer_input, bundle["input_ln_weight"], bundle["input_ln_eps"])
     attn_output = forward_attention_tp(
@@ -429,6 +441,7 @@ def trace_decoder_layer_tp(
         comm_dtype,
         tp_group=tp_group,
         tp_src_rank=tp_src_rank,
+        math_mode=attn_math_mode,
     )
     after_attn = layer_input + attn_output
 
@@ -441,6 +454,7 @@ def trace_decoder_layer_tp(
         comm_dtype,
         tp_group=tp_group,
         tp_src_rank=tp_src_rank,
+        math_mode=mlp_math_mode,
     )
     mlp_output = mlp_trace["mlp_output"]
     layer_output = after_attn + mlp_output
@@ -475,6 +489,8 @@ def forward_layer_range_tp(
     comm_dtype: torch.dtype,
     tp_group=None,
     tp_src_rank: int = 0,
+    attn_math_mode: str = "orig",
+    mlp_math_mode: str = "float32",
 ) -> torch.Tensor:
     output = hidden_states
     for layer_bundle in range_bundle["layers"]:
@@ -487,6 +503,8 @@ def forward_layer_range_tp(
             comm_dtype,
             tp_group=tp_group,
             tp_src_rank=tp_src_rank,
+            attn_math_mode=attn_math_mode,
+            mlp_math_mode=mlp_math_mode,
         )
     return output
 
@@ -513,6 +531,8 @@ def forward_text_stage_tp(
     comm_dtype: torch.dtype,
     tp_group=None,
     tp_src_rank: int = 0,
+    attn_math_mode: str = "orig",
+    mlp_math_mode: str = "float32",
 ) -> torch.Tensor:
     output = hidden_states
     visual_pos_masks = stage_bundle.get("visual_pos_masks")
@@ -529,6 +549,8 @@ def forward_text_stage_tp(
             comm_dtype,
             tp_group=tp_group,
             tp_src_rank=tp_src_rank,
+            attn_math_mode=attn_math_mode,
+            mlp_math_mode=mlp_math_mode,
         )
         output = apply_deepstack(output, visual_pos_masks, get_deepstack_embeds(stage_bundle, layer_idx))
 
@@ -565,6 +587,8 @@ def trace_text_stage_tp(
     comm_dtype: torch.dtype,
     tp_group=None,
     tp_src_rank: int = 0,
+    attn_math_mode: str = "orig",
+    mlp_math_mode: str = "float32",
 ) -> list[dict]:
     traces = []
     output = hidden_states
@@ -583,6 +607,8 @@ def trace_text_stage_tp(
             comm_dtype,
             tp_group=tp_group,
             tp_src_rank=tp_src_rank,
+            attn_math_mode=attn_math_mode,
+            mlp_math_mode=mlp_math_mode,
         )
         post_deepstack = apply_deepstack(layer_trace["layer_output"], visual_pos_masks, deepstack_embeds)
         layer_trace["layer_idx"] = layer_idx

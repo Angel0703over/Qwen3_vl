@@ -121,6 +121,7 @@ def _build_tensor_outliers(
     lhs: torch.Tensor,
     rhs: torch.Tensor,
     topk: int,
+    last_dim_offset: int = 0,
 ) -> list[dict]:
     diff = (lhs - rhs).abs().reshape(-1).to(torch.float32)
     if diff.numel() == 0:
@@ -134,9 +135,12 @@ def _build_tensor_outliers(
 
     outliers = []
     for value, flat_idx in zip(values.tolist(), flat_indices.tolist()):
+        index = _flat_index_to_tuple(flat_idx, shape)
+        if last_dim_offset and index:
+            index = (*index[:-1], index[-1] + last_dim_offset)
         outliers.append(
             {
-                "index": _flat_index_to_tuple(flat_idx, shape),
+                "index": index,
                 "lhs": lhs_flat[flat_idx].item(),
                 "rhs": rhs_flat[flat_idx].item(),
                 "abs_diff": value,
@@ -145,10 +149,91 @@ def _build_tensor_outliers(
     return outliers
 
 
+def _align_tp_trace_pair(
+    tp_tensor: torch.Tensor,
+    direct_tensor: torch.Tensor,
+    *,
+    local_rank: int,
+    tp_degree: int,
+) -> tuple[torch.Tensor, torch.Tensor, int]:
+    if tp_tensor.shape == direct_tensor.shape:
+        return tp_tensor, direct_tensor, 0
+
+    if tp_tensor.dim() != direct_tensor.dim():
+        raise ValueError(
+            "TP trace tensor 维度和 direct trace tensor 不一致，"
+            f"tp_shape={tuple(tp_tensor.shape)} direct_shape={tuple(direct_tensor.shape)}"
+        )
+    if tp_tensor.shape[:-1] != direct_tensor.shape[:-1]:
+        raise ValueError(
+            "TP trace tensor 和 direct trace tensor 的前置维度不一致，"
+            f"tp_shape={tuple(tp_tensor.shape)} direct_shape={tuple(direct_tensor.shape)}"
+        )
+    if tp_degree <= 0:
+        raise ValueError(f"tp_degree 必须是正整数，当前拿到 {tp_degree}。")
+    if direct_tensor.shape[-1] % tp_degree != 0:
+        raise ValueError(
+            "direct trace tensor 的最后一维不能按 TP 度数整除，"
+            f"direct_shape={tuple(direct_tensor.shape)} tp_degree={tp_degree}"
+        )
+
+    shard = direct_tensor.shape[-1] // tp_degree
+    if tp_tensor.shape[-1] != shard:
+        raise ValueError(
+            "TP trace tensor 的最后一维和按 TP 切分后的 shard 大小不一致，"
+            f"tp_shape={tuple(tp_tensor.shape)} direct_shape={tuple(direct_tensor.shape)} "
+            f"tp_degree={tp_degree}"
+        )
+
+    start = local_rank * shard
+    end = start + shard
+    return tp_tensor, direct_tensor[..., start:end], start
+
+
+def _tp_vs_direct_stats(
+    tp_tensor: torch.Tensor,
+    direct_tensor: torch.Tensor,
+    *,
+    local_rank: int,
+    tp_degree: int,
+) -> tuple[float, float]:
+    aligned_tp, aligned_direct, _ = _align_tp_trace_pair(
+        tp_tensor,
+        direct_tensor,
+        local_rank=local_rank,
+        tp_degree=tp_degree,
+    )
+    return tensor_diff_stats(aligned_tp, aligned_direct)
+
+
+def _tp_vs_direct_outliers(
+    tp_tensor: torch.Tensor,
+    direct_tensor: torch.Tensor,
+    *,
+    local_rank: int,
+    tp_degree: int,
+    topk: int,
+) -> list[dict]:
+    aligned_tp, aligned_direct, last_dim_offset = _align_tp_trace_pair(
+        tp_tensor,
+        direct_tensor,
+        local_rank=local_rank,
+        tp_degree=tp_degree,
+    )
+    return _build_tensor_outliers(
+        aligned_tp,
+        aligned_direct,
+        topk,
+        last_dim_offset=last_dim_offset,
+    )
+
+
 def _build_layer_outlier_dump(
     reference_trace: dict,
     direct_trace: dict,
     tp_trace: dict,
+    local_rank: int,
+    tp_degree: int,
     topk: int,
 ) -> dict:
     return {
@@ -164,13 +249,55 @@ def _build_layer_outlier_dump(
             "layer_output": _build_tensor_outliers(direct_trace["layer_output"], reference_trace["layer_output"], topk),
         },
         "tp_vs_direct": {
-            "layer_input": _build_tensor_outliers(tp_trace["layer_input"], direct_trace["layer_input"], topk),
-            "attn_output": _build_tensor_outliers(tp_trace["attn_output"], direct_trace["attn_output"], topk),
-            "gate_out": _build_tensor_outliers(tp_trace["gate_out"], direct_trace["gate_out"], topk),
-            "up_out": _build_tensor_outliers(tp_trace["up_out"], direct_trace["up_out"], topk),
-            "fused": _build_tensor_outliers(tp_trace["fused"], direct_trace["fused"], topk),
-            "mlp_output": _build_tensor_outliers(tp_trace["mlp_output"], direct_trace["mlp_output"], topk),
-            "layer_output": _build_tensor_outliers(tp_trace["layer_output"], direct_trace["layer_output"], topk),
+            "layer_input": _tp_vs_direct_outliers(
+                tp_trace["layer_input"],
+                direct_trace["layer_input"],
+                local_rank=local_rank,
+                tp_degree=tp_degree,
+                topk=topk,
+            ),
+            "attn_output": _tp_vs_direct_outliers(
+                tp_trace["attn_output"],
+                direct_trace["attn_output"],
+                local_rank=local_rank,
+                tp_degree=tp_degree,
+                topk=topk,
+            ),
+            "gate_out": _tp_vs_direct_outliers(
+                tp_trace["gate_out"],
+                direct_trace["gate_out"],
+                local_rank=local_rank,
+                tp_degree=tp_degree,
+                topk=topk,
+            ),
+            "up_out": _tp_vs_direct_outliers(
+                tp_trace["up_out"],
+                direct_trace["up_out"],
+                local_rank=local_rank,
+                tp_degree=tp_degree,
+                topk=topk,
+            ),
+            "fused": _tp_vs_direct_outliers(
+                tp_trace["fused"],
+                direct_trace["fused"],
+                local_rank=local_rank,
+                tp_degree=tp_degree,
+                topk=topk,
+            ),
+            "mlp_output": _tp_vs_direct_outliers(
+                tp_trace["mlp_output"],
+                direct_trace["mlp_output"],
+                local_rank=local_rank,
+                tp_degree=tp_degree,
+                topk=topk,
+            ),
+            "layer_output": _tp_vs_direct_outliers(
+                tp_trace["layer_output"],
+                direct_trace["layer_output"],
+                local_rank=local_rank,
+                tp_degree=tp_degree,
+                topk=topk,
+            ),
         },
     }
 
@@ -184,6 +311,8 @@ def build_stage_traces(
     comm_dtype: torch.dtype,
     tp_group,
     leader_rank: int,
+    tp_attn_math_mode: str = "orig",
+    tp_mlp_math_mode: str = "float32",
     dump_layer: int | None = None,
     dump_topk: int = 5,
 ) -> tuple[list[dict], dict | None]:
@@ -197,6 +326,8 @@ def build_stage_traces(
         comm_dtype=comm_dtype,
         tp_group=tp_group,
         tp_src_rank=leader_rank,
+        tp_attn_math_mode=tp_attn_math_mode,
+        tp_mlp_math_mode=tp_mlp_math_mode,
     )
 
     traces = []
@@ -221,16 +352,53 @@ def build_stage_traces(
                     ),
                 },
                 "tp_vs_direct": {
-                    "layer_input": tensor_diff_stats(tp_trace["layer_input"], direct_trace["layer_input"]),
-                    "attn_output": tensor_diff_stats(tp_trace["attn_output"], direct_trace["attn_output"]),
-                    "gate_out": tensor_diff_stats(tp_trace["gate_out"], direct_trace["gate_out"]),
-                    "up_out": tensor_diff_stats(tp_trace["up_out"], direct_trace["up_out"]),
-                    "fused": tensor_diff_stats(tp_trace["fused"], direct_trace["fused"]),
-                    "mlp_output": tensor_diff_stats(tp_trace["mlp_output"], direct_trace["mlp_output"]),
-                    "layer_output": tensor_diff_stats(tp_trace["layer_output"], direct_trace["layer_output"]),
-                    "post_deepstack": tensor_diff_stats(
+                    "layer_input": _tp_vs_direct_stats(
+                        tp_trace["layer_input"],
+                        direct_trace["layer_input"],
+                        local_rank=local_rank,
+                        tp_degree=tp_degree,
+                    ),
+                    "attn_output": _tp_vs_direct_stats(
+                        tp_trace["attn_output"],
+                        direct_trace["attn_output"],
+                        local_rank=local_rank,
+                        tp_degree=tp_degree,
+                    ),
+                    "gate_out": _tp_vs_direct_stats(
+                        tp_trace["gate_out"],
+                        direct_trace["gate_out"],
+                        local_rank=local_rank,
+                        tp_degree=tp_degree,
+                    ),
+                    "up_out": _tp_vs_direct_stats(
+                        tp_trace["up_out"],
+                        direct_trace["up_out"],
+                        local_rank=local_rank,
+                        tp_degree=tp_degree,
+                    ),
+                    "fused": _tp_vs_direct_stats(
+                        tp_trace["fused"],
+                        direct_trace["fused"],
+                        local_rank=local_rank,
+                        tp_degree=tp_degree,
+                    ),
+                    "mlp_output": _tp_vs_direct_stats(
+                        tp_trace["mlp_output"],
+                        direct_trace["mlp_output"],
+                        local_rank=local_rank,
+                        tp_degree=tp_degree,
+                    ),
+                    "layer_output": _tp_vs_direct_stats(
+                        tp_trace["layer_output"],
+                        direct_trace["layer_output"],
+                        local_rank=local_rank,
+                        tp_degree=tp_degree,
+                    ),
+                    "post_deepstack": _tp_vs_direct_stats(
                         tp_trace["post_deepstack"],
                         direct_trace["post_deepstack"],
+                        local_rank=local_rank,
+                        tp_degree=tp_degree,
                     ),
                 },
             }
@@ -240,6 +408,8 @@ def build_stage_traces(
                 reference_trace=reference_trace,
                 direct_trace=direct_trace,
                 tp_trace=tp_trace,
+                local_rank=local_rank,
+                tp_degree=tp_degree,
                 topk=dump_topk,
             )
     return traces, outlier_dump
@@ -253,6 +423,8 @@ def run_text_hybrid_rank(
     device: torch.device,
     compute_dtype_arg: str,
     comm_dtype_arg: str,
+    tp_attn_math_mode: str = "orig",
+    tp_mlp_math_mode: str = "float32",
     compare_direct: bool = False,
     trace_layers: bool = False,
     dump_layer: int | None = None,
@@ -312,6 +484,8 @@ def run_text_hybrid_rank(
         comm_dtype=comm_dtype,
         tp_group=rank_stage["stage_group"],
         tp_src_rank=rank_stage["leader_rank"],
+        tp_attn_math_mode=tp_attn_math_mode,
+        tp_mlp_math_mode=tp_mlp_math_mode,
     )
     stage_max, stage_mean = tensor_diff_stats(stage_output, reference_output)
     if direct_output is not None:
@@ -333,6 +507,8 @@ def run_text_hybrid_rank(
             comm_dtype=comm_dtype,
             tp_group=rank_stage["stage_group"],
             leader_rank=rank_stage["leader_rank"],
+            tp_attn_math_mode=tp_attn_math_mode,
+            tp_mlp_math_mode=tp_mlp_math_mode,
             dump_layer=dump_layer,
             dump_topk=dump_topk,
         )
@@ -350,6 +526,8 @@ def run_text_hybrid_rank(
         "num_layers": len(bundle["layers"]),
         "device": str(device),
         "comm_dtype": str(comm_dtype),
+        "tp_attn_math_mode": tp_attn_math_mode,
+        "tp_mlp_math_mode": tp_mlp_math_mode,
         "input_shape": tuple(stage_input.shape),
         "output_shape": tuple(stage_output.shape),
         "sent_shape": sent_shape,

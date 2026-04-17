@@ -60,14 +60,22 @@ def format_diff(name, lhs, rhs):
     return f"{name} max_diff={max_diff} mean_diff={mean_diff}"
 
 
-def print_layer_trace(bundle, rank, world_size, comm_dtype):
+def print_layer_trace(bundle, rank, world_size, comm_dtype, tp_attn_math, tp_mlp_math):
     direct_hidden = bundle["layer_input"]
     tp_hidden = bundle["layer_input"]
 
     for layer_bundle in bundle["layers"]:
         runtime_bundle = compose_layer_bundle(layer_bundle, bundle)
         direct_trace = trace_decoder_layer(direct_hidden, runtime_bundle)
-        tp_trace = trace_decoder_layer_tp(tp_hidden, runtime_bundle, rank, world_size, comm_dtype)
+        tp_trace = trace_decoder_layer_tp(
+            tp_hidden,
+            runtime_bundle,
+            rank,
+            world_size,
+            comm_dtype,
+            attn_math_mode=tp_attn_math,
+            mlp_math_mode=tp_mlp_math,
+        )
         layer_idx = layer_bundle["layer_idx"]
 
         print(
@@ -101,7 +109,15 @@ def run_tp(args):
     layer_input = bundle["layer_input"]
     reference_output = bundle["layer_output"]
     direct_output = forward_layer_range(layer_input, bundle)
-    tp_output = forward_layer_range_tp(layer_input, bundle, rank, world_size, comm_dtype)
+    tp_output = forward_layer_range_tp(
+        layer_input,
+        bundle,
+        rank,
+        world_size,
+        comm_dtype,
+        attn_math_mode=args.tp_attn_math,
+        mlp_math_mode=args.tp_mlp_math,
+    )
 
     direct_max = (direct_output - reference_output).abs().max().item()
     direct_mean = (direct_output - reference_output).abs().mean().item()
@@ -120,7 +136,8 @@ def run_tp(args):
         f"num_heads={first_layer['num_attention_heads']} num_kv_heads={first_layer['num_key_value_heads']} "
         f"local_q_heads={local_q_heads} local_kv_heads={local_kv_heads} "
         f"head_dim={first_layer['head_dim']} hidden_act={first_layer['hidden_act']} "
-        f"attn_impl={first_layer.get('attn_implementation', 'unknown')}"
+        f"attn_impl={first_layer.get('attn_implementation', 'unknown')} "
+        f"tp_attn_math={args.tp_attn_math} tp_mlp_math={args.tp_mlp_math}"
     )
     print(
         f"[config] layer_input_shape={tuple(layer_input.shape)} layer_output_shape={tuple(reference_output.shape)} "
@@ -137,7 +154,7 @@ def run_tp(args):
         f"mean_diff={tp_ref_mean} tp_vs_direct max_diff={tp_direct_max} mean_diff={tp_direct_mean}"
     )
     if args.trace_layers:
-        print_layer_trace(bundle, rank, world_size, comm_dtype)
+        print_layer_trace(bundle, rank, world_size, comm_dtype, args.tp_attn_math, args.tp_mlp_math)
 
 
 def build_parser():
@@ -156,6 +173,8 @@ def build_parser():
     tp_parser.add_argument("--device", choices=["cpu", "cuda"], default="cpu")
     tp_parser.add_argument("--compute-dtype", choices=["auto", "float32", "bfloat16"], default="auto")
     tp_parser.add_argument("--comm-dtype", choices=["auto", "float32", "bfloat16"], default="auto")
+    tp_parser.add_argument("--tp-attn-math", choices=["float32", "orig"], default="orig")
+    tp_parser.add_argument("--tp-mlp-math", choices=["float32", "orig"], default="float32")
     tp_parser.add_argument("--trace-layers", action="store_true")
     return parser
 

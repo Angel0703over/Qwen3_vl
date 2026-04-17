@@ -62,10 +62,18 @@ def format_diff(name, lhs, rhs):
     return f"{name} max_diff={max_diff} mean_diff={mean_diff}"
 
 
-def print_stage_trace(bundle, rank, world_size, comm_dtype):
+def print_stage_trace(bundle, rank, world_size, comm_dtype, tp_attn_math, tp_mlp_math):
     stage_input = get_stage_input(bundle)
     direct_traces = trace_stage(stage_input, bundle)
-    tp_traces = trace_stage_tp(stage_input, bundle, rank, world_size, comm_dtype)
+    tp_traces = trace_stage_tp(
+        stage_input,
+        bundle,
+        rank,
+        world_size,
+        comm_dtype,
+        tp_attn_math_mode=tp_attn_math,
+        tp_mlp_math_mode=tp_mlp_math,
+    )
 
     for direct_trace, tp_trace in zip(direct_traces, tp_traces):
         layer_idx = direct_trace["layer_idx"]
@@ -94,7 +102,15 @@ def run_tp(args):
     layer_input = get_stage_input(bundle)
     reference_output = get_stage_output(bundle)
     direct_output = run_stage(layer_input, bundle)
-    tp_output = run_stage_tp(layer_input, bundle, rank, world_size, comm_dtype)
+    tp_output = run_stage_tp(
+        layer_input,
+        bundle,
+        rank,
+        world_size,
+        comm_dtype,
+        tp_attn_math_mode=args.tp_attn_math,
+        tp_mlp_math_mode=args.tp_mlp_math,
+    )
 
     direct_max = (direct_output - reference_output).abs().max().item()
     direct_mean = (direct_output - reference_output).abs().mean().item()
@@ -114,7 +130,8 @@ def run_tp(args):
         f"local_q_heads={local_q_heads} local_kv_heads={local_kv_heads} "
         f"head_dim={first_layer['head_dim']} hidden_act={first_layer['hidden_act']} "
         f"attn_impl={first_layer.get('attn_implementation', 'unknown')} "
-        f"deepstack_layer_indices={bundle['deepstack_layer_indices']}"
+        f"deepstack_layer_indices={bundle['deepstack_layer_indices']} "
+        f"tp_attn_math={args.tp_attn_math} tp_mlp_math={args.tp_mlp_math}"
     )
     print(
         f"[config] layer_input_shape={tuple(layer_input.shape)} layer_output_shape={tuple(reference_output.shape)} "
@@ -131,7 +148,7 @@ def run_tp(args):
         f"mean_diff={tp_ref_mean} tp_vs_direct max_diff={tp_direct_max} mean_diff={tp_direct_mean}"
     )
     if args.trace_layers:
-        print_stage_trace(bundle, rank, world_size, comm_dtype)
+        print_stage_trace(bundle, rank, world_size, comm_dtype, args.tp_attn_math, args.tp_mlp_math)
 
 
 def build_parser():
@@ -150,6 +167,8 @@ def build_parser():
     tp_parser.add_argument("--device", choices=["cpu", "cuda"], default="cpu")
     tp_parser.add_argument("--compute-dtype", choices=["auto", "float32", "bfloat16"], default="auto")
     tp_parser.add_argument("--comm-dtype", choices=["auto", "float32", "bfloat16"], default="auto")
+    tp_parser.add_argument("--tp-attn-math", choices=["float32", "orig"], default="orig")
+    tp_parser.add_argument("--tp-mlp-math", choices=["float32", "orig"], default="float32")
     tp_parser.add_argument("--trace-layers", action="store_true")
     return parser
 

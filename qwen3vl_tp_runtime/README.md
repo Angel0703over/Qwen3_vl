@@ -137,3 +137,10 @@ MASTER_ADDR=127.0.0.1 MASTER_PORT=29621 WORLD_SIZE=4 RANK=0 \
   --device cuda \
   --comm-dtype float32
 ```
+
+当前 hybrid / TP 原型默认采用：
+
+- `tp_attn_math=orig`
+- `tp_mlp_math=float32`
+
+这是当前实验里 stage0 对齐效果最好的默认组合；如果需要做数值对照，可以在各个 `tp` / `run` 入口上显式覆盖 `--tp-attn-math` 和 `--tp-mlp-math`。

@@ -114,6 +114,8 @@ def run_hybrid(args):
         device=device,
         compute_dtype_arg=args.compute_dtype,
         comm_dtype_arg=args.comm_dtype,
+        tp_attn_math_mode=args.tp_attn_math,
+        tp_mlp_math_mode=args.tp_mlp_math,
         compare_direct=args.compare_direct or args.trace_layers or args.dump_layer is not None,
         trace_layers=args.trace_layers,
         dump_layer=args.dump_layer,
@@ -125,7 +127,8 @@ def run_hybrid(args):
         f"stage={stats['stage_idx']}/{stats['num_stages'] - 1} stage_ranks={stats['stage_ranks']} "
         f"local_rank={stats['local_rank']} tp_degree={stats['tp_degree']} "
         f"start_idx={stats['start_idx']} end_idx={stats['end_idx']} "
-        f"num_layers={stats['num_layers']} comm_dtype={stats['comm_dtype']}"
+        f"num_layers={stats['num_layers']} comm_dtype={stats['comm_dtype']} "
+        f"tp_attn_math={stats['tp_attn_math_mode']} tp_mlp_math={stats['tp_mlp_math_mode']}"
     )
     print(
         f"[boundary] rank={stats['rank']} input_shape={stats['input_shape']} "
@@ -175,6 +178,18 @@ def build_parser():
     run_parser.add_argument("--device", choices=["cpu", "cuda"], default="cpu")
     run_parser.add_argument("--compute-dtype", choices=["auto", "float32", "bfloat16"], default="auto")
     run_parser.add_argument("--comm-dtype", choices=["auto", "float32", "bfloat16"], default="auto")
+    run_parser.add_argument(
+        "--tp-attn-math",
+        choices=["float32", "orig"],
+        default="orig",
+        help="TP attention 本地数学计算使用的 dtype 策略。",
+    )
+    run_parser.add_argument(
+        "--tp-mlp-math",
+        choices=["float32", "orig"],
+        default="float32",
+        help="TP MLP 本地数学计算使用的 dtype 策略。",
+    )
     run_parser.add_argument("--compare-direct", action="store_true")
     run_parser.add_argument("--trace-layers", action="store_true")
     run_parser.add_argument("--dump-layer", type=int, default=None)
