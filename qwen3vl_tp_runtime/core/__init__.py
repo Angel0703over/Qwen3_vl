@@ -65,8 +65,10 @@ from qwen3vl_tp_runtime.core.stage import (
     trace_stage_tp,
 )
 from qwen3vl_tp_runtime.core.transport import (
+    recv_payload,
     recv_hidden_states,
     recv_tensor,
+    send_payload,
     send_hidden_states,
     send_tensor,
 )
@@ -83,6 +85,8 @@ from qwen3vl_tp_runtime.core.pipeline import (
 )
 from qwen3vl_tp_runtime.core.hybrid import (
     build_hybrid_layout,
+    build_p2p_lists,
+    build_pp_rank_groups,
     build_stage_rank_groups,
     init_stage_groups,
     load_hybrid_manifest,
@@ -156,6 +160,8 @@ __all__ = [
     "run_stage_tp",
     "trace_stage",
     "trace_stage_tp",
+    "send_payload",
+    "recv_payload",
     "send_tensor",
     "recv_tensor",
     "send_hidden_states",
@@ -171,6 +177,8 @@ __all__ = [
     "run_text_pipeline_rank",
     "parse_tp_degrees",
     "build_stage_rank_groups",
+    "build_pp_rank_groups",
+    "build_p2p_lists",
     "build_hybrid_layout",
     "prepare_text_hybrid",
     "load_hybrid_manifest",

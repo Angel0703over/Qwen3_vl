@@ -1,6 +1,13 @@
 import torch
 import torch.distributed as dist
 
+from qwen3vl_tp_runtime.hexgen_core.gen_hetero_groups import (
+    build_hybrid_layout,
+    build_p2p_lists,
+    build_pp_rank_groups,
+    build_stage_rank_groups,
+    parse_tp_degrees,
+)
 from qwen3vl_tp_runtime.core.dist import broadcast_cpu
 from qwen3vl_tp_runtime.core.pipeline import (
     load_pipeline_manifest,
@@ -20,33 +27,16 @@ from qwen3vl_tp_runtime.core.stage import (
 from qwen3vl_tp_runtime.core.transport import recv_hidden_states, send_hidden_states
 
 
-def parse_tp_degrees(values: list[int]) -> list[int]:
-    if not values:
-        raise ValueError("至少要提供一个 TP 度数。")
-    tp_degrees = [int(value) for value in values]
-    if any(value <= 0 for value in tp_degrees):
-        raise ValueError(f"TP 度数必须是正整数，当前拿到 {tp_degrees!r}。")
-    return tp_degrees
-
-
-def build_stage_rank_groups(tp_degrees: list[int]) -> list[list[int]]:
-    stage_rank_groups = []
-    rank_cursor = 0
-    for tp_degree in tp_degrees:
-        ranks = list(range(rank_cursor, rank_cursor + tp_degree))
-        stage_rank_groups.append(ranks)
-        rank_cursor += tp_degree
-    return stage_rank_groups
-
-
-def build_hybrid_layout(tp_degrees: list[int]) -> dict:
-    stage_rank_groups = build_stage_rank_groups(tp_degrees)
-    return {
-        "tp_degrees": tp_degrees,
-        "stage_rank_groups": stage_rank_groups,
-        "world_size": sum(tp_degrees),
-        "num_stages": len(tp_degrees),
-    }
+def _build_rank_group_index(rank_groups: list[list[int]], world_size: int) -> list[int]:
+    group_index_by_rank = [-1] * world_size
+    for group_idx, ranks in enumerate(rank_groups):
+        for rank in ranks:
+            if rank < 0 or rank >= world_size:
+                raise ValueError(f"rank={rank} 超出 world_size={world_size}。")
+            group_index_by_rank[rank] = group_idx
+    if any(group_idx < 0 for group_idx in group_index_by_rank):
+        raise ValueError("并不是所有 rank 都能映射到 group。")
+    return group_index_by_rank
 
 
 def prepare_text_hybrid(
@@ -76,6 +66,11 @@ def prepare_text_hybrid(
     manifest["runtime"] = "text_hybrid"
     manifest["tp_degrees"] = layout["tp_degrees"]
     manifest["stage_rank_groups"] = layout["stage_rank_groups"]
+    manifest["pp_rank_groups"] = layout["pp_rank_groups"]
+    manifest["send_list"] = layout["send_list"]
+    manifest["recv_list"] = layout["recv_list"]
+    manifest["send_empty_list"] = layout["send_empty_list"]
+    manifest["recv_empty_list"] = layout["recv_empty_list"]
     manifest["world_size"] = layout["world_size"]
     torch.save(manifest, manifest_path)
     return manifest
@@ -83,8 +78,24 @@ def prepare_text_hybrid(
 
 def load_hybrid_manifest(manifest_path: str) -> dict:
     manifest = load_pipeline_manifest(manifest_path)
-    if "tp_degrees" not in manifest or "stage_rank_groups" not in manifest:
-        raise ValueError("manifest 里没有 tp_degrees / stage_rank_groups，不能按 hybrid 运行。")
+    if "tp_degrees" not in manifest:
+        raise ValueError("manifest 里没有 tp_degrees，不能按 hybrid 运行。")
+
+    layout = build_hybrid_layout(parse_tp_degrees(manifest["tp_degrees"]))
+    if "stage_rank_groups" in manifest and manifest["stage_rank_groups"] != layout["stage_rank_groups"]:
+        raise ValueError("manifest 里的 stage_rank_groups 和 tp_degrees 不一致。")
+
+    for key in (
+        "stage_rank_groups",
+        "pp_rank_groups",
+        "send_list",
+        "recv_list",
+        "send_empty_list",
+        "recv_empty_list",
+        "world_size",
+        "num_stages",
+    ):
+        manifest.setdefault(key, layout[key])
     return manifest
 
 
@@ -93,7 +104,36 @@ def init_stage_groups(stage_rank_groups: list[list[int]]) -> list:
     return [dist.new_group(ranks=ranks) for ranks in stage_rank_groups]
 
 
-def resolve_rank_stage(rank: int, stage_rank_groups: list[list[int]], stage_groups: list) -> dict:
+def resolve_rank_stage(
+    rank: int,
+    stage_rank_groups: list[list[int]],
+    stage_groups: list,
+    *,
+    pp_rank_groups: list[list[int]] | None = None,
+    send_list: list[list[int]] | None = None,
+    recv_list: list[list[int]] | None = None,
+    send_empty_list: list[list[bool]] | None = None,
+    recv_empty_list: list[list[bool]] | None = None,
+) -> dict:
+    world_size = sum(len(ranks) for ranks in stage_rank_groups)
+    if pp_rank_groups is None:
+        pp_rank_groups = build_pp_rank_groups(stage_rank_groups)
+    if any(
+        value is None for value in (send_list, recv_list, send_empty_list, recv_empty_list)
+    ):
+        p2p_lists = build_p2p_lists(stage_rank_groups, pp_rank_groups)
+        if send_list is None:
+            send_list = p2p_lists["send_list"]
+        if recv_list is None:
+            recv_list = p2p_lists["recv_list"]
+        if send_empty_list is None:
+            send_empty_list = p2p_lists["send_empty_list"]
+        if recv_empty_list is None:
+            recv_empty_list = p2p_lists["recv_empty_list"]
+
+    pp_group_index_by_rank = _build_rank_group_index(pp_rank_groups, world_size)
+    current_pp_group = pp_rank_groups[pp_group_index_by_rank[rank]]
+
     for stage_idx, ranks in enumerate(stage_rank_groups):
         if rank in ranks:
             return {
@@ -105,6 +145,12 @@ def resolve_rank_stage(rank: int, stage_rank_groups: list[list[int]], stage_grou
                 "prev_leader_rank": None if stage_idx == 0 else stage_rank_groups[stage_idx - 1][0],
                 "next_leader_rank": None if stage_idx + 1 >= len(stage_rank_groups) else stage_rank_groups[stage_idx + 1][0],
                 "stage_group": stage_groups[stage_idx],
+                "pp_group_idx": pp_group_index_by_rank[rank],
+                "current_pp_group": current_pp_group,
+                "send_list": send_list[rank],
+                "recv_list": recv_list[rank],
+                "send_empty_list": send_empty_list[rank],
+                "recv_empty_list": recv_empty_list[rank],
             }
     raise ValueError(f"rank={rank} 不在任何 stage rank group 里。")
 
@@ -434,7 +480,16 @@ def run_text_hybrid_rank(
         raise ValueError(f"WORLD_SIZE={world_size}，但 hybrid manifest 需要 {manifest['world_size']}。")
 
     stage_groups = init_stage_groups(manifest["stage_rank_groups"])
-    rank_stage = resolve_rank_stage(rank, manifest["stage_rank_groups"], stage_groups)
+    rank_stage = resolve_rank_stage(
+        rank,
+        manifest["stage_rank_groups"],
+        stage_groups,
+        pp_rank_groups=manifest.get("pp_rank_groups"),
+        send_list=manifest.get("send_list"),
+        recv_list=manifest.get("recv_list"),
+        send_empty_list=manifest.get("send_empty_list"),
+        recv_empty_list=manifest.get("recv_empty_list"),
+    )
 
     bundle, compute_dtype = load_stage_bundle_by_index(
         manifest,
@@ -520,6 +575,8 @@ def run_text_hybrid_rank(
         "local_rank": rank_stage["local_rank"],
         "tp_degree": rank_stage["tp_degree"],
         "leader_rank": rank_stage["leader_rank"],
+        "pp_group_idx": rank_stage["pp_group_idx"],
+        "current_pp_group": rank_stage["current_pp_group"],
         "num_stages": manifest["num_stages"],
         "start_idx": bundle["start_idx"],
         "end_idx": bundle["end_idx"],
@@ -540,6 +597,10 @@ def run_text_hybrid_rank(
         "tp_direct_max_diff": tp_direct_max,
         "tp_direct_mean_diff": tp_direct_mean,
         "next_leader_rank": rank_stage["next_leader_rank"],
+        "send_list": rank_stage["send_list"],
+        "recv_list": rank_stage["recv_list"],
+        "send_empty_list": rank_stage["send_empty_list"],
+        "recv_empty_list": rank_stage["recv_empty_list"],
         "traces": traces,
         "outlier_dump": outlier_dump,
     }

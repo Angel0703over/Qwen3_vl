@@ -12,6 +12,8 @@ Qwen3-VL 的 text decoder 执行路径拆开、看清、可控。
 
 目录说明：
 
+- `hexgen_core/`: 参考 HexGen 的 runtime 骨架，承接并行分组、heterogeneous pipeline、transport、generation utils 等公共层
+- `models/`: 模型相关实现，当前先放 Qwen3-VL text decoder 的 forward / trace 能力
 - `core/config.py`: 默认路径和常量
 - `core/dist.py`: 最小分布式初始化和 CPU 通信辅助
 - `core/inputs.py`: 构造 Qwen3-VL 输入、加载模型和 processor
@@ -19,9 +21,10 @@ Qwen3-VL 的 text decoder 执行路径拆开、看清、可控。
 - `core/forward.py`: 运行时内核，主命名为 `forward_*` / `trace_*`
 - `core/capture.py`: 从真实模型抓取 full layer / layer range bundle
 - `core/stage.py`: stage 级别的统一入口，屏蔽 text stage / 后续 stage 类型差异
-- `core/transport.py`: 最小 stage handoff 通信，当前先支持单个 hidden_states tensor
+- `core/transport.py`: stage handoff 通信，支持多 tensor payload、按 tensor 保留 dtype，以及空通信占位
 - `core/pipeline.py`: 多段 text pipeline 的分段解析、manifest 和 rank 运行入口
 - `core/hybrid.py`: stage 内 TP + stage 间 PP 的最小混合并行骨架
+- `core/`: 兼容层；当前保留已有导入路径，并逐步把实现转发到 `hexgen_core/` / `models/`
 - `cli/full_layer.py`: 单层 decoder layer 的 prepare / tp 入口
 - `cli/layer_range.py`: 多层 layer range 的 prepare / tp 入口
 - `cli/text_hybrid.py`: text stage 的最小 PP+TP 混合原型
