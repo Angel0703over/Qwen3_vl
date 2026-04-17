@@ -1,0 +1,37 @@
+# Python caches
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Logs and temp files
+*.log
+tmp/
+.tmp/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+.codex
+
+# PyTorch / runtime artifacts
+*.pt
+*.pth
+qwen3vl_text_pipeline/
+qwen3vl_text_hybrid/
+
+
+frames/
