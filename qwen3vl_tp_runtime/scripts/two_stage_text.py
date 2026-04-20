@@ -1,4 +1,4 @@
-"""CLI for the legacy two-stage pipeline prototype kept for focused PP debugging."""
+"""Script for a focused two-stage PP debug flow using the unified multimodal handoff."""
 
 import argparse
 import sys
@@ -12,10 +12,12 @@ if __package__ is None or __package__ == "":
 from qwen3vl_tp_runtime.hexgen_core import (
     TEXT_STAGE0_BUNDLE_PATH,
     TEXT_STAGE1_BUNDLE_PATH,
+    StageHandoffPayload,
+    StageHandoffTransport,
+    apply_stage_handoff_payload,
+    build_stage_handoff_payload,
     get_device,
     init_dist,
-    recv_hidden_states,
-    send_hidden_states,
 )
 from qwen3vl_tp_runtime.hexgen_core.stage import get_stage_input, get_stage_output, run_stage
 from qwen3vl_tp_runtime.models.qwen3vl import (
@@ -101,11 +103,14 @@ def run_pp(args):
     if rank == 0:
         bundle, compute_dtype = load_stage_bundle(args.stage0_bundle_path, device, args.compute_dtype)
         comm_dtype = resolve_comm_dtype(args.comm_dtype, compute_dtype)
+        handoff_transport = StageHandoffTransport(device=device, comm_dtype=comm_dtype)
 
         stage_input = get_stage_input(bundle)
         reference_output = get_stage_output(bundle)
         stage_output = run_stage(stage_input, bundle)
-        sent_shape = send_hidden_states(stage_output, dst=1, comm_dtype=comm_dtype)
+        handoff = build_stage_handoff_payload(stage_output, bundle)
+        summary = handoff_transport.send(handoff, dst=1)
+        sent_shape = summary.tensor_shapes.get(StageHandoffPayload.HIDDEN_STATES_KEY)
 
         stage_max, stage_mean = tensor_diff_stats(stage_output, reference_output)
 
@@ -122,18 +127,24 @@ def run_pp(args):
             f"[stage0] rank={rank} direct_vs_reference max_diff={stage_max} "
             f"mean_diff={stage_mean}"
         )
+        print(
+            f"[send] rank={rank} dst=1 sent_shape={sent_shape} "
+            f"payload_keys={summary.payload_keys} tensor_shapes={summary.tensor_shapes}"
+        )
     else:
         bundle, compute_dtype = load_stage_bundle(args.stage1_bundle_path, device, args.compute_dtype)
         comm_dtype = resolve_comm_dtype(args.comm_dtype, compute_dtype)
+        handoff_transport = StageHandoffTransport(device=device, comm_dtype=comm_dtype)
 
         reference_input = get_stage_input(bundle)
         reference_output = get_stage_output(bundle)
-        received_hidden = recv_hidden_states(
-            src=0,
-            device=device,
-            hidden_dtype=reference_input.dtype,
-            comm_dtype=comm_dtype,
-        )
+        received_message = handoff_transport.recv(src=0, stage_bundle=bundle)
+        handoff = received_message.handoff
+        if handoff is None or handoff.hidden_states is None:
+            raise ValueError("stage1 没有收到有效的 stage handoff payload。")
+
+        bundle = apply_stage_handoff_payload(bundle, handoff)
+        received_hidden = get_stage_input(bundle)
         boundary_max, boundary_mean = tensor_diff_stats(received_hidden, reference_input)
 
         stage_output = run_stage(received_hidden, bundle)
@@ -147,7 +158,9 @@ def run_pp(args):
         print(
             f"[handoff] rank={rank} recv_shape={tuple(received_hidden.shape)} "
             f"reference_input_shape={tuple(reference_input.shape)} "
-            f"max_diff={boundary_max} mean_diff={boundary_mean}"
+            f"max_diff={boundary_max} mean_diff={boundary_mean} "
+            f"payload_keys={received_message.summary.payload_keys} "
+            f"tensor_shapes={received_message.summary.tensor_shapes}"
         )
         print(
             f"[stage1] rank={rank} pp_vs_reference max_diff={stage_max} "

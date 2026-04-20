@@ -1,4 +1,4 @@
-"""Pipeline manifest preparation and rank-local execution for text-stage pipelines."""
+"""Dedicated pipeline-parallel runtime for captured multimodal text-stage bundles."""
 
 from pathlib import Path
 
@@ -13,12 +13,11 @@ from qwen3vl_tp_runtime.hexgen_core.schema import (
 from qwen3vl_tp_runtime.hexgen_core.stage import (
     apply_stage_handoff_payload,
     build_stage_handoff_payload,
-    build_stage_handoff_target_dtypes,
     get_stage_input,
     get_stage_output,
     run_stage,
 )
-from qwen3vl_tp_runtime.hexgen_core.transport import recv_payload, send_payload
+from qwen3vl_tp_runtime.hexgen_core.transport import StageHandoffTransport
 from qwen3vl_tp_runtime.models.qwen3vl.capture import capture_text_stage_bundle, load_bundle, move_bundle
 from qwen3vl_tp_runtime.models.qwen3vl.ops import dtype_from_name, resolve_comm_dtype
 
@@ -183,6 +182,7 @@ class TextPipelineRunner:
             self.compute_dtype_arg,
         )
         comm_dtype = resolve_comm_dtype(self.comm_dtype_arg, compute_dtype)
+        handoff_transport = StageHandoffTransport(device=self.device, comm_dtype=comm_dtype)
 
         if rank == 0:
             stage_input = get_stage_input(bundle)
@@ -191,19 +191,15 @@ class TextPipelineRunner:
             received_payload_keys = []
         else:
             reference_input = get_stage_input(bundle)
-            payload = recv_payload(
-                src=rank - 1,
-                device=self.device,
-                target_dtypes=build_stage_handoff_target_dtypes(bundle),
-            )
-            handoff = StageHandoffPayload.from_transport_payload(payload)
+            received_message = handoff_transport.recv(src=rank - 1, stage_bundle=bundle)
+            handoff = received_message.handoff
             if handoff is None or handoff.hidden_states is None:
                 raise ValueError(f"stage {rank} 没有收到有效的 hidden_states payload。")
 
             bundle = apply_stage_handoff_payload(bundle, handoff)
             stage_input = get_stage_input(bundle)
             boundary_max, boundary_mean = tensor_diff_stats(stage_input, reference_input)
-            received_payload_keys = [] if payload is None else list(payload.keys())
+            received_payload_keys = received_message.summary.payload_keys
 
         reference_output = get_stage_output(bundle)
         stage_output = run_stage(stage_input, bundle)
@@ -214,11 +210,7 @@ class TextPipelineRunner:
         sent_tensor_shapes = {}
         if rank < world_size - 1:
             handoff = build_stage_handoff_payload(stage_output, bundle)
-            summary = send_payload(
-                handoff.to_transport_payload(),
-                dst=rank + 1,
-                comm_dtype=comm_dtype,
-            )
+            summary = handoff_transport.send(handoff, dst=rank + 1)
             sent_shape = summary.tensor_shapes.get(StageHandoffPayload.HIDDEN_STATES_KEY)
             sent_payload_keys = summary.payload_keys
             sent_tensor_shapes = summary.tensor_shapes

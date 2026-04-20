@@ -219,6 +219,33 @@ class PayloadSummary:
     payload_keys: list[str]
     tensor_shapes: dict[str, tuple[int, ...] | None]
 
+    @classmethod
+    def empty(cls) -> "PayloadSummary":
+        return cls(
+            is_empty=True,
+            num_tensors=0,
+            payload_keys=[],
+            tensor_shapes={},
+        )
+
+    @classmethod
+    def from_payload(
+        cls,
+        payload: dict[str, torch.Tensor | None] | None,
+    ) -> "PayloadSummary":
+        if payload is None:
+            return cls.empty()
+        tensor_shapes = {
+            name: (None if tensor is None else tuple(tensor.shape))
+            for name, tensor in payload.items()
+        }
+        return cls(
+            is_empty=False,
+            num_tensors=len(payload),
+            payload_keys=list(payload.keys()),
+            tensor_shapes=tensor_shapes,
+        )
+
 
 @dataclass(slots=True)
 class StageHandoffPayload:

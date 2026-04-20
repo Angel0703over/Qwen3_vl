@@ -12,12 +12,18 @@ Qwen3-VL 的 text decoder 执行路径拆开、看清、可控。
 
 目录说明：
 
+- `scripts/`: 主要命令入口，风格上对齐 LLaMA/Jupiter 项目的 `scripts/`
+- `cli/`: 兼容层，保留旧命令路径，内部转发到 `scripts/`
 - `hexgen_core/config.py`: 默认路径和运行时常量
 - `hexgen_core/distributed.py`: 最小分布式初始化和 CPU/gloo 通信辅助
+- `hexgen_core/README.md`: `hexgen_core/` 子目录结构说明
 - `hexgen_core/schema.py`: manifest、layout、rank context、transport summary 的 dataclass 定义
 - `hexgen_core/gen_hetero_groups.py`: HexGen 风格的 TP/PP 分组与 p2p lane 生成
 - `hexgen_core/transport.py`: stage handoff 通信，支持多 tensor payload、保留 dtype、空通信占位
 - `hexgen_core/stage.py`: stage 级 dispatch 和 `StageBundleView`
+- `hexgen_core/modules/tensor_parallel.py`: 纯 TP text stage runtime 与 `TextTensorParallelRunner`
+- `hexgen_core/modules/pipeline_parallel.py`: 纯 PP runtime 的独立模块入口
+- `hexgen_core/modules/hybrid_parallel.py`: Hybrid PP+TP runtime 的独立模块入口
 - `hexgen_core/pipeline.py`: 多段 text pipeline manifest 与 `TextPipelineRunner`
 - `hexgen_core/hybrid.py`: stage 内 TP + stage 间 PP 的混合并行骨架与 `TextHybridRunner`
 - `models/qwen3vl/inputs.py`: Qwen3-VL 输入构造与本地模型加载
@@ -26,12 +32,12 @@ Qwen3-VL 的 text decoder 执行路径拆开、看清、可控。
 - `models/qwen3vl/capture.py`: 从真实模型抓取 full layer / layer range / text stage bundle
 - `models/qwen3vl/__init__.py`: Qwen3-VL 模型族的统一导出
 - `models/__init__.py`: 模型族聚合导出
-- `cli/full_layer.py`: 单层 decoder layer 的 prepare / tp 入口
-- `cli/layer_range.py`: 多层 layer range 的 prepare / tp 入口
-- `cli/text_hybrid.py`: text stage 的最小 PP+TP 混合原型
-- `cli/text_stage.py`: 早期 text stage（含 DeepStack 注入）的 prepare / tp 入口
-- `cli/two_stage_text.py`: 两段连续 text stage 的最小 pipeline 原型
-- `cli/text_pipeline.py`: 多段连续 text stage 的通用 pipeline 原型
+- `scripts/full_layer.py`: 单层 decoder layer 的 prepare / tp 入口
+- `scripts/layer_range.py`: 多层 layer range 的 prepare / tp 入口
+- `scripts/text_hybrid.py`: text stage 的最小 PP+TP 混合原型
+- `scripts/text_stage.py`: 早期 text stage（含 DeepStack 注入）的 prepare / tp 入口
+- `scripts/two_stage_text.py`: 两段连续 text stage 的最小 pipeline 原型
+- `scripts/text_pipeline.py`: 多段连续 text stage 的通用 pipeline 原型
 
 当前设计参考了两条思路：
 
@@ -42,15 +48,15 @@ Qwen3-VL 的 text decoder 执行路径拆开、看清、可控。
 最小用法：
 
 ```bash
-/mnt/ssd/miniconda3/envs/vlm/bin/python \
-  /mnt/ssd/code/Qwen3_vl/qwen3vl_tp_runtime/cli/full_layer.py prepare \
+  /mnt/ssd/miniconda3/envs/vlm/bin/python \
+  /mnt/ssd/code/Qwen3_vl/qwen3vl_tp_runtime/scripts/full_layer.py prepare \
   --layer-idx 11
 ```
 
 ```bash
 MASTER_ADDR=127.0.0.1 MASTER_PORT=29571 WORLD_SIZE=2 RANK=0 \
 /mnt/ssd/miniconda3/envs/vlm/bin/python \
-  /mnt/ssd/code/Qwen3_vl/qwen3vl_tp_runtime/cli/full_layer.py tp \
+  /mnt/ssd/code/Qwen3_vl/qwen3vl_tp_runtime/scripts/full_layer.py tp \
   --bundle-path /mnt/ssd/code/Qwen3_vl/qwen3vl_full_layer_case.pt \
   --device cuda \
   --comm-dtype float32
@@ -58,7 +64,7 @@ MASTER_ADDR=127.0.0.1 MASTER_PORT=29571 WORLD_SIZE=2 RANK=0 \
 
 ```bash
 /mnt/ssd/miniconda3/envs/vlm/bin/python \
-  /mnt/ssd/code/Qwen3_vl/qwen3vl_tp_runtime/cli/layer_range.py prepare \
+  /mnt/ssd/code/Qwen3_vl/qwen3vl_tp_runtime/scripts/layer_range.py prepare \
   --start-idx 11 \
   --end-idx 12
 ```
@@ -66,7 +72,7 @@ MASTER_ADDR=127.0.0.1 MASTER_PORT=29571 WORLD_SIZE=2 RANK=0 \
 ```bash
 MASTER_ADDR=127.0.0.1 MASTER_PORT=29581 WORLD_SIZE=2 RANK=0 \
 /mnt/ssd/miniconda3/envs/vlm/bin/python \
-  /mnt/ssd/code/Qwen3_vl/qwen3vl_tp_runtime/cli/layer_range.py tp \
+  /mnt/ssd/code/Qwen3_vl/qwen3vl_tp_runtime/scripts/layer_range.py tp \
   --bundle-path /mnt/ssd/code/Qwen3_vl/qwen3vl_layer_range_case.pt \
   --device cuda \
   --comm-dtype float32
@@ -74,7 +80,7 @@ MASTER_ADDR=127.0.0.1 MASTER_PORT=29581 WORLD_SIZE=2 RANK=0 \
 
 ```bash
 /mnt/ssd/miniconda3/envs/vlm/bin/python \
-  /mnt/ssd/code/Qwen3_vl/qwen3vl_tp_runtime/cli/text_stage.py prepare \
+  /mnt/ssd/code/Qwen3_vl/qwen3vl_tp_runtime/scripts/text_stage.py prepare \
   --start-idx 0 \
   --end-idx 2
 ```
@@ -82,7 +88,7 @@ MASTER_ADDR=127.0.0.1 MASTER_PORT=29581 WORLD_SIZE=2 RANK=0 \
 ```bash
 MASTER_ADDR=127.0.0.1 MASTER_PORT=29591 WORLD_SIZE=2 RANK=0 \
 /mnt/ssd/miniconda3/envs/vlm/bin/python \
-  /mnt/ssd/code/Qwen3_vl/qwen3vl_tp_runtime/cli/text_stage.py tp \
+  /mnt/ssd/code/Qwen3_vl/qwen3vl_tp_runtime/scripts/text_stage.py tp \
   --bundle-path /mnt/ssd/code/Qwen3_vl/qwen3vl_text_stage_case.pt \
   --device cuda \
   --comm-dtype float32 \
@@ -91,7 +97,7 @@ MASTER_ADDR=127.0.0.1 MASTER_PORT=29591 WORLD_SIZE=2 RANK=0 \
 
 ```bash
 /mnt/ssd/miniconda3/envs/vlm/bin/python \
-  /mnt/ssd/code/Qwen3_vl/qwen3vl_tp_runtime/cli/two_stage_text.py prepare \
+  /mnt/ssd/code/Qwen3_vl/qwen3vl_tp_runtime/scripts/two_stage_text.py prepare \
   --start-idx 0 \
   --split-idx 5 \
   --end-idx 11
@@ -100,7 +106,7 @@ MASTER_ADDR=127.0.0.1 MASTER_PORT=29591 WORLD_SIZE=2 RANK=0 \
 ```bash
 MASTER_ADDR=127.0.0.1 MASTER_PORT=29601 WORLD_SIZE=2 RANK=0 \
 /mnt/ssd/miniconda3/envs/vlm/bin/python \
-  /mnt/ssd/code/Qwen3_vl/qwen3vl_tp_runtime/cli/two_stage_text.py pp \
+  /mnt/ssd/code/Qwen3_vl/qwen3vl_tp_runtime/scripts/two_stage_text.py pp \
   --stage0-bundle-path /mnt/ssd/code/Qwen3_vl/qwen3vl_text_stage0_case.pt \
   --stage1-bundle-path /mnt/ssd/code/Qwen3_vl/qwen3vl_text_stage1_case.pt \
   --device cuda \
@@ -109,7 +115,7 @@ MASTER_ADDR=127.0.0.1 MASTER_PORT=29601 WORLD_SIZE=2 RANK=0 \
 
 ```bash
 /mnt/ssd/miniconda3/envs/vlm/bin/python \
-  /mnt/ssd/code/Qwen3_vl/qwen3vl_tp_runtime/cli/text_pipeline.py prepare \
+  /mnt/ssd/code/Qwen3_vl/qwen3vl_tp_runtime/scripts/text_pipeline.py prepare \
   --ranges 0:5 6:11 12:17 \
   --bundle-dir /mnt/ssd/code/Qwen3_vl/qwen3vl_text_pipeline \
   --manifest-path /mnt/ssd/code/Qwen3_vl/qwen3vl_text_pipeline_manifest.pt
@@ -118,7 +124,7 @@ MASTER_ADDR=127.0.0.1 MASTER_PORT=29601 WORLD_SIZE=2 RANK=0 \
 ```bash
 MASTER_ADDR=127.0.0.1 MASTER_PORT=29611 WORLD_SIZE=3 RANK=0 \
 /mnt/ssd/miniconda3/envs/vlm/bin/python \
-  /mnt/ssd/code/Qwen3_vl/qwen3vl_tp_runtime/cli/text_pipeline.py pp \
+  /mnt/ssd/code/Qwen3_vl/qwen3vl_tp_runtime/scripts/text_pipeline.py pp \
   --manifest-path /mnt/ssd/code/Qwen3_vl/qwen3vl_text_pipeline_manifest.pt \
   --device cuda \
   --comm-dtype float32
@@ -126,7 +132,7 @@ MASTER_ADDR=127.0.0.1 MASTER_PORT=29611 WORLD_SIZE=3 RANK=0 \
 
 ```bash
 /mnt/ssd/miniconda3/envs/vlm/bin/python \
-  /mnt/ssd/code/Qwen3_vl/qwen3vl_tp_runtime/cli/text_hybrid.py prepare \
+  /mnt/ssd/code/Qwen3_vl/qwen3vl_tp_runtime/scripts/text_hybrid.py prepare \
   --ranges 0:5 6:11 \
   --tp 2 2 \
   --bundle-dir /mnt/ssd/code/Qwen3_vl/qwen3vl_text_hybrid \
@@ -136,7 +142,7 @@ MASTER_ADDR=127.0.0.1 MASTER_PORT=29611 WORLD_SIZE=3 RANK=0 \
 ```bash
 MASTER_ADDR=127.0.0.1 MASTER_PORT=29621 WORLD_SIZE=4 RANK=0 \
 /mnt/ssd/miniconda3/envs/vlm/bin/python \
-  /mnt/ssd/code/Qwen3_vl/qwen3vl_tp_runtime/cli/text_hybrid.py run \
+  /mnt/ssd/code/Qwen3_vl/qwen3vl_tp_runtime/scripts/text_hybrid.py run \
   --manifest-path /mnt/ssd/code/Qwen3_vl/qwen3vl_text_hybrid_manifest.pt \
   --device cuda \
   --comm-dtype float32

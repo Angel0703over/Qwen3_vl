@@ -27,7 +27,7 @@ from qwen3vl_tp_runtime.hexgen_core.gen_hetero_groups import (
     build_stage_rank_groups,
     parse_tp_degrees,
 )
-from qwen3vl_tp_runtime.hexgen_core.hybrid import (
+from qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel import (
     TextHybridRunner,
     init_stage_groups,
     load_hybrid_manifest,
@@ -35,7 +35,7 @@ from qwen3vl_tp_runtime.hexgen_core.hybrid import (
     resolve_rank_stage,
     run_text_hybrid_rank,
 )
-from qwen3vl_tp_runtime.hexgen_core.pipeline import (
+from qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel import (
     BoundaryStats,
     StageSpec,
     TextPipelineManifest,
@@ -49,6 +49,11 @@ from qwen3vl_tp_runtime.hexgen_core.pipeline import (
     prepare_text_pipeline,
     run_text_pipeline_rank,
     tensor_diff_stats,
+)
+from qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel import (
+    TextTensorParallelRunner,
+    load_text_stage_bundle,
+    run_text_tensor_parallel_rank,
 )
 from qwen3vl_tp_runtime.hexgen_core.schema import (
     HybridLayout,
@@ -73,6 +78,8 @@ from qwen3vl_tp_runtime.hexgen_core.stage import (
     trace_stage_tp,
 )
 from qwen3vl_tp_runtime.hexgen_core.transport import (
+    StageHandoffMessage,
+    StageHandoffTransport,
     TensorPayload,
     recv_hidden_states,
     recv_payload,
@@ -108,6 +115,7 @@ __all__ = [
     "BoundaryStats",
     "TextPipelineManifest",
     "TextPipelineRunner",
+    "TextTensorParallelRunner",
     "HybridLayout",
     "TextHybridManifest",
     "HybridRankContext",
@@ -121,6 +129,8 @@ __all__ = [
     "load_stage_bundle_by_index",
     "load_stage_bundle_for_rank",
     "run_text_pipeline_rank",
+    "load_text_stage_bundle",
+    "run_text_tensor_parallel_rank",
     "prepare_text_hybrid",
     "load_hybrid_manifest",
     "init_stage_groups",
@@ -140,6 +150,8 @@ __all__ = [
     "run_stage_tp",
     "trace_stage",
     "trace_stage_tp",
+    "StageHandoffMessage",
+    "StageHandoffTransport",
     "TensorPayload",
     "send_payload",
     "recv_payload",

@@ -1,9 +1,13 @@
-"""Typed transport helpers for multi-tensor stage handoff and dummy communication."""
+"""Transport handlers and compatibility helpers for multimodal stage handoff."""
+
+from dataclasses import dataclass
+from typing import Any
 
 import torch
 import torch.distributed as dist
 
-from qwen3vl_tp_runtime.hexgen_core.schema import PayloadSummary
+from qwen3vl_tp_runtime.hexgen_core.schema import PayloadSummary, StageHandoffPayload
+from qwen3vl_tp_runtime.hexgen_core.stage import build_stage_handoff_target_dtypes
 
 TensorPayload = dict[str, torch.Tensor | None]
 
@@ -22,6 +26,45 @@ _DTYPE_TO_CODE = {
 _CODE_TO_DTYPE = {code: dtype for dtype, code in _DTYPE_TO_CODE.items()}
 _SINGLE_TENSOR_KEY = "__tensor__"
 _HIDDEN_STATES_KEY = "hidden_states"
+
+
+@dataclass(slots=True)
+class StageHandoffMessage:
+    """Structured receive result for the stage-handoff communication channel."""
+
+    handoff: StageHandoffPayload | None
+    summary: PayloadSummary
+
+
+class StageHandoffTransport:
+    """Jupiter-style handler that owns the stage-handoff transport schema."""
+
+    channel_name = "stage_handoff"
+
+    def __init__(self, device: torch.device, comm_dtype: torch.dtype) -> None:
+        self.device = device
+        self.comm_dtype = comm_dtype
+
+    def build_target_dtypes(self, stage_bundle: dict[str, Any]) -> dict[str, torch.dtype]:
+        return build_stage_handoff_target_dtypes(stage_bundle)
+
+    def send(self, handoff: StageHandoffPayload | None, dst: int) -> PayloadSummary:
+        payload = None if handoff is None else handoff.to_transport_payload()
+        return send_payload(payload, dst=dst, comm_dtype=self.comm_dtype)
+
+    def send_empty(self, dst: int) -> PayloadSummary:
+        return send_payload(None, dst=dst, comm_dtype=self.comm_dtype)
+
+    def recv(self, src: int, stage_bundle: dict[str, Any]) -> StageHandoffMessage:
+        payload = recv_payload(
+            src=src,
+            device=self.device,
+            target_dtypes=self.build_target_dtypes(stage_bundle),
+        )
+        return StageHandoffMessage(
+            handoff=StageHandoffPayload.from_transport_payload(payload),
+            summary=PayloadSummary.from_payload(payload),
+        )
 
 
 def _send_scalar(value: int, dst: int) -> None:
@@ -93,7 +136,7 @@ def send_payload(
     # payload 为 None 表示“空通信占位”，用于和异构 PP 的 dummy send/recv 对齐。
     if payload is None:
         _send_scalar(1, dst)
-        return PayloadSummary(is_empty=True, num_tensors=0, payload_keys=[], tensor_shapes={})
+        return PayloadSummary.empty()
 
     _send_scalar(0, dst)
     items = list(payload.items())
@@ -224,6 +267,8 @@ def recv_hidden_states(
 
 __all__ = [
     "TensorPayload",
+    "StageHandoffMessage",
+    "StageHandoffTransport",
     "PayloadSummary",
     "send_payload",
     "recv_payload",
