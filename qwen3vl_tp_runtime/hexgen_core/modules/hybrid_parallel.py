@@ -357,11 +357,18 @@ def run_text_hybrid_rank(
     )
     stage_output = tp_stage_stats.pop("stage_output")
 
-    outgoing_handoff = (
-        build_stage_handoff_payload(stage_output, bundle)
-        if any(not is_empty for is_empty in rank_stage.send_empty_list)
-        else None
-    )
+    if any(not is_empty for is_empty in rank_stage.send_empty_list):
+        next_stage_range = None
+        if rank_stage.next_leader_rank is not None:
+            next_stage_meta = manifest.stages[rank_stage.stage_idx + 1]
+            next_stage_range = (next_stage_meta.start_idx, next_stage_meta.end_idx)
+        outgoing_handoff = build_stage_handoff_payload(
+            stage_output,
+            bundle,
+            target_stage_range=next_stage_range,
+        )
+    else:
+        outgoing_handoff = None
     sent_shape, sent_payload_keys, sent_tensor_shapes = _send_stage_handoff_for_rank(
         rank,
         rank_stage,

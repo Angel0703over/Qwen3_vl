@@ -104,11 +104,17 @@ def run_pp(args):
         bundle, compute_dtype = load_stage_bundle(args.stage0_bundle_path, device, args.compute_dtype)
         comm_dtype = resolve_comm_dtype(args.comm_dtype, compute_dtype)
         handoff_transport = StageHandoffTransport(device=device, comm_dtype=comm_dtype)
+        next_stage_bundle = load_bundle(args.stage1_bundle_path)
+        next_stage_range = (int(next_stage_bundle["start_idx"]), int(next_stage_bundle["end_idx"]))
 
         stage_input = get_stage_input(bundle)
         reference_output = get_stage_output(bundle)
         stage_output = run_stage(stage_input, bundle)
-        handoff = build_stage_handoff_payload(stage_output, bundle)
+        handoff = build_stage_handoff_payload(
+            stage_output,
+            bundle,
+            target_stage_range=next_stage_range,
+        )
         summary = handoff_transport.send(handoff, dst=1)
         sent_shape = summary.tensor_shapes.get(StageHandoffPayload.HIDDEN_STATES_KEY)
 

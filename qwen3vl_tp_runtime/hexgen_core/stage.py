@@ -98,14 +98,34 @@ def build_stage_handoff_target_dtypes(
     return target_dtypes
 
 
+def _filter_deepstack_for_stage_range(
+    deepstack_by_layer: dict[Any, torch.Tensor | None] | None,
+    target_stage_range: tuple[int, int] | None,
+) -> dict[int, torch.Tensor | None]:
+    if not isinstance(deepstack_by_layer, dict):
+        return {}
+
+    filtered: dict[int, torch.Tensor | None] = {}
+    for layer_idx, tensor in deepstack_by_layer.items():
+        layer_idx_int = int(layer_idx)
+        if target_stage_range is not None:
+            start_idx, end_idx = target_stage_range
+            if not start_idx <= layer_idx_int <= end_idx:
+                continue
+        filtered[layer_idx_int] = tensor
+    return filtered
+
+
 def build_stage_handoff_payload(
     hidden_states: torch.Tensor | None,
     stage_bundle: dict[str, Any] | StageBundleView,
     multimodal_meta: dict[str, torch.Tensor | None] | None = None,
+    target_stage_range: tuple[int, int] | None = None,
 ) -> StageHandoffPayload:
     bundle = as_stage_bundle_view(stage_bundle).payload
     deepstack_by_layer = bundle.get("deepstack_by_layer")
     bundle_multimodal_meta = bundle.get("multimodal_meta")
+    filtered_deepstack = _filter_deepstack_for_stage_range(deepstack_by_layer, target_stage_range)
 
     merged_meta: dict[str, torch.Tensor | None] = {}
     if isinstance(bundle_multimodal_meta, dict):
@@ -115,12 +135,12 @@ def build_stage_handoff_payload(
 
     return StageHandoffPayload(
         hidden_states=hidden_states,
-        visual_pos_masks=bundle.get("visual_pos_masks"),
-        deepstack_feature_pack=(
-            {int(layer_idx): tensor for layer_idx, tensor in deepstack_by_layer.items()}
-            if isinstance(deepstack_by_layer, dict)
-            else {}
+        visual_pos_masks=(
+            bundle.get("visual_pos_masks")
+            if target_stage_range is None or filtered_deepstack
+            else None
         ),
+        deepstack_feature_pack=filtered_deepstack,
         multimodal_meta=merged_meta,
     )
 
@@ -145,11 +165,19 @@ def apply_stage_handoff_payload(
             bundle["visual_pos_masks"] = handoff_payload.visual_pos_masks
 
     if handoff_payload.deepstack_feature_pack:
+        filtered_deepstack = _filter_deepstack_for_stage_range(
+            handoff_payload.deepstack_feature_pack,
+            (
+                (int(bundle["start_idx"]), int(bundle["end_idx"]))
+                if "start_idx" in bundle and "end_idx" in bundle
+                else None
+            ),
+        )
         current_deepstack = bundle.get("deepstack_by_layer")
         has_local_deepstack = isinstance(current_deepstack, dict) and bool(current_deepstack)
-        if not prefer_local_bundle or not has_local_deepstack:
-            bundle["deepstack_by_layer"] = dict(sorted(handoff_payload.deepstack_feature_pack.items()))
-            bundle["deepstack_layer_indices"] = sorted(handoff_payload.deepstack_feature_pack)
+        if filtered_deepstack and (not prefer_local_bundle or not has_local_deepstack):
+            bundle["deepstack_by_layer"] = dict(sorted(filtered_deepstack.items()))
+            bundle["deepstack_layer_indices"] = sorted(filtered_deepstack)
 
     if handoff_payload.multimodal_meta:
         incoming_meta = dict(handoff_payload.multimodal_meta)

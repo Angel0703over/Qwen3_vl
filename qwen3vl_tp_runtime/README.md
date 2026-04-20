@@ -1,19 +1,18 @@
 # Qwen3-VL TP Runtime Prototype
 
-这是一个面向单机研究的 runtime 原型目录，目标不是部署，而是把
-Qwen3-VL 的 text decoder 执行路径拆开、看清、可控。
+这是一个面向 Jetson / 无 NCCL 场景的 runtime 原型目录，目标不是直接部署，
+而是把 Qwen3-VL 的 text decoder 执行路径拆开、看清、可控。
 
 当前目录主要聚焦于：
 
 - 构造真实 layer forward 所需的 bundle
 - 复用 attention / mlp / decoder layer 的 forward 函数
 - 支持连续多层 layer range forward
-- 用 `gloo` 跑最小 TP 原型
+- 用 `gloo` 跑最小 TP / PP / Hybrid 原型
 
 目录说明：
 
 - `scripts/`: 主要命令入口，风格上对齐 LLaMA/Jupiter 项目的 `scripts/`
-- `cli/`: 兼容层，保留旧命令路径，内部转发到 `scripts/`
 - `hexgen_core/config.py`: 默认路径和运行时常量
 - `hexgen_core/distributed.py`: 最小分布式初始化和 CPU/gloo 通信辅助
 - `hexgen_core/README.md`: `hexgen_core/` 子目录结构说明
@@ -24,8 +23,6 @@ Qwen3-VL 的 text decoder 执行路径拆开、看清、可控。
 - `hexgen_core/modules/tensor_parallel.py`: 纯 TP text stage runtime 与 `TextTensorParallelRunner`
 - `hexgen_core/modules/pipeline_parallel.py`: 纯 PP runtime 的独立模块入口
 - `hexgen_core/modules/hybrid_parallel.py`: Hybrid PP+TP runtime 的独立模块入口
-- `hexgen_core/pipeline.py`: 多段 text pipeline manifest 与 `TextPipelineRunner`
-- `hexgen_core/hybrid.py`: stage 内 TP + stage 间 PP 的混合并行骨架与 `TextHybridRunner`
 - `models/qwen3vl/inputs.py`: Qwen3-VL 输入构造与本地模型加载
 - `models/qwen3vl/ops.py`: Qwen3-VL replay/TP 依赖的基础算子
 - `models/qwen3vl/forward.py`: Qwen3-VL text decoder 的 replay 与 TP kernel
@@ -36,7 +33,7 @@ Qwen3-VL 的 text decoder 执行路径拆开、看清、可控。
 - `scripts/layer_range.py`: 多层 layer range 的 prepare / tp 入口
 - `scripts/text_hybrid.py`: text stage 的最小 PP+TP 混合原型
 - `scripts/text_stage.py`: 早期 text stage（含 DeepStack 注入）的 prepare / tp 入口
-- `scripts/two_stage_text.py`: 两段连续 text stage 的最小 pipeline 原型
+- `scripts/two_stage_text.py`: 两段连续 text stage 的最小 pipeline 原型，复用统一 multimodal handoff
 - `scripts/text_pipeline.py`: 多段连续 text stage 的通用 pipeline 原型
 
 当前设计参考了两条思路：

@@ -209,7 +209,12 @@ class TextPipelineRunner:
         sent_payload_keys = []
         sent_tensor_shapes = {}
         if rank < world_size - 1:
-            handoff = build_stage_handoff_payload(stage_output, bundle)
+            next_stage_meta = self.manifest.stages[rank + 1]
+            handoff = build_stage_handoff_payload(
+                stage_output,
+                bundle,
+                target_stage_range=(next_stage_meta.start_idx, next_stage_meta.end_idx),
+            )
             summary = handoff_transport.send(handoff, dst=rank + 1)
             sent_shape = summary.tensor_shapes.get(StageHandoffPayload.HIDDEN_STATES_KEY)
             sent_payload_keys = summary.payload_keys
