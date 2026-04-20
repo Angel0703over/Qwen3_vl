@@ -279,7 +279,7 @@ def trace_mlp_tp(
     comm_dtype: torch.dtype,
     tp_group=None,
     tp_src_rank: int = 0,
-    math_mode: str = "float32",
+    math_mode: str = "orig",
 ) -> dict:
     intermediate_size = bundle["gate_weight"].shape[0]
     orig_dtype, math_dtype = _resolve_tp_math_dtype(hidden_states, math_mode)
@@ -352,7 +352,7 @@ def forward_mlp_tp(
     comm_dtype: torch.dtype,
     tp_group=None,
     tp_src_rank: int = 0,
-    math_mode: str = "float32",
+    math_mode: str = "orig",
 ) -> torch.Tensor:
     return trace_mlp_tp(
         hidden_states,
@@ -413,7 +413,7 @@ def forward_decoder_layer_tp(
     tp_group=None,
     tp_src_rank: int = 0,
     attn_math_mode: str = "orig",
-    mlp_math_mode: str = "float32",
+    mlp_math_mode: str = "orig",
 ) -> torch.Tensor:
     attn_input = rms_norm(layer_input, bundle["input_ln_weight"], bundle["input_ln_eps"])
     attn_output = forward_attention_tp(
@@ -451,7 +451,7 @@ def trace_decoder_layer_tp(
     tp_group=None,
     tp_src_rank: int = 0,
     attn_math_mode: str = "orig",
-    mlp_math_mode: str = "float32",
+    mlp_math_mode: str = "orig",
 ) -> dict:
     attn_input = rms_norm(layer_input, bundle["input_ln_weight"], bundle["input_ln_eps"])
     attn_trace = trace_attention_tp(
@@ -514,7 +514,7 @@ def forward_layer_range_tp(
     tp_group=None,
     tp_src_rank: int = 0,
     attn_math_mode: str = "orig",
-    mlp_math_mode: str = "float32",
+    mlp_math_mode: str = "orig",
 ) -> torch.Tensor:
     output = hidden_states
     for layer_bundle in range_bundle["layers"]:
@@ -556,7 +556,7 @@ def forward_text_stage_tp(
     tp_group=None,
     tp_src_rank: int = 0,
     attn_math_mode: str = "orig",
-    mlp_math_mode: str = "float32",
+    mlp_math_mode: str = "orig",
 ) -> torch.Tensor:
     output = hidden_states
     visual_pos_masks = stage_bundle.get("visual_pos_masks")
@@ -612,7 +612,7 @@ def trace_text_stage_tp(
     tp_group=None,
     tp_src_rank: int = 0,
     attn_math_mode: str = "orig",
-    mlp_math_mode: str = "float32",
+    mlp_math_mode: str = "orig",
 ) -> list[dict]:
     traces = []
     output = hidden_states

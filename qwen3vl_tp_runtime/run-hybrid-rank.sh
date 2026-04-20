@@ -27,13 +27,24 @@ export DEVICE="${DEVICE:-cuda}"
 export MANIFEST_PATH="${MANIFEST_PATH:-${REPO_ROOT}/qwen3vl_text_hybrid_manifest.pt}"
 export COMPUTE_DTYPE="${COMPUTE_DTYPE:-auto}"
 export COMM_DTYPE="${COMM_DTYPE:-float32}"
+export HYBRID_DEBUG="${HYBRID_DEBUG:-0}"
 # For captured replay parity, TP attention / MLP default to original dtype math.
 export TP_ATTN_MATH="${TP_ATTN_MATH:-orig}"
 export TP_MLP_MATH="${TP_MLP_MATH:-orig}"
-export COMPARE_DIRECT="${COMPARE_DIRECT:-1}"
-export TRACE_LAYERS="${TRACE_LAYERS:-1}"
-export DUMP_LAYER="${DUMP_LAYER:-0}"
-export DUMP_TOPK="${DUMP_TOPK:-10}"
+case "${HYBRID_DEBUG,,}" in
+  1|true|yes|on)
+    export COMPARE_DIRECT="${COMPARE_DIRECT:-1}"
+    export TRACE_LAYERS="${TRACE_LAYERS:-1}"
+    export DUMP_LAYER="${DUMP_LAYER:-0}"
+    export DUMP_TOPK="${DUMP_TOPK:-10}"
+    ;;
+  *)
+    export COMPARE_DIRECT="${COMPARE_DIRECT:-0}"
+    export TRACE_LAYERS="${TRACE_LAYERS:-0}"
+    export DUMP_LAYER="${DUMP_LAYER:--1}"
+    export DUMP_TOPK="${DUMP_TOPK:-10}"
+    ;;
+esac
 
 echo "[launch] repo_root=${REPO_ROOT}"
 echo "[launch] runtime_root=${RUNTIME_ROOT}"
@@ -43,6 +54,7 @@ echo "[launch] manifest_path=${MANIFEST_PATH}"
 echo "[launch] device=${DEVICE} cuda_visible_devices=${CUDA_VISIBLE_DEVICES}"
 echo "[launch] compute_dtype=${COMPUTE_DTYPE} comm_dtype=${COMM_DTYPE}"
 echo "[launch] tp_attn_math=${TP_ATTN_MATH} tp_mlp_math=${TP_MLP_MATH}"
+echo "[launch] hybrid_debug=${HYBRID_DEBUG} compare_direct=${COMPARE_DIRECT} trace_layers=${TRACE_LAYERS} dump_layer=${DUMP_LAYER} dump_topk=${DUMP_TOPK}"
 
 "${PYTHON_BIN}" - <<'PY'
 import json
@@ -74,6 +86,10 @@ def env_optional_int(name: str) -> int | None:
 manifest = load_hybrid_manifest(os.environ["MANIFEST_PATH"])
 rank, world_size = init_dist()
 device = get_device(os.environ["DEVICE"])
+compare_direct = env_flag("COMPARE_DIRECT", default=False)
+trace_layers = env_flag("TRACE_LAYERS", default=False)
+dump_layer = env_optional_int("DUMP_LAYER")
+dump_topk = int(os.environ["DUMP_TOPK"])
 
 runner = TextHybridRunner(
     manifest=manifest,
@@ -82,10 +98,10 @@ runner = TextHybridRunner(
     comm_dtype_arg=os.environ["COMM_DTYPE"],
     tp_attn_math_mode=os.environ["TP_ATTN_MATH"],
     tp_mlp_math_mode=os.environ["TP_MLP_MATH"],
-    compare_direct=env_flag("COMPARE_DIRECT", default=True),
-    trace_layers=env_flag("TRACE_LAYERS", default=False),
-    dump_layer=env_optional_int("DUMP_LAYER"),
-    dump_topk=int(os.environ["DUMP_TOPK"]),
+    compare_direct=compare_direct,
+    trace_layers=trace_layers,
+    dump_layer=dump_layer,
+    dump_topk=dump_topk,
 )
 
 stats = runner.run_rank(rank, world_size)
@@ -101,6 +117,11 @@ summary = {
     "current_pp_group": stats["current_pp_group"],
     "input_shape": list(stats["input_shape"]),
     "output_shape": list(stats["output_shape"]),
+    "debug_mode": compare_direct or trace_layers or dump_layer is not None,
+    "compare_direct": compare_direct,
+    "trace_layers": trace_layers,
+    "dump_layer": dump_layer,
+    "dump_topk": dump_topk,
     "received_payload_keys": stats["received_payload_keys"],
     "sent_payload_keys": stats["sent_payload_keys"],
     "sent_tensor_shapes": {

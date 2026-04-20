@@ -217,7 +217,7 @@ def run_stage_tp(
     tp_group=None,
     tp_src_rank: int = 0,
     tp_attn_math_mode: str = "orig",
-    tp_mlp_math_mode: str = "float32",
+    tp_mlp_math_mode: str = "orig",
 ) -> torch.Tensor:
     bundle_view = as_stage_bundle_view(stage_bundle)
     if bundle_view.stage_type == "text":
@@ -251,7 +251,7 @@ def trace_stage_tp(
     tp_group=None,
     tp_src_rank: int = 0,
     tp_attn_math_mode: str = "orig",
-    tp_mlp_math_mode: str = "float32",
+    tp_mlp_math_mode: str = "orig",
 ):
     bundle_view = as_stage_bundle_view(stage_bundle)
     if bundle_view.stage_type == "text":
