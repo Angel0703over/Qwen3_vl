@@ -18,7 +18,12 @@ from qwen3vl_tp_runtime.hexgen_core.stage import (
     run_stage,
 )
 from qwen3vl_tp_runtime.hexgen_core.transport import StageHandoffTransport
-from qwen3vl_tp_runtime.models.qwen3vl.capture import capture_text_stage_bundle, load_bundle, move_bundle
+from qwen3vl_tp_runtime.models.qwen3vl.capture import (
+    capture_text_prefill_stage_bundle,
+    capture_text_stage_bundle,
+    load_bundle,
+    move_bundle,
+)
 from qwen3vl_tp_runtime.models.qwen3vl.ops import dtype_from_name, resolve_comm_dtype
 
 
@@ -125,6 +130,76 @@ def prepare_text_pipeline(
     return manifest
 
 
+def prepare_text_prefill_pipeline(
+    *,
+    stage_ranges: list[tuple[int, int]],
+    bundle_dir: str,
+    manifest_path: str,
+    prompt: str = "请用中文简要介绍一下人工智能。",
+    save_dtype: str = "auto",
+    model_path: str | None = None,
+) -> TextPipelineManifest:
+    bundle_dir_path = Path(bundle_dir)
+    bundle_dir_path.mkdir(parents=True, exist_ok=True)
+
+    stages = []
+    stage_bundles = []
+    for stage_idx, (start_idx, end_idx) in enumerate(stage_ranges):
+        bundle_path = build_stage_bundle_path(bundle_dir, stage_idx, start_idx, end_idx)
+        stage_bundle = capture_text_prefill_stage_bundle(
+            start_idx=start_idx,
+            end_idx=end_idx,
+            prompt=prompt,
+            bundle_path=bundle_path,
+            save_dtype=save_dtype,
+            **({"model_path": model_path} if model_path is not None else {}),
+        )
+        stage_bundles.append(stage_bundle)
+        stages.append(
+            StageSpec(
+                stage_idx=stage_idx,
+                start_idx=start_idx,
+                end_idx=end_idx,
+                bundle_path=bundle_path,
+                num_layers=len(stage_bundle["layers"]),
+                save_dtype=stage_bundle["save_dtype"],
+            )
+        )
+
+    if stage_bundles[-1]["stage_type"] != "text_prefill_last":
+        raise ValueError("text prefill pipeline 的最后一个 stage 必须覆盖到最后一层，才能输出 logits。")
+
+    boundaries = []
+    for stage_idx in range(len(stage_bundles) - 1):
+        lhs = stage_bundles[stage_idx]["stage_output"]
+        rhs = stage_bundles[stage_idx + 1]["stage_input"]
+        max_diff, mean_diff = tensor_diff_stats(lhs, rhs)
+        boundaries.append(
+            BoundaryStats(
+                src_stage_idx=stage_idx,
+                dst_stage_idx=stage_idx + 1,
+                max_diff=max_diff,
+                mean_diff=mean_diff,
+            )
+        )
+
+    manifest = TextPipelineManifest(
+        pipeline_type="text_prefill",
+        num_stages=len(stages),
+        stage_ranges=stage_ranges,
+        bundle_dir=str(bundle_dir_path),
+        stages=stages,
+        boundaries=boundaries,
+        num_frames=0,
+        save_dtype=stage_bundles[0]["save_dtype"],
+    )
+
+    save_path = Path(manifest_path)
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(manifest.to_dict(), save_path)
+    return manifest
+
+
 def load_pipeline_manifest(manifest_path: str) -> TextPipelineManifest:
     payload = torch.load(manifest_path, map_location="cpu")
     if isinstance(payload, TextPipelineManifest):
@@ -163,11 +238,13 @@ class TextPipelineRunner:
         device: torch.device,
         compute_dtype_arg: str,
         comm_dtype_arg: str,
+        return_tensors: bool = False,
     ) -> None:
         self.manifest = manifest
         self.device = device
         self.compute_dtype_arg = compute_dtype_arg
         self.comm_dtype_arg = comm_dtype_arg
+        self.return_tensors = return_tensors
 
     def run_rank(self, rank: int, world_size: int) -> dict:
         if world_size != self.manifest.num_stages:
@@ -220,7 +297,7 @@ class TextPipelineRunner:
             sent_payload_keys = summary.payload_keys
             sent_tensor_shapes = summary.tensor_shapes
 
-        return {
+        stats = {
             "rank": rank,
             "stage_idx": rank,
             "num_stages": world_size,
@@ -240,6 +317,10 @@ class TextPipelineRunner:
             "stage_max_diff": stage_max,
             "stage_mean_diff": stage_mean,
         }
+        if self.return_tensors:
+            stats["stage_output"] = stage_output
+            stats["reference_output"] = reference_output
+        return stats
 
 
 def run_text_pipeline_rank(
@@ -250,12 +331,14 @@ def run_text_pipeline_rank(
     device: torch.device,
     compute_dtype_arg: str,
     comm_dtype_arg: str,
+    return_tensors: bool = False,
 ) -> dict:
     runner = TextPipelineRunner(
         manifest=manifest,
         device=device,
         compute_dtype_arg=compute_dtype_arg,
         comm_dtype_arg=comm_dtype_arg,
+        return_tensors=return_tensors,
     )
     return runner.run_rank(rank, world_size)
 
@@ -270,6 +353,7 @@ __all__ = [
     "parse_stage_ranges",
     "build_stage_bundle_path",
     "prepare_text_pipeline",
+    "prepare_text_prefill_pipeline",
     "load_pipeline_manifest",
     "load_stage_bundle_by_index",
     "load_stage_bundle_for_rank",

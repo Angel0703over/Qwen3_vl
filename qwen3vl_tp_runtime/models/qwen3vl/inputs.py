@@ -68,6 +68,37 @@ def build_inputs(processor, frame_paths: list[str]):
     return inputs
 
 
+def build_text_inputs(
+    processor,
+    prompt: str,
+    *,
+    add_generation_prompt: bool = True,
+):
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": prompt,
+                }
+            ],
+        }
+    ]
+
+    text = processor.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=add_generation_prompt,
+    )
+    inputs = processor(
+        text=text,
+        return_tensors="pt",
+    )
+    inputs.pop("token_type_ids", None)
+    return inputs
+
+
 def load_model(
     model_path: str = MODEL_PATH,
     *,

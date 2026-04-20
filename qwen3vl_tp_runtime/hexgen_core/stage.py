@@ -7,6 +7,8 @@ import torch
 
 from qwen3vl_tp_runtime.hexgen_core.schema import StageHandoffPayload
 from qwen3vl_tp_runtime.models.qwen3vl.forward import (
+    forward_text_prefill_stage_logits,
+    forward_text_prefill_stage_logits_tp,
     forward_text_stage,
     forward_text_stage_tp,
     trace_text_stage,
@@ -205,6 +207,8 @@ def run_stage(stage_input: torch.Tensor, stage_bundle: dict[str, Any] | StageBun
     bundle_view = as_stage_bundle_view(stage_bundle)
     if bundle_view.stage_type == "text":
         return forward_text_stage(stage_input, bundle_view.payload)
+    if bundle_view.stage_type == "text_prefill_last":
+        return forward_text_prefill_stage_logits(stage_input, bundle_view.payload)
     raise NotImplementedError(f"暂不支持的 stage_type: {bundle_view.stage_type}")
 
 
@@ -232,12 +236,24 @@ def run_stage_tp(
             attn_math_mode=tp_attn_math_mode,
             mlp_math_mode=tp_mlp_math_mode,
         )
+    if bundle_view.stage_type == "text_prefill_last":
+        return forward_text_prefill_stage_logits_tp(
+            stage_input,
+            bundle_view.payload,
+            rank,
+            world_size,
+            comm_dtype,
+            tp_group=tp_group,
+            tp_src_rank=tp_src_rank,
+            attn_math_mode=tp_attn_math_mode,
+            mlp_math_mode=tp_mlp_math_mode,
+        )
     raise NotImplementedError(f"暂不支持的 stage_type: {bundle_view.stage_type}")
 
 
 def trace_stage(stage_input: torch.Tensor, stage_bundle: dict[str, Any] | StageBundleView):
     bundle_view = as_stage_bundle_view(stage_bundle)
-    if bundle_view.stage_type == "text":
+    if bundle_view.stage_type in {"text", "text_prefill_last"}:
         return trace_text_stage(stage_input, bundle_view.payload)
     raise NotImplementedError(f"暂不支持的 stage_type: {bundle_view.stage_type}")
 
@@ -254,7 +270,7 @@ def trace_stage_tp(
     tp_mlp_math_mode: str = "orig",
 ):
     bundle_view = as_stage_bundle_view(stage_bundle)
-    if bundle_view.stage_type == "text":
+    if bundle_view.stage_type in {"text", "text_prefill_last"}:
         return trace_text_stage_tp(
             stage_input,
             bundle_view.payload,

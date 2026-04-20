@@ -60,6 +60,7 @@ echo "[launch] hybrid_debug=${HYBRID_DEBUG} compare_direct=${COMPARE_DIRECT} tra
 import json
 import os
 
+import torch
 import torch.distributed as dist
 
 from qwen3vl_tp_runtime.hexgen_core.distributed import get_device, init_dist
@@ -83,6 +84,19 @@ def env_optional_int(name: str) -> int | None:
     return int(value)
 
 
+def summarize_last_token_topk(logits, topk: int) -> list[dict]:
+    last_token_logits = logits[0, -1].to(torch.float32)
+    k = min(topk, last_token_logits.numel())
+    values, indices = torch.topk(last_token_logits, k=k)
+    return [
+        {
+            "token_id": int(token_id),
+            "logit": float(value),
+        }
+        for value, token_id in zip(values.tolist(), indices.tolist())
+    ]
+
+
 manifest = load_hybrid_manifest(os.environ["MANIFEST_PATH"])
 rank, world_size = init_dist()
 device = get_device(os.environ["DEVICE"])
@@ -102,13 +116,17 @@ runner = TextHybridRunner(
     trace_layers=trace_layers,
     dump_layer=dump_layer,
     dump_topk=dump_topk,
+    return_tensors=(manifest.pipeline_type == "text_prefill"),
 )
 
 stats = runner.run_rank(rank, world_size)
 traces = stats["traces"] or []
+stage_output = stats.pop("stage_output", None)
+reference_output = stats.pop("reference_output", None)
 
 summary = {
     "rank": stats["rank"],
+    "pipeline_type": manifest.pipeline_type,
     "stage_idx": stats["stage_idx"],
     "stage_ranks": stats["stage_ranks"],
     "local_rank": stats["local_rank"],
@@ -139,6 +157,14 @@ summary = {
     "num_traces": len(traces),
     "outlier_dump": stats["outlier_dump"],
 }
+if (
+    manifest.pipeline_type == "text_prefill"
+    and stage_output is not None
+    and reference_output is not None
+    and stats["stage_idx"] == stats["num_stages"] - 1
+):
+    summary["last_stage_topk"] = summarize_last_token_topk(stage_output, dump_topk)
+    summary["reference_topk"] = summarize_last_token_topk(reference_output, dump_topk)
 
 print(json.dumps(summary, ensure_ascii=False, indent=2))
 

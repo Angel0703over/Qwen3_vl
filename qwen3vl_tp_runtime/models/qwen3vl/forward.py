@@ -581,6 +581,92 @@ def forward_text_stage_tp(
     return output
 
 
+def forward_text_embeddings(input_ids: torch.Tensor, bundle: dict) -> torch.Tensor:
+    return F.embedding(input_ids, bundle["embed_tokens_weight"])
+
+
+def trace_text_prefill_logits(layer_input: torch.Tensor, bundle: dict) -> dict:
+    stage_output = forward_text_stage(layer_input, bundle)
+    norm_output = rms_norm(
+        stage_output,
+        bundle["final_norm_weight"],
+        bundle["final_norm_eps"],
+    )
+    logits = F.linear(
+        norm_output,
+        bundle["lm_head_weight"],
+        bundle["lm_head_bias"],
+    )
+    return {
+        "layer_input": layer_input,
+        "stage_output": stage_output,
+        "norm_output": norm_output,
+        "logits": logits,
+    }
+
+
+def forward_text_prefill_logits(layer_input: torch.Tensor, bundle: dict) -> torch.Tensor:
+    return trace_text_prefill_logits(layer_input, bundle)["logits"]
+
+
+def trace_text_prefill_stage_logits(hidden_states: torch.Tensor, bundle: dict) -> dict:
+    hidden_stage_output = forward_text_stage(hidden_states, bundle)
+    norm_output = rms_norm(
+        hidden_stage_output,
+        bundle["final_norm_weight"],
+        bundle["final_norm_eps"],
+    )
+    logits = F.linear(
+        norm_output,
+        bundle["lm_head_weight"],
+        bundle["lm_head_bias"],
+    )
+    return {
+        "stage_input": hidden_states,
+        "hidden_stage_output": hidden_stage_output,
+        "norm_output": norm_output,
+        "logits": logits,
+    }
+
+
+def forward_text_prefill_stage_logits(hidden_states: torch.Tensor, bundle: dict) -> torch.Tensor:
+    return trace_text_prefill_stage_logits(hidden_states, bundle)["logits"]
+
+
+def forward_text_prefill_stage_logits_tp(
+    hidden_states: torch.Tensor,
+    bundle: dict,
+    rank: int,
+    world_size: int,
+    comm_dtype: torch.dtype,
+    tp_group=None,
+    tp_src_rank: int = 0,
+    attn_math_mode: str = "orig",
+    mlp_math_mode: str = "orig",
+) -> torch.Tensor:
+    hidden_stage_output = forward_text_stage_tp(
+        hidden_states,
+        bundle,
+        rank,
+        world_size,
+        comm_dtype,
+        tp_group=tp_group,
+        tp_src_rank=tp_src_rank,
+        attn_math_mode=attn_math_mode,
+        mlp_math_mode=mlp_math_mode,
+    )
+    norm_output = rms_norm(
+        hidden_stage_output,
+        bundle["final_norm_weight"],
+        bundle["final_norm_eps"],
+    )
+    return F.linear(
+        norm_output,
+        bundle["lm_head_weight"],
+        bundle["lm_head_bias"],
+    )
+
+
 def trace_text_stage(hidden_states: torch.Tensor, stage_bundle: dict) -> list[dict]:
     traces = []
     output = hidden_states

@@ -12,6 +12,7 @@ from qwen3vl_tp_runtime.hexgen_core.gen_hetero_groups import (
 )
 from qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel import (
     load_stage_bundle_by_index,
+    prepare_text_prefill_pipeline,
     prepare_text_pipeline,
 )
 from qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel import (
@@ -64,6 +65,40 @@ def prepare_text_hybrid(
 
     layout = build_hybrid_layout(tp_degrees)
     manifest = TextHybridManifest.from_pipeline_manifest(pipeline_manifest, layout)
+    torch.save(manifest.to_dict(), manifest_path)
+    return manifest
+
+
+def prepare_text_prefill_hybrid(
+    *,
+    stage_ranges: list[tuple[int, int]],
+    tp_degrees: list[int],
+    bundle_dir: str,
+    manifest_path: str,
+    prompt: str = "请用中文简要介绍一下人工智能。",
+    save_dtype: str = "auto",
+    model_path: str | None = None,
+) -> TextHybridManifest:
+    pipeline_manifest = prepare_text_prefill_pipeline(
+        stage_ranges=stage_ranges,
+        bundle_dir=bundle_dir,
+        manifest_path=manifest_path,
+        prompt=prompt,
+        save_dtype=save_dtype,
+        model_path=model_path,
+    )
+    tp_degrees = parse_tp_degrees(tp_degrees)
+    if len(tp_degrees) != pipeline_manifest.num_stages:
+        raise ValueError(
+            f"stage 数是 {pipeline_manifest.num_stages}，但 TP 度数拿到 {len(tp_degrees)} 个。"
+        )
+
+    layout = build_hybrid_layout(tp_degrees)
+    manifest = TextHybridManifest.from_pipeline_manifest(
+        pipeline_manifest,
+        layout,
+        runtime="text_prefill_hybrid",
+    )
     torch.save(manifest.to_dict(), manifest_path)
     return manifest
 
@@ -245,6 +280,7 @@ class TextHybridRunner:
         trace_layers: bool = False,
         dump_layer: int | None = None,
         dump_topk: int = 5,
+        return_tensors: bool = False,
     ) -> None:
         self.manifest = manifest
         self.device = device
@@ -256,6 +292,7 @@ class TextHybridRunner:
         self.trace_layers = trace_layers
         self.dump_layer = dump_layer
         self.dump_topk = dump_topk
+        self.return_tensors = return_tensors
 
     def run_rank(self, rank: int, world_size: int) -> dict:
         return run_text_hybrid_rank(
@@ -271,6 +308,7 @@ class TextHybridRunner:
             trace_layers=self.trace_layers,
             dump_layer=self.dump_layer,
             dump_topk=self.dump_topk,
+            return_tensors=self.return_tensors,
         )
 
 
@@ -288,6 +326,7 @@ def run_text_hybrid_rank(
     trace_layers: bool = False,
     dump_layer: int | None = None,
     dump_topk: int = 5,
+    return_tensors: bool = False,
 ) -> dict:
     if world_size != manifest.world_size:
         raise ValueError(f"WORLD_SIZE={world_size}，但 hybrid manifest 需要 {manifest.world_size}。")
@@ -340,6 +379,7 @@ def run_text_hybrid_rank(
         group=rank_stage.stage_group,
     )
 
+    reference_output = bundle.get("stage_output")
     tp_stage_stats = run_text_tensor_parallel_stage(
         stage_input=stage_input,
         bundle=bundle,
@@ -377,7 +417,7 @@ def run_text_hybrid_rank(
         outgoing_handoff,
     )
 
-    return {
+    stats = {
         "rank": rank,
         "stage_idx": rank_stage.stage_idx,
         "stage_ranks": rank_stage.stage_ranks,
@@ -416,12 +456,17 @@ def run_text_hybrid_rank(
         "traces": tp_stage_stats["traces"],
         "outlier_dump": tp_stage_stats["outlier_dump"],
     }
+    if return_tensors and rank_stage.local_rank == 0:
+        stats["stage_output"] = stage_output
+        stats["reference_output"] = reference_output
+    return stats
 
 
 __all__ = [
     "TextHybridManifest",
     "HybridRankContext",
     "prepare_text_hybrid",
+    "prepare_text_prefill_hybrid",
     "load_hybrid_manifest",
     "init_stage_groups",
     "resolve_rank_stage",
