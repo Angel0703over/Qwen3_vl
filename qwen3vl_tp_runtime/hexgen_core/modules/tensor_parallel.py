@@ -163,7 +163,11 @@ def _build_layer_outlier_dump(
         "deepstack_applied": reference_trace["deepstack_applied"],
         "direct_vs_ref": {
             "layer_input": _build_tensor_outliers(direct_trace["layer_input"], reference_trace["layer_input"], topk),
+            "attn_input": _build_tensor_outliers(direct_trace["attn_input"], reference_trace["attn_input"], topk),
+            "attn_context": _build_tensor_outliers(direct_trace["attn_context"], reference_trace["attn_context"], topk),
             "attn_output": _build_tensor_outliers(direct_trace["attn_output"], reference_trace["attn_output"], topk),
+            "after_attn": _build_tensor_outliers(direct_trace["after_attn"], reference_trace["after_attn"], topk),
+            "mlp_input": _build_tensor_outliers(direct_trace["mlp_input"], reference_trace["mlp_input"], topk),
             "gate_out": _build_tensor_outliers(direct_trace["gate_out"], reference_trace["gate_out"], topk),
             "up_out": _build_tensor_outliers(direct_trace["up_out"], reference_trace["up_out"], topk),
             "fused": _build_tensor_outliers(direct_trace["fused"], reference_trace["fused"], topk),
@@ -178,9 +182,37 @@ def _build_layer_outlier_dump(
                 tp_degree=tp_degree,
                 topk=topk,
             ),
+            "attn_input": _tp_vs_direct_outliers(
+                tp_trace["attn_input"],
+                direct_trace["attn_input"],
+                local_rank=local_rank,
+                tp_degree=tp_degree,
+                topk=topk,
+            ),
+            "attn_context": _tp_vs_direct_outliers(
+                tp_trace["attn_context"],
+                direct_trace["attn_context"],
+                local_rank=local_rank,
+                tp_degree=tp_degree,
+                topk=topk,
+            ),
             "attn_output": _tp_vs_direct_outliers(
                 tp_trace["attn_output"],
                 direct_trace["attn_output"],
+                local_rank=local_rank,
+                tp_degree=tp_degree,
+                topk=topk,
+            ),
+            "after_attn": _tp_vs_direct_outliers(
+                tp_trace["after_attn"],
+                direct_trace["after_attn"],
+                local_rank=local_rank,
+                tp_degree=tp_degree,
+                topk=topk,
+            ),
+            "mlp_input": _tp_vs_direct_outliers(
+                tp_trace["mlp_input"],
+                direct_trace["mlp_input"],
                 local_rank=local_rank,
                 tp_degree=tp_degree,
                 topk=topk,
@@ -264,7 +296,11 @@ def build_stage_traces(
                 "deepstack_applied": reference_trace["deepstack_applied"],
                 "direct_vs_ref": {
                     "layer_input": tensor_diff_stats(direct_trace["layer_input"], reference_trace["layer_input"]),
+                    "attn_input": tensor_diff_stats(direct_trace["attn_input"], reference_trace["attn_input"]),
+                    "attn_context": tensor_diff_stats(direct_trace["attn_context"], reference_trace["attn_context"]),
                     "attn_output": tensor_diff_stats(direct_trace["attn_output"], reference_trace["attn_output"]),
+                    "after_attn": tensor_diff_stats(direct_trace["after_attn"], reference_trace["after_attn"]),
+                    "mlp_input": tensor_diff_stats(direct_trace["mlp_input"], reference_trace["mlp_input"]),
                     "gate_out": tensor_diff_stats(direct_trace["gate_out"], reference_trace["gate_out"]),
                     "up_out": tensor_diff_stats(direct_trace["up_out"], reference_trace["up_out"]),
                     "fused": tensor_diff_stats(direct_trace["fused"], reference_trace["fused"]),
@@ -282,9 +318,33 @@ def build_stage_traces(
                         local_rank=local_rank,
                         tp_degree=tp_degree,
                     ),
+                    "attn_input": _tp_vs_direct_stats(
+                        tp_trace["attn_input"],
+                        direct_trace["attn_input"],
+                        local_rank=local_rank,
+                        tp_degree=tp_degree,
+                    ),
+                    "attn_context": _tp_vs_direct_stats(
+                        tp_trace["attn_context"],
+                        direct_trace["attn_context"],
+                        local_rank=local_rank,
+                        tp_degree=tp_degree,
+                    ),
                     "attn_output": _tp_vs_direct_stats(
                         tp_trace["attn_output"],
                         direct_trace["attn_output"],
+                        local_rank=local_rank,
+                        tp_degree=tp_degree,
+                    ),
+                    "after_attn": _tp_vs_direct_stats(
+                        tp_trace["after_attn"],
+                        direct_trace["after_attn"],
+                        local_rank=local_rank,
+                        tp_degree=tp_degree,
+                    ),
+                    "mlp_input": _tp_vs_direct_stats(
+                        tp_trace["mlp_input"],
+                        direct_trace["mlp_input"],
                         local_rank=local_rank,
                         tp_degree=tp_degree,
                     ),
@@ -343,6 +403,7 @@ def run_text_tensor_parallel_stage(
     *,
     stage_input: torch.Tensor,
     bundle: dict,
+    reference_input_override: torch.Tensor | None = None,
     local_rank: int,
     tp_degree: int,
     comm_dtype: torch.dtype,
@@ -357,7 +418,9 @@ def run_text_tensor_parallel_stage(
 ) -> dict:
     """Execute one captured text stage under TP and optionally collect direct/trace comparisons."""
 
-    reference_input = get_stage_input(bundle)
+    reference_input = (
+        reference_input_override if reference_input_override is not None else get_stage_input(bundle)
+    )
     reference_output = get_stage_output(bundle)
     boundary_max, boundary_mean = tensor_diff_stats(stage_input, reference_input)
 
@@ -459,6 +522,7 @@ class TextTensorParallelRunner:
         stats = run_text_tensor_parallel_stage(
             stage_input=stage_input,
             bundle=bundle,
+            reference_input_override=None,
             local_rank=rank,
             tp_degree=world_size,
             comm_dtype=comm_dtype,

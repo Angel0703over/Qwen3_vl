@@ -53,6 +53,20 @@ def all_reduce_cpu(
     return reduced.to(device=target_device, dtype=target_dtype)
 
 
+def all_gather_cpu(
+    local_tensor: torch.Tensor,
+    target_device: torch.device,
+    target_dtype: torch.dtype,
+    comm_dtype: torch.dtype,
+    group=None,
+) -> list[torch.Tensor]:
+    payload = local_tensor.detach().to("cpu", dtype=comm_dtype).contiguous()
+    world_size = dist.get_world_size(group=group)
+    gathered = [torch.empty_like(payload) for _ in range(world_size)]
+    dist.all_gather(gathered, payload, group=group)
+    return [tensor.to(device=target_device, dtype=target_dtype) for tensor in gathered]
+
+
 def broadcast_cpu(
     reference_tensor: torch.Tensor,
     tensor: torch.Tensor | None,

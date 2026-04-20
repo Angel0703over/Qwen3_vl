@@ -1,11 +1,10 @@
 """Qwen3-VL text decoder forward and TP replay kernels."""
 
 import torch
-import torch.distributed as dist
 import torch.nn.functional as F
 from transformers.activations import ACT2FN
 
-from qwen3vl_tp_runtime.hexgen_core.distributed import all_reduce_cpu
+from qwen3vl_tp_runtime.hexgen_core.distributed import all_gather_cpu, broadcast_cpu
 from qwen3vl_tp_runtime.models.qwen3vl.ops import apply_rope, attn_eager, rms_norm
 
 
@@ -64,6 +63,10 @@ def _cast_optional_tensor(
 
 
 def forward_attention(hidden_states: torch.Tensor, bundle: dict) -> torch.Tensor:
+    return trace_attention(hidden_states, bundle)["attn_output"]
+
+
+def trace_attention(hidden_states: torch.Tensor, bundle: dict) -> dict:
     input_shape = hidden_states.shape[:-1]
     head_dim = bundle["head_dim"]
     num_heads = bundle["num_attention_heads"]
@@ -90,8 +93,12 @@ def forward_attention(hidden_states: torch.Tensor, bundle: dict) -> torch.Tensor
         num_key_value_groups=num_heads // num_kv_heads,
         scaling=bundle["scaling"],
     )
-    attn_output = attn_output.reshape(*input_shape, -1).contiguous()
-    return F.linear(attn_output, bundle["o_weight"], bundle["o_bias"])
+    attn_context = attn_output.reshape(*input_shape, -1).contiguous()
+    attn_output = F.linear(attn_context, bundle["o_weight"], bundle["o_bias"])
+    return {
+        "attn_context": attn_context,
+        "attn_output": attn_output,
+    }
 
 
 def forward_attention_tp(
@@ -104,6 +111,28 @@ def forward_attention_tp(
     tp_src_rank: int = 0,
     math_mode: str = "orig",
 ) -> torch.Tensor:
+    return trace_attention_tp(
+        hidden_states,
+        bundle,
+        rank,
+        world_size,
+        comm_dtype,
+        tp_group=tp_group,
+        tp_src_rank=tp_src_rank,
+        math_mode=math_mode,
+    )["attn_output"]
+
+
+def trace_attention_tp(
+    hidden_states: torch.Tensor,
+    bundle: dict,
+    rank: int,
+    world_size: int,
+    comm_dtype: torch.dtype,
+    tp_group=None,
+    tp_src_rank: int = 0,
+    math_mode: str = "orig",
+) -> dict:
     num_heads = bundle["num_attention_heads"]
     num_kv_heads = bundle["num_key_value_heads"]
     head_dim = bundle["head_dim"]
@@ -115,61 +144,66 @@ def forward_attention_tp(
 
     local_q_heads = num_heads // world_size
     local_kv_heads = num_kv_heads // world_size
-    q_start = rank * local_q_heads * head_dim
-    q_end = (rank + 1) * local_q_heads * head_dim
-    kv_start = rank * local_kv_heads * head_dim
-    kv_end = (rank + 1) * local_kv_heads * head_dim
+    q_head_start = rank * local_q_heads
+    q_head_end = (rank + 1) * local_q_heads
+    kv_head_start = rank * local_kv_heads
+    kv_head_end = (rank + 1) * local_kv_heads
 
-    x = hidden_states.to(dtype=math_dtype)
-    q_weight = bundle["q_weight"][q_start:q_end, :].contiguous().to(device=device, dtype=math_dtype)
+    x = hidden_states.to(dtype=orig_dtype)
+    q_weight = bundle["q_weight"].to(device=device, dtype=orig_dtype)
     q_bias = _cast_optional_tensor(
-        None if bundle["q_bias"] is None else bundle["q_bias"][q_start:q_end].contiguous(),
+        bundle["q_bias"],
         device=device,
-        dtype=math_dtype,
+        dtype=orig_dtype,
     )
-    k_weight = bundle["k_weight"][kv_start:kv_end, :].contiguous().to(device=device, dtype=math_dtype)
+    k_weight = bundle["k_weight"].to(device=device, dtype=orig_dtype)
     k_bias = _cast_optional_tensor(
-        None if bundle["k_bias"] is None else bundle["k_bias"][kv_start:kv_end].contiguous(),
+        bundle["k_bias"],
         device=device,
-        dtype=math_dtype,
+        dtype=orig_dtype,
     )
-    v_weight = bundle["v_weight"][kv_start:kv_end, :].contiguous().to(device=device, dtype=math_dtype)
+    v_weight = bundle["v_weight"].to(device=device, dtype=orig_dtype)
     v_bias = _cast_optional_tensor(
-        None if bundle["v_bias"] is None else bundle["v_bias"][kv_start:kv_end].contiguous(),
+        bundle["v_bias"],
         device=device,
-        dtype=math_dtype,
+        dtype=orig_dtype,
     )
-    o_weight = bundle["o_weight"][:, q_start:q_end].contiguous().to(device=device, dtype=math_dtype)
-    q_norm_weight = bundle["q_norm_weight"].to(device=device, dtype=math_dtype)
-    k_norm_weight = bundle["k_norm_weight"].to(device=device, dtype=math_dtype)
+    q_norm_weight = bundle["q_norm_weight"].to(device=device, dtype=orig_dtype)
+    k_norm_weight = bundle["k_norm_weight"].to(device=device, dtype=orig_dtype)
 
-    local_q_proj = F.linear(
+    full_q_proj = F.linear(
         x,
         q_weight,
         q_bias,
     )
+    local_q_proj = full_q_proj.view(*hidden_states.shape[:-1], num_heads, head_dim)[..., q_head_start:q_head_end, :]
     local_q = rms_norm(
-        local_q_proj.view(*hidden_states.shape[:-1], local_q_heads, head_dim),
+        local_q_proj,
         q_norm_weight,
         bundle["rms_norm_eps"],
     ).transpose(1, 2)
 
-    local_k_proj = F.linear(
+    full_k_proj = F.linear(
         x,
         k_weight,
         k_bias,
     )
+    local_k_proj = full_k_proj.view(*hidden_states.shape[:-1], num_kv_heads, head_dim)[..., kv_head_start:kv_head_end, :]
     local_k = rms_norm(
-        local_k_proj.view(*hidden_states.shape[:-1], local_kv_heads, head_dim),
+        local_k_proj,
         k_norm_weight,
         bundle["rms_norm_eps"],
     ).transpose(1, 2)
 
-    local_v = F.linear(
+    full_v_proj = F.linear(
         x,
         v_weight,
         v_bias,
-    ).view(*hidden_states.shape[:-1], local_kv_heads, head_dim).transpose(1, 2)
+    )
+    local_v = (
+        full_v_proj.view(*hidden_states.shape[:-1], num_kv_heads, head_dim)[..., kv_head_start:kv_head_end, :]
+        .transpose(1, 2)
+    )
 
     local_q, local_k = apply_rope(local_q, local_k, bundle["cos"], bundle["sin"])
     local_attn_output, _ = attn_eager(
@@ -179,26 +213,40 @@ def forward_attention_tp(
         bundle["attention_mask"],
         num_key_value_groups=local_q_heads // local_kv_heads,
         scaling=bundle["scaling"],
+        compute_dtype=None,
+        score_output_dtype=None,
+        probabilities_dtype=orig_dtype,
+        output_dtype=orig_dtype,
     )
-    local_attn_flat = local_attn_output.reshape(*hidden_states.shape[:-1], -1).contiguous()
-
-    local_o = F.linear(
-        local_attn_flat,
-        o_weight,
-        bias=None,
-    )
-    reduced = all_reduce_cpu(
-        local_o,
+    local_attn_context = local_attn_output.reshape(*hidden_states.shape[:-1], -1).contiguous()
+    gathered_context = all_gather_cpu(
+        local_attn_context,
         device,
         math_dtype,
         comm_dtype,
         group=tp_group,
     )
-    reduced_cpu = reduced.detach().to("cpu", dtype=comm_dtype)
-    if rank == 0 and bundle["o_bias"] is not None:
-        reduced_cpu = reduced_cpu + bundle["o_bias"].to("cpu", dtype=comm_dtype)
-    dist.broadcast(reduced_cpu, src=tp_src_rank, group=tp_group)
-    return reduced_cpu.to(device=device, dtype=orig_dtype)
+    full_attn_context = torch.cat(gathered_context, dim=-1)
+    full_o_weight = bundle["o_weight"].to(device=device, dtype=math_dtype)
+    full_o_bias = _cast_optional_tensor(
+        bundle["o_bias"],
+        device=device,
+        dtype=math_dtype,
+    )
+    leader_output = None
+    if rank == 0:
+        leader_output = F.linear(full_attn_context, full_o_weight, full_o_bias)
+    attn_output = broadcast_cpu(
+        hidden_states,
+        leader_output,
+        src=tp_src_rank,
+        comm_dtype=comm_dtype,
+        group=tp_group,
+    )
+    return {
+        "attn_context": local_attn_context,
+        "attn_output": attn_output,
+    }
 
 
 def forward_mlp(hidden_states: torch.Tensor, bundle: dict) -> torch.Tensor:
@@ -244,42 +292,54 @@ def trace_mlp_tp(
     start = rank * shard
     end = (rank + 1) * shard
 
-    x = hidden_states.to(dtype=math_dtype)
-    gate_weight = bundle["gate_weight"][start:end, :].contiguous().to(device=device, dtype=math_dtype)
+    x = hidden_states.to(dtype=orig_dtype)
+    gate_weight = bundle["gate_weight"].to(device=device, dtype=orig_dtype)
     gate_bias = _cast_optional_tensor(
-        None if bundle["gate_bias"] is None else bundle["gate_bias"][start:end].contiguous(),
+        bundle["gate_bias"],
         device=device,
-        dtype=math_dtype,
+        dtype=orig_dtype,
     )
-    up_weight = bundle["up_weight"][start:end, :].contiguous().to(device=device, dtype=math_dtype)
+    up_weight = bundle["up_weight"].to(device=device, dtype=orig_dtype)
     up_bias = _cast_optional_tensor(
-        None if bundle["up_bias"] is None else bundle["up_bias"][start:end].contiguous(),
+        bundle["up_bias"],
+        device=device,
+        dtype=orig_dtype,
+    )
+    down_weight = bundle["down_weight"].to(device=device, dtype=math_dtype)
+    down_bias = _cast_optional_tensor(
+        bundle["down_bias"],
         device=device,
         dtype=math_dtype,
     )
-    down_weight = bundle["down_weight"][:, start:end].contiguous().to(device=device, dtype=math_dtype)
 
-    local_gate = F.linear(x, gate_weight, gate_bias)
-    local_up = F.linear(x, up_weight, up_bias)
-    local_fused = act_fn(local_gate) * local_up
-    local_down = F.linear(local_fused, down_weight, bias=None)
-    reduced = all_reduce_cpu(
-        local_down,
+    full_gate_out = F.linear(x, gate_weight, gate_bias)
+    full_up_out = F.linear(x, up_weight, up_bias)
+    gate_out = full_gate_out[..., start:end]
+    up_out = full_up_out[..., start:end]
+    fused_out = act_fn(gate_out) * up_out
+    gathered_fused = all_gather_cpu(
+        fused_out,
         device,
         math_dtype,
         comm_dtype,
         group=tp_group,
     )
-    reduced_cpu = reduced.detach().to("cpu", dtype=comm_dtype)
-    if rank == 0 and bundle["down_bias"] is not None:
-        reduced_cpu = reduced_cpu + bundle["down_bias"].to("cpu", dtype=comm_dtype)
-    dist.broadcast(reduced_cpu, src=tp_src_rank, group=tp_group)
-    mlp_output = reduced_cpu.to(device=device, dtype=orig_dtype)
+    full_fused = torch.cat(gathered_fused, dim=-1)
+    leader_output = None
+    if rank == 0:
+        leader_output = F.linear(full_fused, down_weight, down_bias)
+    mlp_output = broadcast_cpu(
+        hidden_states,
+        leader_output,
+        src=tp_src_rank,
+        comm_dtype=comm_dtype,
+        group=tp_group,
+    )
 
     return {
-        "gate_out": local_gate.to(dtype=orig_dtype),
-        "up_out": local_up.to(dtype=orig_dtype),
-        "fused": local_fused.to(dtype=orig_dtype),
+        "gate_out": gate_out,
+        "up_out": up_out,
+        "fused": fused_out,
         "mlp_output": mlp_output,
     }
 
@@ -294,60 +354,16 @@ def forward_mlp_tp(
     tp_src_rank: int = 0,
     math_mode: str = "float32",
 ) -> torch.Tensor:
-    intermediate_size = bundle["gate_weight"].shape[0]
-    orig_dtype, math_dtype = _resolve_tp_math_dtype(hidden_states, math_mode)
-    device = hidden_states.device
-    if intermediate_size % world_size != 0:
-        raise ValueError("当前 TP MLP 要求 intermediate_size 能被 world_size 整除。")
-
-    act_fn = ACT2FN[bundle["hidden_act"]]
-    shard = intermediate_size // world_size
-    start = rank * shard
-    end = (rank + 1) * shard
-
-    x = hidden_states.to(dtype=math_dtype)
-    gate_weight = bundle["gate_weight"][start:end, :].contiguous().to(device=device, dtype=math_dtype)
-    gate_bias = _cast_optional_tensor(
-        None if bundle["gate_bias"] is None else bundle["gate_bias"][start:end].contiguous(),
-        device=device,
-        dtype=math_dtype,
-    )
-    up_weight = bundle["up_weight"][start:end, :].contiguous().to(device=device, dtype=math_dtype)
-    up_bias = _cast_optional_tensor(
-        None if bundle["up_bias"] is None else bundle["up_bias"][start:end].contiguous(),
-        device=device,
-        dtype=math_dtype,
-    )
-    down_weight = bundle["down_weight"][:, start:end].contiguous().to(device=device, dtype=math_dtype)
-
-    local_gate = F.linear(
-        x,
-        gate_weight,
-        gate_bias,
-    )
-    local_up = F.linear(
-        x,
-        up_weight,
-        up_bias,
-    )
-    local_fused = act_fn(local_gate) * local_up
-    local_down = F.linear(
-        local_fused,
-        down_weight,
-        bias=None,
-    )
-    reduced = all_reduce_cpu(
-        local_down,
-        device,
-        math_dtype,
+    return trace_mlp_tp(
+        hidden_states,
+        bundle,
+        rank,
+        world_size,
         comm_dtype,
-        group=tp_group,
-    )
-    reduced_cpu = reduced.detach().to("cpu", dtype=comm_dtype)
-    if rank == 0 and bundle["down_bias"] is not None:
-        reduced_cpu = reduced_cpu + bundle["down_bias"].to("cpu", dtype=comm_dtype)
-    dist.broadcast(reduced_cpu, src=tp_src_rank, group=tp_group)
-    return reduced_cpu.to(device=device, dtype=orig_dtype)
+        tp_group=tp_group,
+        tp_src_rank=tp_src_rank,
+        math_mode=math_mode,
+    )["mlp_output"]
 
 
 def forward_decoder_layer(layer_input: torch.Tensor, bundle: dict) -> torch.Tensor:
@@ -363,7 +379,9 @@ def forward_decoder_layer(layer_input: torch.Tensor, bundle: dict) -> torch.Tens
 def trace_decoder_layer(layer_input: torch.Tensor, bundle: dict) -> dict:
     # 返回中间张量，方便逐层定位数值偏差来源。
     attn_input = rms_norm(layer_input, bundle["input_ln_weight"], bundle["input_ln_eps"])
-    attn_output = forward_attention(attn_input, bundle)
+    attn_trace = trace_attention(attn_input, bundle)
+    attn_context = attn_trace["attn_context"]
+    attn_output = attn_trace["attn_output"]
     after_attn = layer_input + attn_output
 
     mlp_input = rms_norm(after_attn, bundle["post_attn_ln_weight"], bundle["post_attn_ln_eps"])
@@ -374,6 +392,7 @@ def trace_decoder_layer(layer_input: torch.Tensor, bundle: dict) -> dict:
     return {
         "layer_input": layer_input,
         "attn_input": attn_input,
+        "attn_context": attn_context,
         "attn_output": attn_output,
         "after_attn": after_attn,
         "mlp_input": mlp_input,
@@ -435,7 +454,7 @@ def trace_decoder_layer_tp(
     mlp_math_mode: str = "float32",
 ) -> dict:
     attn_input = rms_norm(layer_input, bundle["input_ln_weight"], bundle["input_ln_eps"])
-    attn_output = forward_attention_tp(
+    attn_trace = trace_attention_tp(
         attn_input,
         bundle,
         rank,
@@ -445,6 +464,8 @@ def trace_decoder_layer_tp(
         tp_src_rank=tp_src_rank,
         math_mode=attn_math_mode,
     )
+    attn_context = attn_trace["attn_context"]
+    attn_output = attn_trace["attn_output"]
     after_attn = layer_input + attn_output
 
     mlp_input = rms_norm(after_attn, bundle["post_attn_ln_weight"], bundle["post_attn_ln_eps"])
@@ -464,6 +485,7 @@ def trace_decoder_layer_tp(
     return {
         "layer_input": layer_input,
         "attn_input": attn_input,
+        "attn_context": attn_context,
         "attn_output": attn_output,
         "after_attn": after_attn,
         "mlp_input": mlp_input,

@@ -343,6 +343,7 @@ def run_text_hybrid_rank(
     tp_stage_stats = run_text_tensor_parallel_stage(
         stage_input=stage_input,
         bundle=bundle,
+        reference_input_override=reference_input,
         local_rank=rank_stage.local_rank,
         tp_degree=rank_stage.tp_degree,
         comm_dtype=comm_dtype,
