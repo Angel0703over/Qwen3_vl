@@ -17,6 +17,8 @@ export SAVE_DTYPE="${SAVE_DTYPE:-auto}"
 export BUNDLE_DIR="${BUNDLE_DIR:-${REPO_ROOT}/qwen3vl_text_hybrid}"
 export MANIFEST_PATH="${MANIFEST_PATH:-${REPO_ROOT}/qwen3vl_text_hybrid_manifest.pt}"
 export PROMPT="${PROMPT:-请用中文简要介绍一下人工智能。}"
+export DECODE_TOKEN_ID="${DECODE_TOKEN_ID:-}"
+export MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-4}"
 
 echo "[prepare] repo_root=${REPO_ROOT}"
 echo "[prepare] runtime_root=${RUNTIME_ROOT}"
@@ -27,8 +29,14 @@ echo "[prepare] tp_degrees=${TP_DEGREES}"
 echo "[prepare] bundle_dir=${BUNDLE_DIR}"
 echo "[prepare] manifest_path=${MANIFEST_PATH}"
 echo "[prepare] num_frames=${NUM_FRAMES} save_dtype=${SAVE_DTYPE}"
-if [[ "${PIPELINE_TYPE}" == "text_prefill" ]]; then
+if [[ "${PIPELINE_TYPE}" == "text_prefill" || "${PIPELINE_TYPE}" == "text_decode" || "${PIPELINE_TYPE}" == "text_generate" ]]; then
   echo "[prepare] prompt=${PROMPT}"
+fi
+if [[ "${PIPELINE_TYPE}" == "text_decode" && -n "${DECODE_TOKEN_ID}" ]]; then
+  echo "[prepare] decode_token_id=${DECODE_TOKEN_ID}"
+fi
+if [[ "${PIPELINE_TYPE}" == "text_generate" ]]; then
+  echo "[prepare] max_new_tokens=${MAX_NEW_TOKENS}"
 fi
 
 "${PYTHON_BIN}" - <<'PY'
@@ -36,6 +44,8 @@ import json
 import os
 
 from qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel import (
+    prepare_text_decode_hybrid,
+    prepare_text_generate_hybrid,
     prepare_text_hybrid,
     prepare_text_prefill_hybrid,
 )
@@ -70,6 +80,19 @@ if pipeline_type == "text":
 elif pipeline_type == "text_prefill":
     manifest = prepare_text_prefill_hybrid(
         prompt=os.environ["PROMPT"],
+        **common_kwargs,
+    )
+elif pipeline_type == "text_decode":
+    decode_token_id_env = os.environ.get("DECODE_TOKEN_ID", "")
+    manifest = prepare_text_decode_hybrid(
+        prompt=os.environ["PROMPT"],
+        decode_token_id=(None if decode_token_id_env == "" else int(decode_token_id_env)),
+        **common_kwargs,
+    )
+elif pipeline_type == "text_generate":
+    manifest = prepare_text_generate_hybrid(
+        prompt=os.environ["PROMPT"],
+        max_new_tokens=int(os.environ["MAX_NEW_TOKENS"]),
         **common_kwargs,
     )
 else:

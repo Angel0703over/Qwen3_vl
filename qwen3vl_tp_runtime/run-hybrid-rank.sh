@@ -116,55 +116,141 @@ runner = TextHybridRunner(
     trace_layers=trace_layers,
     dump_layer=dump_layer,
     dump_topk=dump_topk,
-    return_tensors=(manifest.pipeline_type == "text_prefill"),
+    return_tensors=(manifest.pipeline_type in {"text_prefill", "text_decode", "text_generate"}),
 )
 
 stats = runner.run_rank(rank, world_size)
-traces = stats["traces"] or []
-stage_output = stats.pop("stage_output", None)
-reference_output = stats.pop("reference_output", None)
+if manifest.pipeline_type == "text_generate":
+    prefill_stats = stats["prefill"]
+    steps = stats["steps"]
+    summary = {
+        "rank": stats["rank"],
+        "pipeline_type": manifest.pipeline_type,
+        "stage_idx": stats["stage_idx"],
+        "stage_ranks": stats["stage_ranks"],
+        "local_rank": stats["local_rank"],
+        "tp_degree": stats["tp_degree"],
+        "leader_rank": stats["leader_rank"],
+        "current_pp_group": stats["current_pp_group"],
+        "debug_mode": compare_direct or trace_layers or dump_layer is not None,
+        "compare_direct": compare_direct,
+        "trace_layers": trace_layers,
+        "dump_layer": dump_layer,
+        "dump_topk": dump_topk,
+        "prefill_seq_len": stats["prefill_seq_len"],
+        "max_new_tokens": stats["max_new_tokens"],
+        "prefill": {
+            "input_shape": list(prefill_stats["input_shape"]),
+            "output_shape": list(prefill_stats["output_shape"]),
+            "received_payload_keys": prefill_stats["received_payload_keys"],
+            "sent_payload_keys": prefill_stats["sent_payload_keys"],
+            "sent_tensor_shapes": {
+                key: (None if value is None else list(value))
+                for key, value in prefill_stats["sent_tensor_shapes"].items()
+            },
+            "boundary_max_diff": prefill_stats["boundary_max_diff"],
+            "boundary_mean_diff": prefill_stats["boundary_mean_diff"],
+            "embedding_max_diff": prefill_stats["embedding_max_diff"],
+            "embedding_mean_diff": prefill_stats["embedding_mean_diff"],
+            "hidden_stage_max_diff": prefill_stats["hidden_stage_max_diff"],
+            "hidden_stage_mean_diff": prefill_stats["hidden_stage_mean_diff"],
+            "norm_max_diff": prefill_stats["norm_max_diff"],
+            "norm_mean_diff": prefill_stats["norm_mean_diff"],
+            "stage_max_diff": prefill_stats["stage_max_diff"],
+            "stage_mean_diff": prefill_stats["stage_mean_diff"],
+            "predicted_token_id": prefill_stats["predicted_token_id"],
+            "reference_token_id": prefill_stats["reference_token_id"],
+        },
+        "steps": [
+            {
+                "input_shape": list(step["input_shape"]),
+                "output_shape": list(step["output_shape"]),
+                "received_payload_keys": step["received_payload_keys"],
+                "sent_payload_keys": step["sent_payload_keys"],
+                "sent_tensor_shapes": {
+                    key: (None if value is None else list(value))
+                    for key, value in step["sent_tensor_shapes"].items()
+                },
+                "boundary_max_diff": step["boundary_max_diff"],
+                "boundary_mean_diff": step["boundary_mean_diff"],
+                "embedding_max_diff": step["embedding_max_diff"],
+                "embedding_mean_diff": step["embedding_mean_diff"],
+                "hidden_stage_max_diff": step["hidden_stage_max_diff"],
+                "hidden_stage_mean_diff": step["hidden_stage_mean_diff"],
+                "norm_max_diff": step["norm_max_diff"],
+                "norm_mean_diff": step["norm_mean_diff"],
+                "stage_max_diff": step["stage_max_diff"],
+                "stage_mean_diff": step["stage_mean_diff"],
+                "predicted_token_id": step["predicted_token_id"],
+                "reference_token_id": step["reference_token_id"],
+            }
+            for step in steps
+        ],
+        "generated_token_ids": stats["generated_token_ids"],
+        "reference_generated_token_ids": stats["reference_generated_token_ids"],
+        "token_match": stats["generated_token_ids"] == stats["reference_generated_token_ids"],
+    }
+    prefill_output_tensor = stats.pop("prefill_output_tensor", None)
+    step_output_tensors = stats.pop("step_output_tensors", [])
+    if (
+        stats["stage_idx"] == stats["num_stages"] - 1
+        and stats["local_rank"] == 0
+        and prefill_output_tensor is not None
+    ):
+        summary["prefill_topk"] = summarize_last_token_topk(prefill_output_tensor, dump_topk)
+        for step_idx, step_output in enumerate(step_output_tensors):
+            summary.setdefault("step_topks", []).append(
+                {
+                    "step_idx": step_idx,
+                    "topk": summarize_last_token_topk(step_output, dump_topk),
+                }
+            )
+else:
+    traces = stats["traces"] or []
+    stage_output = stats.pop("stage_output", None)
+    reference_output = stats.pop("reference_output", None)
 
-summary = {
-    "rank": stats["rank"],
-    "pipeline_type": manifest.pipeline_type,
-    "stage_idx": stats["stage_idx"],
-    "stage_ranks": stats["stage_ranks"],
-    "local_rank": stats["local_rank"],
-    "tp_degree": stats["tp_degree"],
-    "leader_rank": stats["leader_rank"],
-    "current_pp_group": stats["current_pp_group"],
-    "input_shape": list(stats["input_shape"]),
-    "output_shape": list(stats["output_shape"]),
-    "debug_mode": compare_direct or trace_layers or dump_layer is not None,
-    "compare_direct": compare_direct,
-    "trace_layers": trace_layers,
-    "dump_layer": dump_layer,
-    "dump_topk": dump_topk,
-    "received_payload_keys": stats["received_payload_keys"],
-    "sent_payload_keys": stats["sent_payload_keys"],
-    "sent_tensor_shapes": {
-        key: (None if value is None else list(value))
-        for key, value in stats["sent_tensor_shapes"].items()
-    },
-    "boundary_max_diff": stats["boundary_max_diff"],
-    "boundary_mean_diff": stats["boundary_mean_diff"],
-    "direct_max_diff": stats["direct_max_diff"],
-    "direct_mean_diff": stats["direct_mean_diff"],
-    "stage_max_diff": stats["stage_max_diff"],
-    "stage_mean_diff": stats["stage_mean_diff"],
-    "tp_direct_max_diff": stats["tp_direct_max_diff"],
-    "tp_direct_mean_diff": stats["tp_direct_mean_diff"],
-    "num_traces": len(traces),
-    "outlier_dump": stats["outlier_dump"],
-}
-if (
-    manifest.pipeline_type == "text_prefill"
-    and stage_output is not None
-    and reference_output is not None
-    and stats["stage_idx"] == stats["num_stages"] - 1
-):
-    summary["last_stage_topk"] = summarize_last_token_topk(stage_output, dump_topk)
-    summary["reference_topk"] = summarize_last_token_topk(reference_output, dump_topk)
+    summary = {
+        "rank": stats["rank"],
+        "pipeline_type": manifest.pipeline_type,
+        "stage_idx": stats["stage_idx"],
+        "stage_ranks": stats["stage_ranks"],
+        "local_rank": stats["local_rank"],
+        "tp_degree": stats["tp_degree"],
+        "leader_rank": stats["leader_rank"],
+        "current_pp_group": stats["current_pp_group"],
+        "input_shape": list(stats["input_shape"]),
+        "output_shape": list(stats["output_shape"]),
+        "debug_mode": compare_direct or trace_layers or dump_layer is not None,
+        "compare_direct": compare_direct,
+        "trace_layers": trace_layers,
+        "dump_layer": dump_layer,
+        "dump_topk": dump_topk,
+        "received_payload_keys": stats["received_payload_keys"],
+        "sent_payload_keys": stats["sent_payload_keys"],
+        "sent_tensor_shapes": {
+            key: (None if value is None else list(value))
+            for key, value in stats["sent_tensor_shapes"].items()
+        },
+        "boundary_max_diff": stats["boundary_max_diff"],
+        "boundary_mean_diff": stats["boundary_mean_diff"],
+        "direct_max_diff": stats["direct_max_diff"],
+        "direct_mean_diff": stats["direct_mean_diff"],
+        "stage_max_diff": stats["stage_max_diff"],
+        "stage_mean_diff": stats["stage_mean_diff"],
+        "tp_direct_max_diff": stats["tp_direct_max_diff"],
+        "tp_direct_mean_diff": stats["tp_direct_mean_diff"],
+        "num_traces": len(traces),
+        "outlier_dump": stats["outlier_dump"],
+    }
+    if (
+        manifest.pipeline_type in {"text_prefill", "text_decode"}
+        and stage_output is not None
+        and reference_output is not None
+        and stats["stage_idx"] == stats["num_stages"] - 1
+    ):
+        summary["last_stage_topk"] = summarize_last_token_topk(stage_output, dump_topk)
+        summary["reference_topk"] = summarize_last_token_topk(reference_output, dump_topk)
 
 print(json.dumps(summary, ensure_ascii=False, indent=2))
 
