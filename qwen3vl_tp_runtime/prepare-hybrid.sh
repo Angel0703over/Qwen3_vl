@@ -3,8 +3,9 @@
 
 set -euo pipefail
 
-REPO_ROOT="${REPO_ROOT:-/mnt/ssd/code/Qwen3_vl}"
-RUNTIME_ROOT="${RUNTIME_ROOT:-${REPO_ROOT}/qwen3vl_tp_runtime}"
+SCRIPT_DIR="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="${REPO_ROOT:-$(cd -- "${SCRIPT_DIR}/.." && pwd)}"
+RUNTIME_ROOT="${RUNTIME_ROOT:-${SCRIPT_DIR}}"
 PYTHON_BIN="${PYTHON_BIN:-/mnt/ssd/miniconda3/envs/vlm/bin/python}"
 
 export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
@@ -13,6 +14,7 @@ export PIPELINE_TYPE="${PIPELINE_TYPE:-text}"
 export STAGE_RANGES="${STAGE_RANGES:-0:5 6:11}"
 export TP_DEGREES="${TP_DEGREES:-2 2}"
 export NUM_FRAMES="${NUM_FRAMES:-8}"
+export FRAME_DIR="${FRAME_DIR:-}"
 export SAVE_DTYPE="${SAVE_DTYPE:-auto}"
 export BUNDLE_DIR="${BUNDLE_DIR:-${REPO_ROOT}/qwen3vl_text_hybrid}"
 export MANIFEST_PATH="${MANIFEST_PATH:-${REPO_ROOT}/qwen3vl_text_hybrid_manifest.pt}"
@@ -29,6 +31,9 @@ echo "[prepare] tp_degrees=${TP_DEGREES}"
 echo "[prepare] bundle_dir=${BUNDLE_DIR}"
 echo "[prepare] manifest_path=${MANIFEST_PATH}"
 echo "[prepare] num_frames=${NUM_FRAMES} save_dtype=${SAVE_DTYPE}"
+if [[ -n "${FRAME_DIR}" ]]; then
+  echo "[prepare] frame_dir=${FRAME_DIR}"
+fi
 if [[ "${PIPELINE_TYPE}" == "text_prefill" || "${PIPELINE_TYPE}" == "text_decode" || "${PIPELINE_TYPE}" == "text_generate" ]]; then
   echo "[prepare] prompt=${PROMPT}"
 fi
@@ -44,6 +49,7 @@ import json
 import os
 
 from qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel import (
+    prepare_multimodal_prefill_hybrid,
     prepare_text_decode_hybrid,
     prepare_text_generate_hybrid,
     prepare_text_hybrid,
@@ -80,6 +86,12 @@ if pipeline_type == "text":
 elif pipeline_type == "text_prefill":
     manifest = prepare_text_prefill_hybrid(
         prompt=os.environ["PROMPT"],
+        **common_kwargs,
+    )
+elif pipeline_type == "multimodal_prefill":
+    manifest = prepare_multimodal_prefill_hybrid(
+        num_frames=int(os.environ["NUM_FRAMES"]),
+        **({"frame_dir": os.environ["FRAME_DIR"]} if os.environ.get("FRAME_DIR", "") else {}),
         **common_kwargs,
     )
 elif pipeline_type == "text_decode":

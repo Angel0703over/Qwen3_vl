@@ -2,6 +2,8 @@
 
 from qwen3vl_tp_runtime.models.qwen3vl.capture import (
     capture_decoder_layer_params,
+    capture_multimodal_prefill_bundle,
+    capture_multimodal_prefill_stage_bundle,
     capture_text_decode_bundle,
     capture_text_decode_stage_bundle,
     capture_text_generate_bundle,
@@ -80,6 +82,8 @@ from qwen3vl_tp_runtime.models.qwen3vl.ops import (
 
 __all__ = [
     "capture_decoder_layer_params",
+    "capture_multimodal_prefill_bundle",
+    "capture_multimodal_prefill_stage_bundle",
     "capture_text_decode_bundle",
     "capture_text_decode_stage_bundle",
     "capture_text_generate_bundle",

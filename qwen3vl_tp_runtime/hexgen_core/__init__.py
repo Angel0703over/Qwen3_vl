@@ -1,115 +1,23 @@
-"""Runtime-facing exports for distributed execution, manifests, staging, and transport."""
+"""Runtime-facing exports for distributed execution, manifests, staging, and transport.
 
-from qwen3vl_tp_runtime.hexgen_core.config import (
-    FRAME_DIR,
-    FULL_LAYER_BUNDLE_PATH,
-    LAYER_RANGE_BUNDLE_PATH,
-    MODEL_PATH,
-    TEXT_DECODE_BUNDLE_PATH,
-    TEXT_DECODE_HYBRID_BUNDLE_DIR,
-    TEXT_DECODE_HYBRID_MANIFEST_PATH,
-    TEXT_DECODE_PIPELINE_BUNDLE_DIR,
-    TEXT_DECODE_PIPELINE_MANIFEST_PATH,
-    TEXT_GENERATE_BUNDLE_PATH,
-    TEXT_GENERATE_HYBRID_BUNDLE_DIR,
-    TEXT_GENERATE_HYBRID_MANIFEST_PATH,
-    TEXT_GENERATE_PIPELINE_BUNDLE_DIR,
-    TEXT_GENERATE_PIPELINE_MANIFEST_PATH,
-    TEXT_PREFILL_HYBRID_BUNDLE_DIR,
-    TEXT_PREFILL_HYBRID_MANIFEST_PATH,
-    TEXT_HYBRID_BUNDLE_DIR,
-    TEXT_HYBRID_MANIFEST_PATH,
-    TEXT_PIPELINE_BUNDLE_DIR,
-    TEXT_PIPELINE_MANIFEST_PATH,
-    TEXT_PREFILL_BUNDLE_PATH,
-    TEXT_PREFILL_PIPELINE_BUNDLE_DIR,
-    TEXT_PREFILL_PIPELINE_MANIFEST_PATH,
-    TEXT_STAGE_BUNDLE_PATH,
-    TEXT_STAGE0_BUNDLE_PATH,
-    TEXT_STAGE1_BUNDLE_PATH,
-)
-from qwen3vl_tp_runtime.hexgen_core.distributed import (
-    all_reduce_cpu,
-    broadcast_cpu,
-    get_device,
-    getenv_int,
-    init_dist,
-)
-from qwen3vl_tp_runtime.hexgen_core.gen_hetero_groups import (
-    build_hybrid_layout,
-    build_p2p_lists,
-    build_pp_rank_groups,
-    build_stage_rank_groups,
-    parse_tp_degrees,
-)
-from qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel import (
-    TextHybridRunner,
-    init_stage_groups,
-    load_hybrid_manifest,
-    prepare_text_decode_hybrid,
-    prepare_text_generate_hybrid,
-    prepare_text_prefill_hybrid,
-    prepare_text_hybrid,
-    resolve_rank_stage,
-    run_text_hybrid_rank,
-)
-from qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel import (
-    BoundaryStats,
-    StageSpec,
-    TextGeneratePipelineRunner,
-    TextPipelineManifest,
-    TextPipelineRunner,
-    build_stage_bundle_path,
-    load_pipeline_manifest,
-    load_stage_bundle_by_index,
-    load_stage_bundle_for_rank,
-    parse_stage_range,
-    parse_stage_ranges,
-    prepare_text_decode_pipeline,
-    prepare_text_generate_pipeline,
-    prepare_text_prefill_pipeline,
-    prepare_text_pipeline,
-    run_text_generate_pipeline_rank,
-    run_text_pipeline_rank,
-    tensor_diff_stats,
-)
-from qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel import (
-    TextTensorParallelRunner,
-    load_text_stage_bundle,
-    run_text_tensor_parallel_rank,
-)
-from qwen3vl_tp_runtime.hexgen_core.schema import (
-    HybridLayout,
-    HybridRankContext,
-    PayloadSummary,
-    StageHandoffPayload,
-    TextHybridManifest,
-)
-from qwen3vl_tp_runtime.hexgen_core.stage import (
-    StageBundleView,
-    apply_stage_handoff_payload,
-    as_stage_bundle_view,
-    build_stage_bundle,
-    build_stage_handoff_payload,
-    build_stage_handoff_target_dtypes,
-    get_stage_input,
-    get_stage_output,
-    get_stage_type,
-    run_stage,
-    run_stage_tp,
-    trace_stage,
-    trace_stage_tp,
-)
-from qwen3vl_tp_runtime.hexgen_core.transport import (
-    StageHandoffMessage,
-    StageHandoffTransport,
-    TensorPayload,
-    recv_hidden_states,
-    recv_payload,
-    recv_tensor,
-    send_hidden_states,
-    send_payload,
-    send_tensor,
+This package uses lazy attribute loading to avoid circular imports during capture-time
+module initialization, especially for:
+
+capture.py -> hexgen_core.config -> hexgen_core.__init__ -> pipeline/hybrid modules -> capture.py
+"""
+
+from importlib import import_module
+
+_LAZY_MODULES = (
+    "qwen3vl_tp_runtime.hexgen_core.config",
+    "qwen3vl_tp_runtime.hexgen_core.distributed",
+    "qwen3vl_tp_runtime.hexgen_core.gen_hetero_groups",
+    "qwen3vl_tp_runtime.hexgen_core.schema",
+    "qwen3vl_tp_runtime.hexgen_core.stage",
+    "qwen3vl_tp_runtime.hexgen_core.transport",
+    "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel",
+    "qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel",
+    "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel",
 )
 
 __all__ = [
@@ -117,6 +25,11 @@ __all__ = [
     "FRAME_DIR",
     "FULL_LAYER_BUNDLE_PATH",
     "LAYER_RANGE_BUNDLE_PATH",
+    "MULTIMODAL_PREFILL_BUNDLE_PATH",
+    "MULTIMODAL_PREFILL_HYBRID_BUNDLE_DIR",
+    "MULTIMODAL_PREFILL_HYBRID_MANIFEST_PATH",
+    "MULTIMODAL_PREFILL_PIPELINE_BUNDLE_DIR",
+    "MULTIMODAL_PREFILL_PIPELINE_MANIFEST_PATH",
     "TEXT_DECODE_BUNDLE_PATH",
     "TEXT_DECODE_HYBRID_BUNDLE_DIR",
     "TEXT_DECODE_HYBRID_MANIFEST_PATH",
@@ -163,6 +76,7 @@ __all__ = [
     "build_stage_bundle_path",
     "parse_stage_range",
     "parse_stage_ranges",
+    "prepare_multimodal_prefill_pipeline",
     "prepare_text_decode_pipeline",
     "prepare_text_generate_pipeline",
     "prepare_text_prefill_pipeline",
@@ -174,6 +88,7 @@ __all__ = [
     "run_text_pipeline_rank",
     "load_text_stage_bundle",
     "run_text_tensor_parallel_rank",
+    "prepare_multimodal_prefill_hybrid",
     "prepare_text_decode_hybrid",
     "prepare_text_generate_hybrid",
     "prepare_text_prefill_hybrid",
@@ -207,3 +122,13 @@ __all__ = [
     "recv_hidden_states",
     "tensor_diff_stats",
 ]
+
+
+def __getattr__(name: str):
+    for module_name in _LAZY_MODULES:
+        module = import_module(module_name)
+        if hasattr(module, name):
+            value = getattr(module, name)
+            globals()[name] = value
+            return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

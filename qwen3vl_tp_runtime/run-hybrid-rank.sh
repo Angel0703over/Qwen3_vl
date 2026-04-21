@@ -3,32 +3,26 @@
 
 set -euo pipefail
 
-REPO_ROOT="${REPO_ROOT:-/mnt/ssd/code/Qwen3_vl}"
-RUNTIME_ROOT="${RUNTIME_ROOT:-${REPO_ROOT}/qwen3vl_tp_runtime}"
+SCRIPT_DIR="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="${REPO_ROOT:-$(cd -- "${SCRIPT_DIR}/.." && pwd)}"
+RUNTIME_ROOT="${RUNTIME_ROOT:-${SCRIPT_DIR}}"
 PYTHON_BIN="${PYTHON_BIN:-/mnt/ssd/miniconda3/envs/vlm/bin/python}"
 
 export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 
-# Distributed settings.
 export MASTER_ADDR="${MASTER_ADDR:-127.0.0.1}"
 export MASTER_PORT="${MASTER_PORT:-29621}"
 export WORLD_SIZE="${WORLD_SIZE:-4}"
 export RANK="${RANK:-0}"
-
-# Set this when you need a specific interface, for example:
-# export GLOO_SOCKET_IFNAME=tun0
 export GLOO_SOCKET_IFNAME="${GLOO_SOCKET_IFNAME:-}"
 
-# Local device settings.
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 export DEVICE="${DEVICE:-cuda}"
 
-# Runtime inputs.
 export MANIFEST_PATH="${MANIFEST_PATH:-${REPO_ROOT}/qwen3vl_text_hybrid_manifest.pt}"
 export COMPUTE_DTYPE="${COMPUTE_DTYPE:-auto}"
 export COMM_DTYPE="${COMM_DTYPE:-float32}"
 export HYBRID_DEBUG="${HYBRID_DEBUG:-0}"
-# For captured replay parity, TP attention / MLP default to original dtype math.
 export TP_ATTN_MATH="${TP_ATTN_MATH:-orig}"
 export TP_MLP_MATH="${TP_MLP_MATH:-orig}"
 case "${HYBRID_DEBUG,,}" in
@@ -116,7 +110,7 @@ runner = TextHybridRunner(
     trace_layers=trace_layers,
     dump_layer=dump_layer,
     dump_topk=dump_topk,
-    return_tensors=(manifest.pipeline_type in {"text_prefill", "text_decode", "text_generate"}),
+    return_tensors=(manifest.pipeline_type in {"text_prefill", "multimodal_prefill", "text_decode", "text_generate"}),
 )
 
 stats = runner.run_rank(rank, world_size)
@@ -244,7 +238,7 @@ else:
         "outlier_dump": stats["outlier_dump"],
     }
     if (
-        manifest.pipeline_type in {"text_prefill", "text_decode"}
+        manifest.pipeline_type in {"text_prefill", "multimodal_prefill", "text_decode"}
         and stage_output is not None
         and reference_output is not None
         and stats["stage_idx"] == stats["num_stages"] - 1
