@@ -248,18 +248,15 @@ def trace_attention_cached_tp(
     num_heads = bundle["num_attention_heads"]
     num_kv_heads = bundle["num_key_value_heads"]
     head_dim = bundle["head_dim"]
-    orig_dtype, math_dtype = _resolve_tp_math_dtype(hidden_states, math_mode)
+    orig_dtype, _ = _resolve_tp_math_dtype(hidden_states, math_mode)
     device = hidden_states.device
 
     if num_heads % world_size != 0 or num_kv_heads % world_size != 0:
         raise ValueError("当前 TP attention 要求 num_heads 和 num_kv_heads 都能被 world_size 整除。")
 
     local_q_heads = num_heads // world_size
-    local_kv_heads = num_kv_heads // world_size
     q_head_start = rank * local_q_heads
     q_head_end = (rank + 1) * local_q_heads
-    kv_head_start = rank * local_kv_heads
-    kv_head_end = (rank + 1) * local_kv_heads
 
     x = hidden_states.to(dtype=orig_dtype)
     q_weight = bundle["q_weight"].to(device=device, dtype=orig_dtype)
@@ -284,75 +281,58 @@ def trace_attention_cached_tp(
     k_norm_weight = bundle["k_norm_weight"].to(device=device, dtype=orig_dtype)
 
     full_q_proj = F.linear(x, q_weight, q_bias)
-    local_q_proj = full_q_proj.view(*hidden_states.shape[:-1], num_heads, head_dim)[..., q_head_start:q_head_end, :]
-    local_q = rms_norm(
-        local_q_proj,
+    full_q = rms_norm(
+        full_q_proj.view(*hidden_states.shape[:-1], num_heads, head_dim),
         q_norm_weight,
         bundle["rms_norm_eps"],
     ).transpose(1, 2)
 
     full_k_proj = F.linear(x, k_weight, k_bias)
-    local_k_proj = full_k_proj.view(*hidden_states.shape[:-1], num_kv_heads, head_dim)[..., kv_head_start:kv_head_end, :]
-    local_k = rms_norm(
-        local_k_proj,
+    current_key = rms_norm(
+        full_k_proj.view(*hidden_states.shape[:-1], num_kv_heads, head_dim),
         k_norm_weight,
         bundle["rms_norm_eps"],
     ).transpose(1, 2)
 
     full_v_proj = F.linear(x, v_weight, v_bias)
-    local_v = (
-        full_v_proj.view(*hidden_states.shape[:-1], num_kv_heads, head_dim)[..., kv_head_start:kv_head_end, :]
-        .transpose(1, 2)
-    )
+    current_value = full_v_proj.view(*hidden_states.shape[:-1], num_kv_heads, head_dim).transpose(1, 2)
 
-    local_q, local_k = apply_rope(local_q, local_k, bundle["cos"], bundle["sin"])
-    local_past_key = _slice_local_past_states(
+    full_q, current_key = apply_rope(full_q, current_key, bundle["cos"], bundle["sin"])
+    past_key = _cast_optional_tensor(
         bundle.get("past_key"),
-        rank=rank,
-        world_size=world_size,
-        full_num_heads=num_kv_heads,
         device=device,
         dtype=orig_dtype,
-        tensor_name="past_key",
     )
-    local_past_value = _slice_local_past_states(
+    past_value = _cast_optional_tensor(
         bundle.get("past_value"),
-        rank=rank,
-        world_size=world_size,
-        full_num_heads=num_kv_heads,
         device=device,
         dtype=orig_dtype,
-        tensor_name="past_value",
     )
-    local_full_k = _concat_past_key_value(local_k, local_past_key)
-    local_full_v = _concat_past_key_value(local_v, local_past_value)
+    full_key = _concat_past_key_value(current_key, past_key)
+    full_value = _concat_past_key_value(current_value, past_value)
 
-    local_attn_output, _ = attn_eager(
-        local_q,
-        local_full_k,
-        local_full_v,
+    full_attn_output, _ = attn_eager(
+        full_q,
+        full_key,
+        full_value,
         bundle["attention_mask"],
-        num_key_value_groups=local_q_heads // local_kv_heads,
+        num_key_value_groups=num_heads // num_kv_heads,
         scaling=bundle["scaling"],
         compute_dtype=None,
         score_output_dtype=None,
         probabilities_dtype=orig_dtype,
         output_dtype=orig_dtype,
     )
-    local_attn_context = local_attn_output.reshape(*hidden_states.shape[:-1], -1).contiguous()
-    gathered_context = all_gather_cpu(
-        local_attn_context,
-        device,
-        math_dtype,
-        comm_dtype,
-        group=tp_group,
-    )
-    full_attn_context = torch.cat(gathered_context, dim=-1)
-    full_o_weight = bundle["o_weight"].to(device=device, dtype=math_dtype)
+    full_attn_context = full_attn_output.reshape(*hidden_states.shape[:-1], -1).contiguous()
+    local_attn_context = full_attn_context[
+        ...,
+        q_head_start * head_dim : q_head_end * head_dim,
+    ].contiguous()
+    full_o_weight = bundle["o_weight"].to(device=device, dtype=orig_dtype)
     full_o_bias = _cast_optional_tensor(
         bundle["o_bias"],
         device=device,
-        dtype=math_dtype,
+        dtype=orig_dtype,
     )
     leader_output = None
     if rank == 0:
@@ -364,41 +344,13 @@ def trace_attention_cached_tp(
         comm_dtype=comm_dtype,
         group=tp_group,
     )
-    gathered_current_k = all_gather_cpu(
-        local_k,
-        device,
-        orig_dtype,
-        comm_dtype,
-        group=tp_group,
-    )
-    gathered_current_v = all_gather_cpu(
-        local_v,
-        device,
-        orig_dtype,
-        comm_dtype,
-        group=tp_group,
-    )
-    gathered_full_k = all_gather_cpu(
-        local_full_k,
-        device,
-        orig_dtype,
-        comm_dtype,
-        group=tp_group,
-    )
-    gathered_full_v = all_gather_cpu(
-        local_full_v,
-        device,
-        orig_dtype,
-        comm_dtype,
-        group=tp_group,
-    )
     return {
         "attn_context": local_attn_context,
         "attn_output": attn_output,
-        "current_key": torch.cat(gathered_current_k, dim=1),
-        "current_value": torch.cat(gathered_current_v, dim=1),
-        "full_key": torch.cat(gathered_full_k, dim=1),
-        "full_value": torch.cat(gathered_full_v, dim=1),
+        "current_key": current_key,
+        "current_value": current_value,
+        "full_key": full_key,
+        "full_value": full_value,
     }
 
 
@@ -437,18 +389,15 @@ def trace_attention_tp(
     num_heads = bundle["num_attention_heads"]
     num_kv_heads = bundle["num_key_value_heads"]
     head_dim = bundle["head_dim"]
-    orig_dtype, math_dtype = _resolve_tp_math_dtype(hidden_states, math_mode)
+    orig_dtype, _ = _resolve_tp_math_dtype(hidden_states, math_mode)
     device = hidden_states.device
 
     if num_heads % world_size != 0 or num_kv_heads % world_size != 0:
         raise ValueError("当前 TP attention 要求 num_heads 和 num_kv_heads 都能被 world_size 整除。")
 
     local_q_heads = num_heads // world_size
-    local_kv_heads = num_kv_heads // world_size
     q_head_start = rank * local_q_heads
     q_head_end = (rank + 1) * local_q_heads
-    kv_head_start = rank * local_kv_heads
-    kv_head_end = (rank + 1) * local_kv_heads
 
     x = hidden_states.to(dtype=orig_dtype)
     q_weight = bundle["q_weight"].to(device=device, dtype=orig_dtype)
@@ -477,9 +426,8 @@ def trace_attention_tp(
         q_weight,
         q_bias,
     )
-    local_q_proj = full_q_proj.view(*hidden_states.shape[:-1], num_heads, head_dim)[..., q_head_start:q_head_end, :]
-    local_q = rms_norm(
-        local_q_proj,
+    full_q = rms_norm(
+        full_q_proj.view(*hidden_states.shape[:-1], num_heads, head_dim),
         q_norm_weight,
         bundle["rms_norm_eps"],
     ).transpose(1, 2)
@@ -489,9 +437,8 @@ def trace_attention_tp(
         k_weight,
         k_bias,
     )
-    local_k_proj = full_k_proj.view(*hidden_states.shape[:-1], num_kv_heads, head_dim)[..., kv_head_start:kv_head_end, :]
-    local_k = rms_norm(
-        local_k_proj,
+    full_k = rms_norm(
+        full_k_proj.view(*hidden_states.shape[:-1], num_kv_heads, head_dim),
         k_norm_weight,
         bundle["rms_norm_eps"],
     ).transpose(1, 2)
@@ -501,38 +448,31 @@ def trace_attention_tp(
         v_weight,
         v_bias,
     )
-    local_v = (
-        full_v_proj.view(*hidden_states.shape[:-1], num_kv_heads, head_dim)[..., kv_head_start:kv_head_end, :]
-        .transpose(1, 2)
-    )
+    full_v = full_v_proj.view(*hidden_states.shape[:-1], num_kv_heads, head_dim).transpose(1, 2)
 
-    local_q, local_k = apply_rope(local_q, local_k, bundle["cos"], bundle["sin"])
-    local_attn_output, _ = attn_eager(
-        local_q,
-        local_k,
-        local_v,
+    full_q, full_k = apply_rope(full_q, full_k, bundle["cos"], bundle["sin"])
+    full_attn_output, _ = attn_eager(
+        full_q,
+        full_k,
+        full_v,
         bundle["attention_mask"],
-        num_key_value_groups=local_q_heads // local_kv_heads,
+        num_key_value_groups=num_heads // num_kv_heads,
         scaling=bundle["scaling"],
         compute_dtype=None,
         score_output_dtype=None,
         probabilities_dtype=orig_dtype,
         output_dtype=orig_dtype,
     )
-    local_attn_context = local_attn_output.reshape(*hidden_states.shape[:-1], -1).contiguous()
-    gathered_context = all_gather_cpu(
-        local_attn_context,
-        device,
-        math_dtype,
-        comm_dtype,
-        group=tp_group,
-    )
-    full_attn_context = torch.cat(gathered_context, dim=-1)
-    full_o_weight = bundle["o_weight"].to(device=device, dtype=math_dtype)
+    full_attn_context = full_attn_output.reshape(*hidden_states.shape[:-1], -1).contiguous()
+    local_attn_context = full_attn_context[
+        ...,
+        q_head_start * head_dim : q_head_end * head_dim,
+    ].contiguous()
+    full_o_weight = bundle["o_weight"].to(device=device, dtype=orig_dtype)
     full_o_bias = _cast_optional_tensor(
         bundle["o_bias"],
         device=device,
-        dtype=math_dtype,
+        dtype=orig_dtype,
     )
     leader_output = None
     if rank == 0:
@@ -583,7 +523,7 @@ def trace_mlp_tp(
     math_mode: str = "orig",
 ) -> dict:
     intermediate_size = bundle["gate_weight"].shape[0]
-    orig_dtype, math_dtype = _resolve_tp_math_dtype(hidden_states, math_mode)
+    orig_dtype, _ = _resolve_tp_math_dtype(hidden_states, math_mode)
     device = hidden_states.device
     if intermediate_size % world_size != 0:
         raise ValueError("当前 TP MLP 要求 intermediate_size 能被 world_size 整除。")
@@ -606,11 +546,11 @@ def trace_mlp_tp(
         device=device,
         dtype=orig_dtype,
     )
-    down_weight = bundle["down_weight"].to(device=device, dtype=math_dtype)
+    down_weight = bundle["down_weight"].to(device=device, dtype=orig_dtype)
     down_bias = _cast_optional_tensor(
         bundle["down_bias"],
         device=device,
-        dtype=math_dtype,
+        dtype=orig_dtype,
     )
 
     full_gate_out = F.linear(x, gate_weight, gate_bias)
@@ -621,7 +561,7 @@ def trace_mlp_tp(
     gathered_fused = all_gather_cpu(
         fused_out,
         device,
-        math_dtype,
+        orig_dtype,
         comm_dtype,
         group=tp_group,
     )

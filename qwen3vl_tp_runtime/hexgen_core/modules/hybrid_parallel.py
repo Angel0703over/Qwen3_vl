@@ -12,6 +12,7 @@ from qwen3vl_tp_runtime.hexgen_core.gen_hetero_groups import (
 )
 from qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel import (
     load_stage_bundle_by_index,
+    prepare_multimodal_decode_pipeline,
     prepare_multimodal_prefill_pipeline,
     prepare_text_decode_pipeline,
     prepare_text_generate_pipeline,
@@ -145,6 +146,44 @@ def prepare_multimodal_prefill_hybrid(
         pipeline_manifest,
         layout,
         runtime="multimodal_prefill_hybrid",
+    )
+    torch.save(manifest.to_dict(), manifest_path)
+    return manifest
+
+
+def prepare_multimodal_decode_hybrid(
+    *,
+    stage_ranges: list[tuple[int, int]],
+    tp_degrees: list[int],
+    bundle_dir: str,
+    manifest_path: str,
+    num_frames: int = 8,
+    decode_token_id: int | None = None,
+    save_dtype: str = "auto",
+    model_path: str | None = None,
+    frame_dir: str | None = None,
+) -> TextHybridManifest:
+    pipeline_manifest = prepare_multimodal_decode_pipeline(
+        stage_ranges=stage_ranges,
+        bundle_dir=bundle_dir,
+        manifest_path=manifest_path,
+        num_frames=num_frames,
+        decode_token_id=decode_token_id,
+        save_dtype=save_dtype,
+        model_path=model_path,
+        frame_dir=frame_dir,
+    )
+    tp_degrees = parse_tp_degrees(tp_degrees)
+    if len(tp_degrees) != pipeline_manifest.num_stages:
+        raise ValueError(
+            f"stage 数是 {pipeline_manifest.num_stages}，但 TP 度数拿到 {len(tp_degrees)} 个。"
+        )
+
+    layout = build_hybrid_layout(tp_degrees)
+    manifest = TextHybridManifest.from_pipeline_manifest(
+        pipeline_manifest,
+        layout,
+        runtime="multimodal_decode_hybrid",
     )
     torch.save(manifest.to_dict(), manifest_path)
     return manifest
@@ -960,6 +999,7 @@ def run_text_hybrid_rank(
         "stage_mean_diff": tp_stage_stats["stage_mean_diff"],
         "tp_direct_max_diff": tp_stage_stats["tp_direct_max_diff"],
         "tp_direct_mean_diff": tp_stage_stats["tp_direct_mean_diff"],
+        "trace_summary": tp_stage_stats["trace_summary"],
         "next_leader_rank": rank_stage.next_leader_rank,
         "send_list": rank_stage.send_list,
         "recv_list": rank_stage.recv_list,
@@ -978,6 +1018,7 @@ __all__ = [
     "TextHybridManifest",
     "HybridRankContext",
     "prepare_text_hybrid",
+    "prepare_multimodal_decode_hybrid",
     "prepare_multimodal_prefill_hybrid",
     "prepare_text_decode_hybrid",
     "prepare_text_generate_hybrid",

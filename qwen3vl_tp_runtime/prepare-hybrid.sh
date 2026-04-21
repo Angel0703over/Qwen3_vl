@@ -37,7 +37,7 @@ fi
 if [[ "${PIPELINE_TYPE}" == "text_prefill" || "${PIPELINE_TYPE}" == "text_decode" || "${PIPELINE_TYPE}" == "text_generate" ]]; then
   echo "[prepare] prompt=${PROMPT}"
 fi
-if [[ "${PIPELINE_TYPE}" == "text_decode" && -n "${DECODE_TOKEN_ID}" ]]; then
+if [[ "${PIPELINE_TYPE}" == "text_decode" || "${PIPELINE_TYPE}" == "multimodal_decode" ]] && [[ -n "${DECODE_TOKEN_ID}" ]]; then
   echo "[prepare] decode_token_id=${DECODE_TOKEN_ID}"
 fi
 if [[ "${PIPELINE_TYPE}" == "text_generate" ]]; then
@@ -49,6 +49,7 @@ import json
 import os
 
 from qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel import (
+    prepare_multimodal_decode_hybrid,
     prepare_multimodal_prefill_hybrid,
     prepare_text_decode_hybrid,
     prepare_text_generate_hybrid,
@@ -91,6 +92,14 @@ elif pipeline_type == "text_prefill":
 elif pipeline_type == "multimodal_prefill":
     manifest = prepare_multimodal_prefill_hybrid(
         num_frames=int(os.environ["NUM_FRAMES"]),
+        **({"frame_dir": os.environ["FRAME_DIR"]} if os.environ.get("FRAME_DIR", "") else {}),
+        **common_kwargs,
+    )
+elif pipeline_type == "multimodal_decode":
+    decode_token_id_env = os.environ.get("DECODE_TOKEN_ID", "")
+    manifest = prepare_multimodal_decode_hybrid(
+        num_frames=int(os.environ["NUM_FRAMES"]),
+        decode_token_id=(None if decode_token_id_env == "" else int(decode_token_id_env)),
         **({"frame_dir": os.environ["FRAME_DIR"]} if os.environ.get("FRAME_DIR", "") else {}),
         **common_kwargs,
     )

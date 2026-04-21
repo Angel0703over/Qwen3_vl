@@ -35,7 +35,7 @@ case "${HYBRID_DEBUG,,}" in
   *)
     export COMPARE_DIRECT="${COMPARE_DIRECT:-0}"
     export TRACE_LAYERS="${TRACE_LAYERS:-0}"
-    export DUMP_LAYER="${DUMP_LAYER:--1}"
+    export DUMP_LAYER="${DUMP_LAYER:-}"
     export DUMP_TOPK="${DUMP_TOPK:-10}"
     ;;
 esac
@@ -73,7 +73,7 @@ def env_flag(name: str, default: bool = False) -> bool:
 
 def env_optional_int(name: str) -> int | None:
     value = os.environ.get(name, "")
-    if value in {"", "none", "None", "-1"}:
+    if value in {"", "none", "None"}:
         return None
     return int(value)
 
@@ -110,7 +110,10 @@ runner = TextHybridRunner(
     trace_layers=trace_layers,
     dump_layer=dump_layer,
     dump_topk=dump_topk,
-    return_tensors=(manifest.pipeline_type in {"text_prefill", "multimodal_prefill", "text_decode", "text_generate"}),
+    return_tensors=(
+        manifest.pipeline_type
+        in {"text_prefill", "multimodal_prefill", "text_decode", "multimodal_decode", "text_generate"}
+    ),
 )
 
 stats = runner.run_rank(rank, world_size)
@@ -234,11 +237,12 @@ else:
         "stage_mean_diff": stats["stage_mean_diff"],
         "tp_direct_max_diff": stats["tp_direct_max_diff"],
         "tp_direct_mean_diff": stats["tp_direct_mean_diff"],
+        "trace_summary": stats["trace_summary"],
         "num_traces": len(traces),
         "outlier_dump": stats["outlier_dump"],
     }
     if (
-        manifest.pipeline_type in {"text_prefill", "multimodal_prefill", "text_decode"}
+        manifest.pipeline_type in {"text_prefill", "multimodal_prefill", "text_decode", "multimodal_decode"}
         and stage_output is not None
         and reference_output is not None
         and stats["stage_idx"] == stats["num_stages"] - 1

@@ -256,6 +256,77 @@ def _build_layer_outlier_dump(
     }
 
 
+_TRACE_DIFF_COMPONENTS = (
+    "layer_input",
+    "attn_input",
+    "attn_context",
+    "attn_output",
+    "after_attn",
+    "mlp_input",
+    "gate_out",
+    "up_out",
+    "fused",
+    "mlp_output",
+    "layer_output",
+    "post_deepstack",
+)
+
+
+def _summarize_trace_family(traces: list[dict], family_key: str) -> dict:
+    first_nonzero_layer_idx = None
+    first_nonzero_component = None
+    first_nonzero_max_diff = None
+    max_layer_idx = None
+    max_component = None
+    max_diff = 0.0
+
+    for trace in traces:
+        layer_idx = int(trace["layer_idx"])
+        layer_first_component = None
+        layer_first_value = 0.0
+
+        for component in _TRACE_DIFF_COMPONENTS:
+            value = float(trace[family_key][component][0])
+            if value > max_diff:
+                max_diff = value
+                max_layer_idx = layer_idx
+                max_component = component
+            if value > 0.0 and layer_first_component is None:
+                layer_first_component = component
+                layer_first_value = value
+
+        if layer_first_component is not None and first_nonzero_layer_idx is None:
+            first_nonzero_layer_idx = layer_idx
+            first_nonzero_component = layer_first_component
+            first_nonzero_max_diff = layer_first_value
+
+    return {
+        "first_nonzero_layer_idx": first_nonzero_layer_idx,
+        "first_nonzero_component": first_nonzero_component,
+        "first_nonzero_max_diff": first_nonzero_max_diff,
+        "max_layer_idx": max_layer_idx,
+        "max_component": max_component,
+        "max_diff": max_diff,
+    }
+
+
+def _summarize_stage_traces(traces: list[dict]) -> dict:
+    direct_vs_ref = _summarize_trace_family(traces, "direct_vs_ref")
+    tp_vs_direct = _summarize_trace_family(traces, "tp_vs_direct")
+
+    auto_dump_layer_idx = (
+        tp_vs_direct["first_nonzero_layer_idx"]
+        or direct_vs_ref["first_nonzero_layer_idx"]
+        or tp_vs_direct["max_layer_idx"]
+        or direct_vs_ref["max_layer_idx"]
+    )
+    return {
+        "direct_vs_ref": direct_vs_ref,
+        "tp_vs_direct": tp_vs_direct,
+        "auto_dump_layer_idx": auto_dump_layer_idx,
+    }
+
+
 def build_stage_traces(
     reference_input: torch.Tensor,
     stage_input: torch.Tensor,
@@ -269,7 +340,7 @@ def build_stage_traces(
     tp_mlp_math_mode: str = "orig",
     dump_layer: int | None = None,
     dump_topk: int = 5,
-) -> tuple[list[dict], dict | None]:
+) -> tuple[list[dict], dict | None, dict]:
     """Build layer-wise direct-vs-reference and TP-vs-direct trace summaries for one text stage."""
 
     reference_traces = trace_stage(reference_input, bundle)
@@ -287,9 +358,11 @@ def build_stage_traces(
     )
 
     traces = []
+    trace_triplets = []
     outlier_dump = None
     for reference_trace, direct_trace, tp_trace in zip(reference_traces, direct_traces, tp_traces):
         layer_idx = reference_trace["layer_idx"]
+        trace_triplets.append((reference_trace, direct_trace, tp_trace))
         traces.append(
             {
                 "layer_idx": layer_idx,
@@ -387,7 +460,7 @@ def build_stage_traces(
                 },
             }
         )
-        if dump_layer is not None and layer_idx == dump_layer:
+        if dump_layer is not None and dump_layer >= 0 and layer_idx == dump_layer:
             outlier_dump = _build_layer_outlier_dump(
                 reference_trace=reference_trace,
                 direct_trace=direct_trace,
@@ -396,7 +469,24 @@ def build_stage_traces(
                 tp_degree=tp_degree,
                 topk=dump_topk,
             )
-    return traces, outlier_dump
+    trace_summary = _summarize_stage_traces(traces)
+    resolved_dump_layer = dump_layer
+    if resolved_dump_layer is not None and resolved_dump_layer < 0:
+        resolved_dump_layer = trace_summary["auto_dump_layer_idx"]
+    if outlier_dump is None and resolved_dump_layer is not None:
+        for reference_trace, direct_trace, tp_trace in trace_triplets:
+            if int(reference_trace["layer_idx"]) != int(resolved_dump_layer):
+                continue
+            outlier_dump = _build_layer_outlier_dump(
+                reference_trace=reference_trace,
+                direct_trace=direct_trace,
+                tp_trace=tp_trace,
+                local_rank=local_rank,
+                tp_degree=tp_degree,
+                topk=dump_topk,
+            )
+            break
+    return traces, outlier_dump, trace_summary
 
 
 def run_text_tensor_parallel_stage(
@@ -451,8 +541,9 @@ def run_text_tensor_parallel_stage(
 
     traces = None
     outlier_dump = None
+    trace_summary = None
     if trace_layers or dump_layer is not None:
-        traces, outlier_dump = build_stage_traces(
+        traces, outlier_dump, trace_summary = build_stage_traces(
             reference_input=reference_input,
             stage_input=stage_input,
             bundle=bundle,
@@ -479,6 +570,7 @@ def run_text_tensor_parallel_stage(
         "tp_direct_max_diff": tp_direct_max,
         "tp_direct_mean_diff": tp_direct_mean,
         "traces": traces,
+        "trace_summary": trace_summary,
         "outlier_dump": outlier_dump,
         "stage_output": stage_output,
     }
