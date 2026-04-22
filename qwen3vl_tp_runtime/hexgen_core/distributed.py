@@ -36,7 +36,11 @@ def get_device(device_arg: str) -> torch.device:
     if device_arg == "cuda":
         if not torch.cuda.is_available():
             raise RuntimeError("指定了 --device cuda，但当前环境里 torch.cuda.is_available() 为 False。")
-        return torch.device("cuda", 0)
+        device_count = torch.cuda.device_count()
+        local_rank = getenv_int("LOCAL_RANK", 0)
+        device_index = 0 if device_count <= 1 else local_rank % device_count
+        torch.cuda.set_device(device_index)
+        return torch.device("cuda", device_index)
     return torch.device("cpu")
 
 

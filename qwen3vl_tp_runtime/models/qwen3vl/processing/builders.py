@@ -17,7 +17,14 @@ def list_frames(num_frames: int, frame_dir: str = FRAME_DIR) -> list[str]:
     return frame_paths[:num_frames]
 
 
-def build_inputs(processor, frame_paths: list[str]):
+def build_inputs(
+    processor,
+    frame_paths: list[str],
+    *,
+    prompt: str = "请用中文简要描述这个视频的主要内容。",
+    sample_fps: int = 1,
+    add_generation_prompt: bool = True,
+):
     # 这里保持和现有实验脚本一致，默认使用视频帧 + 中文描述提示。
     messages = [
         {
@@ -26,11 +33,11 @@ def build_inputs(processor, frame_paths: list[str]):
                 {
                     "type": "video",
                     "video": [f"file://{p}" for p in frame_paths],
-                    "sample_fps": 1,
+                    "sample_fps": sample_fps,
                 },
                 {
                     "type": "text",
-                    "text": "请用中文简要描述这个视频的主要内容。",
+                    "text": prompt,
                 },
             ],
         }
@@ -39,7 +46,7 @@ def build_inputs(processor, frame_paths: list[str]):
     text = processor.apply_chat_template(
         messages,
         tokenize=False,
-        add_generation_prompt=True,
+        add_generation_prompt=add_generation_prompt,
     )
 
     images, videos, video_kwargs = process_vision_info(

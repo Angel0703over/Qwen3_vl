@@ -17,7 +17,13 @@ if __package__ is None or __package__ == "":
 
 
 RANKS = (0, 1, 2, 3)
-RANK_LAUNCH_SCRIPT = "run-hybrid-multimodal-decode-rank.sh"
+PREPARE_SCRIPT = "prepare-hybrid.sh"
+RANK_LAUNCH_SCRIPT = "run-hybrid-rank.sh"
+DEFAULT_STAGE_RANGES = "0:17 18:35"
+DEFAULT_TP_DEGREES = "2 2"
+DEFAULT_NUM_FRAMES = "8"
+DEFAULT_BUNDLE_DIR_NAME = "qwen3vl_multimodal_decode_hybrid"
+DEFAULT_MANIFEST_NAME = "qwen3vl_multimodal_decode_hybrid_manifest.pt"
 
 CHECK_DIFF_KEYS = (
     "boundary_max_diff",
@@ -32,7 +38,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--prepare",
         action="store_true",
-        help="Run prepare-hybrid-multimodal-decode.sh before launching the regression check.",
+        help="Run prepare-hybrid.sh with multimodal_decode defaults before launching the regression check.",
     )
     parser.add_argument(
         "--manifest-path",
@@ -182,27 +188,38 @@ def validate_summary(summary: dict, tolerance: float) -> list[str]:
     return errors
 
 
-def build_rank_env(args: argparse.Namespace) -> dict[str, str]:
+def build_rank_env(args: argparse.Namespace, runtime_root: Path) -> dict[str, str]:
     env = os.environ.copy()
+    env["PIPELINE_TYPE"] = "multimodal_decode"
+    env["TP_DEGREES"] = DEFAULT_TP_DEGREES
+    env["STAGE_RANGES"] = DEFAULT_STAGE_RANGES
+    env["NUM_FRAMES"] = DEFAULT_NUM_FRAMES
+    env["BUNDLE_DIR"] = str(runtime_root.parent / DEFAULT_BUNDLE_DIR_NAME)
+    env["MANIFEST_PATH"] = args.manifest_path or str(runtime_root.parent / DEFAULT_MANIFEST_NAME)
     env["HYBRID_DEBUG"] = "0"
     env["COMPARE_DIRECT"] = "1"
     env["TRACE_LAYERS"] = "0"
     env["DUMP_LAYER"] = ""
     env["DUMP_TOPK"] = str(args.topk)
+    env["COMM_DTYPE"] = "float32"
+    env["TP_ATTN_MATH"] = "float32"
+    env["TP_MLP_MATH"] = "float32"
     env["PYTHONUNBUFFERED"] = "1"
     env["WORLD_SIZE"] = str(len(RANKS))
-    if args.manifest_path is not None:
-        env["MANIFEST_PATH"] = args.manifest_path
     if args.master_port is not None:
         env["MASTER_PORT"] = str(args.master_port)
     return env
 
 
-def build_prepare_env(args: argparse.Namespace) -> dict[str, str]:
+def build_prepare_env(args: argparse.Namespace, runtime_root: Path) -> dict[str, str]:
     env = os.environ.copy()
+    env["PIPELINE_TYPE"] = "multimodal_decode"
+    env["TP_DEGREES"] = DEFAULT_TP_DEGREES
+    env["STAGE_RANGES"] = DEFAULT_STAGE_RANGES
+    env["NUM_FRAMES"] = DEFAULT_NUM_FRAMES
+    env["BUNDLE_DIR"] = str(runtime_root.parent / DEFAULT_BUNDLE_DIR_NAME)
+    env["MANIFEST_PATH"] = args.manifest_path or str(runtime_root.parent / DEFAULT_MANIFEST_NAME)
     env["PYTHONUNBUFFERED"] = "1"
-    if args.manifest_path is not None:
-        env["MANIFEST_PATH"] = args.manifest_path
     return env
 
 
@@ -231,21 +248,21 @@ def main() -> int:
 
         if args.prepare:
             prepare_log = log_dir / "prepare.log"
-            print("[check] running prepare-hybrid-multimodal-decode.sh")
+            print("[check] running prepare-hybrid.sh for multimodal_decode")
             returncode, _ = run_command(
-                ["bash", str(runtime_root / "prepare-hybrid-multimodal-decode.sh")],
-                env=build_prepare_env(args),
+                ["bash", str(runtime_root / PREPARE_SCRIPT)],
+                env=build_prepare_env(args, runtime_root),
                 cwd=runtime_root.parent,
                 timeout_seconds=args.timeout_seconds,
                 log_path=prepare_log,
             )
             if returncode != 0:
                 raise RuntimeError(
-                    "prepare-hybrid-multimodal-decode.sh failed "
+                    "prepare-hybrid.sh failed for multimodal_decode "
                     f"(exit_code={returncode}) log={prepare_log}"
                 )
 
-        rank_env = build_rank_env(args)
+        rank_env = build_rank_env(args, runtime_root)
         processes: dict[int, subprocess.Popen] = {}
         log_paths: dict[int, Path] = {}
         script_path = runtime_root / RANK_LAUNCH_SCRIPT

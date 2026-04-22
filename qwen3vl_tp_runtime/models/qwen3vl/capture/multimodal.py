@@ -1252,6 +1252,9 @@ def capture_multimodal_generate_stage_bundle(
             "attention_mask": cast_cpu(decode_reference["attention_mask"], None),
             "cos": cast_cpu(decode_reference["cos"], save_dtype_value),
             "sin": cast_cpu(decode_reference["sin"], save_dtype_value),
+            "visual_pos_masks": None,
+            "deepstack_by_layer": {},
+            "deepstack_layer_indices": [],
         }
         if is_last_stage:
             step_payload.update(

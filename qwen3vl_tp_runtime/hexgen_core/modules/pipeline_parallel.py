@@ -669,6 +669,10 @@ def _build_generate_phase_bundle(
     }
     runtime_bundle.update(phase_payload)
     runtime_bundle["stage_type"] = stage_type
+    if stage_type in {"text_decode", "text_decode_last"}:
+        runtime_bundle["visual_pos_masks"] = phase_payload.get("visual_pos_masks")
+        runtime_bundle["deepstack_by_layer"] = dict(phase_payload.get("deepstack_by_layer", {}))
+        runtime_bundle["deepstack_layer_indices"] = list(phase_payload.get("deepstack_layer_indices", []))
     if "layer_input" not in runtime_bundle and "stage_input" in runtime_bundle:
         runtime_bundle["layer_input"] = runtime_bundle["stage_input"]
     return runtime_bundle

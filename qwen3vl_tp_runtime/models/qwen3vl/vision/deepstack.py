@@ -16,6 +16,16 @@ def apply_deepstack(
     visual_pos_masks = visual_pos_masks.to(hidden_states.device)
     visual_embeds = visual_embeds.to(hidden_states.device, hidden_states.dtype)
 
+    expected_mask_shape = hidden_states.shape[:2]
+    if tuple(visual_pos_masks.shape) != tuple(expected_mask_shape):
+        return hidden_states
+
+    if visual_pos_masks.dtype != torch.bool:
+        visual_pos_masks = visual_pos_masks.to(torch.bool)
+
+    if visual_embeds.shape[0] != int(visual_pos_masks.sum().item()):
+        return hidden_states
+
     hidden_states = hidden_states.clone()
     local_this = hidden_states[visual_pos_masks, :] + visual_embeds
     hidden_states[visual_pos_masks, :] = local_this
