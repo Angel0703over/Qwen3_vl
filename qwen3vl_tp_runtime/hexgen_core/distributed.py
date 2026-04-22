@@ -47,7 +47,7 @@ def all_reduce_cpu(
     comm_dtype: torch.dtype,
     group=None,
 ) -> torch.Tensor:
-    # 当前原型默认走 device -> cpu -> gloo -> cpu -> device。
+    # 当前原型默认走 device -> cpu -> gloo -> cpu -> device
     reduced = local_tensor.detach().to("cpu", dtype=comm_dtype)
     dist.all_reduce(reduced, op=dist.ReduceOp.SUM, group=group)
     return reduced.to(device=target_device, dtype=target_dtype)

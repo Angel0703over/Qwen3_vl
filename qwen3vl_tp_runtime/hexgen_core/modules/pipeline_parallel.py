@@ -22,6 +22,7 @@ from qwen3vl_tp_runtime.hexgen_core.stage import (
 from qwen3vl_tp_runtime.hexgen_core.transport import StageHandoffTransport
 from qwen3vl_tp_runtime.models.qwen3vl.capture import (
     capture_multimodal_decode_stage_bundle,
+    capture_multimodal_generate_stage_bundle,
     capture_multimodal_prefill_stage_bundle,
     capture_text_decode_stage_bundle,
     capture_text_generate_stage_bundle,
@@ -30,13 +31,13 @@ from qwen3vl_tp_runtime.models.qwen3vl.capture import (
     load_bundle,
     move_bundle,
 )
-from qwen3vl_tp_runtime.models.qwen3vl.forward import (
+from qwen3vl_tp_runtime.models.qwen3vl.execution import (
     forward_text_embeddings,
     trace_text_decode_logits_with_runtime_cache,
     trace_text_decode_stage_with_runtime_cache,
     trace_text_prefill_stage_logits,
 )
-from qwen3vl_tp_runtime.models.qwen3vl.ops import dtype_from_name, resolve_comm_dtype
+from qwen3vl_tp_runtime.models.qwen3vl.functional import dtype_from_name, resolve_comm_dtype
 
 
 def tensor_diff_stats(lhs: torch.Tensor, rhs: torch.Tensor) -> tuple[float, float]:
@@ -403,6 +404,77 @@ def prepare_multimodal_decode_pipeline(
         boundaries=boundaries,
         num_frames=num_frames,
         save_dtype=manifest_save_dtype,
+    )
+
+    save_path = Path(manifest_path)
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(manifest.to_dict(), save_path)
+    return manifest
+
+
+def prepare_multimodal_generate_pipeline(
+    *,
+    stage_ranges: list[tuple[int, int]],
+    bundle_dir: str,
+    manifest_path: str,
+    num_frames: int = 8,
+    max_new_tokens: int = 4,
+    save_dtype: str = "auto",
+    model_path: str | None = None,
+    frame_dir: str | None = None,
+) -> TextPipelineManifest:
+    bundle_dir_path = Path(bundle_dir)
+    bundle_dir_path.mkdir(parents=True, exist_ok=True)
+
+    stages = []
+    stage_bundles = []
+    for stage_idx, (start_idx, end_idx) in enumerate(stage_ranges):
+        bundle_path = build_stage_bundle_path(bundle_dir, stage_idx, start_idx, end_idx)
+        stage_bundle = capture_multimodal_generate_stage_bundle(
+            start_idx=start_idx,
+            end_idx=end_idx,
+            num_frames=num_frames,
+            max_new_tokens=max_new_tokens,
+            bundle_path=bundle_path,
+            save_dtype=save_dtype,
+            **({"model_path": model_path} if model_path is not None else {}),
+            **({"frame_dir": frame_dir} if frame_dir is not None else {}),
+        )
+        stage_bundles.append(stage_bundle)
+        stages.append(
+            StageSpec(
+                stage_idx=stage_idx,
+                start_idx=start_idx,
+                end_idx=end_idx,
+                bundle_path=bundle_path,
+                num_layers=len(stage_bundle["layers"]),
+                save_dtype=stage_bundle["save_dtype"],
+            )
+        )
+
+    boundaries = []
+    for stage_idx in range(len(stage_bundles) - 1):
+        lhs = stage_bundles[stage_idx]["prefill"]["stage_output"]
+        rhs = stage_bundles[stage_idx + 1]["prefill"]["stage_input"]
+        max_diff, mean_diff = tensor_diff_stats(lhs, rhs)
+        boundaries.append(
+            BoundaryStats(
+                src_stage_idx=stage_idx,
+                dst_stage_idx=stage_idx + 1,
+                max_diff=max_diff,
+                mean_diff=mean_diff,
+            )
+        )
+
+    manifest = TextPipelineManifest(
+        pipeline_type="multimodal_generate",
+        num_stages=len(stages),
+        stage_ranges=stage_ranges,
+        bundle_dir=str(bundle_dir_path),
+        stages=stages,
+        boundaries=boundaries,
+        num_frames=num_frames,
+        save_dtype=stage_bundles[0]["save_dtype"],
     )
 
     save_path = Path(manifest_path)
@@ -1020,6 +1092,7 @@ __all__ = [
     "parse_stage_ranges",
     "build_stage_bundle_path",
     "prepare_multimodal_decode_pipeline",
+    "prepare_multimodal_generate_pipeline",
     "prepare_multimodal_prefill_pipeline",
     "prepare_text_decode_pipeline",
     "prepare_text_generate_pipeline",

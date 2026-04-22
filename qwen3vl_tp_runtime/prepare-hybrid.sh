@@ -40,7 +40,7 @@ fi
 if [[ "${PIPELINE_TYPE}" == "text_decode" || "${PIPELINE_TYPE}" == "multimodal_decode" ]] && [[ -n "${DECODE_TOKEN_ID}" ]]; then
   echo "[prepare] decode_token_id=${DECODE_TOKEN_ID}"
 fi
-if [[ "${PIPELINE_TYPE}" == "text_generate" ]]; then
+if [[ "${PIPELINE_TYPE}" == "text_generate" || "${PIPELINE_TYPE}" == "multimodal_generate" ]]; then
   echo "[prepare] max_new_tokens=${MAX_NEW_TOKENS}"
 fi
 
@@ -50,6 +50,7 @@ import os
 
 from qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel import (
     prepare_multimodal_decode_hybrid,
+    prepare_multimodal_generate_hybrid,
     prepare_multimodal_prefill_hybrid,
     prepare_text_decode_hybrid,
     prepare_text_generate_hybrid,
@@ -100,6 +101,13 @@ elif pipeline_type == "multimodal_decode":
     manifest = prepare_multimodal_decode_hybrid(
         num_frames=int(os.environ["NUM_FRAMES"]),
         decode_token_id=(None if decode_token_id_env == "" else int(decode_token_id_env)),
+        **({"frame_dir": os.environ["FRAME_DIR"]} if os.environ.get("FRAME_DIR", "") else {}),
+        **common_kwargs,
+    )
+elif pipeline_type == "multimodal_generate":
+    manifest = prepare_multimodal_generate_hybrid(
+        num_frames=int(os.environ["NUM_FRAMES"]),
+        max_new_tokens=int(os.environ["MAX_NEW_TOKENS"]),
         **({"frame_dir": os.environ["FRAME_DIR"]} if os.environ.get("FRAME_DIR", "") else {}),
         **common_kwargs,
     )

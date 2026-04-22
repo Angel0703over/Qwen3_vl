@@ -112,12 +112,19 @@ runner = TextHybridRunner(
     dump_topk=dump_topk,
     return_tensors=(
         manifest.pipeline_type
-        in {"text_prefill", "multimodal_prefill", "text_decode", "multimodal_decode", "text_generate"}
+        in {
+            "text_prefill",
+            "multimodal_prefill",
+            "text_decode",
+            "multimodal_decode",
+            "text_generate",
+            "multimodal_generate",
+        }
     ),
 )
 
 stats = runner.run_rank(rank, world_size)
-if manifest.pipeline_type == "text_generate":
+if manifest.pipeline_type in {"text_generate", "multimodal_generate"}:
     prefill_stats = stats["prefill"]
     steps = stats["steps"]
     summary = {

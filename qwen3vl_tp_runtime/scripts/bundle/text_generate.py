@@ -8,7 +8,7 @@ import torch
 import torch.distributed as dist
 
 if __package__ is None or __package__ == "":
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent))
 
 from qwen3vl_tp_runtime.hexgen_core import (
     MODEL_PATH,
@@ -24,38 +24,12 @@ from qwen3vl_tp_runtime.hexgen_core import (
 )
 from qwen3vl_tp_runtime.models.qwen3vl import (
     capture_text_generate_bundle,
-    dtype_from_name,
     forward_text_embeddings,
     load_bundle,
-    move_bundle,
     trace_text_decode_logits_with_runtime_cache,
     trace_text_prefill_logits,
 )
-
-
-def tensor_diff_stats(lhs: torch.Tensor, rhs: torch.Tensor) -> tuple[float, float]:
-    diff = (lhs - rhs).abs()
-    return diff.max().item(), diff.mean().item()
-
-
-def summarize_last_token_topk(logits: torch.Tensor, topk: int) -> list[dict]:
-    last_token_logits = logits[0, -1].to(torch.float32)
-    k = min(topk, last_token_logits.numel())
-    values, indices = torch.topk(last_token_logits, k=k)
-    return [
-        {
-            "token_id": int(token_id),
-            "logit": float(value),
-        }
-        for value, token_id in zip(values.tolist(), indices.tolist())
-    ]
-
-
-def load_generate_bundle(bundle_path: str, device: torch.device, compute_dtype_arg: str) -> tuple[dict, torch.dtype]:
-    bundle = load_bundle(bundle_path)
-    compute_dtype_name = bundle["save_dtype"] if compute_dtype_arg == "auto" else compute_dtype_arg
-    compute_dtype = dtype_from_name(compute_dtype_name)
-    return move_bundle(bundle, device, compute_dtype), compute_dtype
+from qwen3vl_tp_runtime.scripts.common import load_runtime_bundle, summarize_last_token_topk, tensor_diff_stats
 
 
 def bundle_with_runtime_tensors(bundle: dict, runtime_payload: dict) -> dict:
@@ -162,7 +136,7 @@ def run_prepare_pp(args) -> None:
 
 def run_direct(args) -> None:
     device = get_device(args.device)
-    bundle, compute_dtype = load_generate_bundle(args.bundle_path, device, args.compute_dtype)
+    bundle, compute_dtype = load_runtime_bundle(args.bundle_path, device, args.compute_dtype)
 
     prefill_bundle = bundle_with_runtime_tensors(bundle, bundle["prefill"])
     input_ids = bundle["input_ids"]

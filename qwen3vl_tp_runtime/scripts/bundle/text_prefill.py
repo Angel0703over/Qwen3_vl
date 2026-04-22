@@ -1,4 +1,4 @@
-"""Script for capturing and replaying a text-only direct decode logits bundle with KV cache."""
+"""Script for capturing and replaying text-only direct/PP prefill logits bundles."""
 
 import argparse
 import sys
@@ -8,59 +8,32 @@ import torch
 import torch.distributed as dist
 
 if __package__ is None or __package__ == "":
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent))
 
 from qwen3vl_tp_runtime.hexgen_core import (
     MODEL_PATH,
-    TEXT_DECODE_BUNDLE_PATH,
-    TEXT_DECODE_PIPELINE_BUNDLE_DIR,
-    TEXT_DECODE_PIPELINE_MANIFEST_PATH,
+    TEXT_PREFILL_BUNDLE_PATH,
+    TEXT_PREFILL_PIPELINE_BUNDLE_DIR,
+    TEXT_PREFILL_PIPELINE_MANIFEST_PATH,
     get_device,
     init_dist,
     load_pipeline_manifest,
     parse_stage_ranges,
-    prepare_text_decode_pipeline,
+    prepare_text_prefill_pipeline,
     run_text_pipeline_rank,
 )
 from qwen3vl_tp_runtime.models.qwen3vl import (
-    capture_text_decode_bundle,
-    dtype_from_name,
+    capture_text_prefill_bundle,
     forward_text_embeddings,
     load_bundle,
-    move_bundle,
-    trace_text_decode_logits,
+    trace_text_prefill_logits,
 )
-
-
-def tensor_diff_stats(lhs: torch.Tensor, rhs: torch.Tensor) -> tuple[float, float]:
-    diff = (lhs - rhs).abs()
-    return diff.max().item(), diff.mean().item()
-
-
-def summarize_last_token_topk(logits: torch.Tensor, topk: int) -> list[dict]:
-    last_token_logits = logits[0, -1].to(torch.float32)
-    k = min(topk, last_token_logits.numel())
-    values, indices = torch.topk(last_token_logits, k=k)
-    return [
-        {
-            "token_id": int(token_id),
-            "logit": float(value),
-        }
-        for value, token_id in zip(values.tolist(), indices.tolist())
-    ]
-
-
-def load_decode_bundle(bundle_path: str, device: torch.device, compute_dtype_arg: str) -> tuple[dict, torch.dtype]:
-    bundle = load_bundle(bundle_path)
-    compute_dtype_name = bundle["save_dtype"] if compute_dtype_arg == "auto" else compute_dtype_arg
-    compute_dtype = dtype_from_name(compute_dtype_name)
-    return move_bundle(bundle, device, compute_dtype), compute_dtype
+from qwen3vl_tp_runtime.scripts.common import load_runtime_bundle, summarize_last_token_topk, tensor_diff_stats
 
 
 def run_prepare(args) -> None:
-    bundle = capture_text_decode_bundle(
+    bundle = capture_text_prefill_bundle(
         prompt=args.prompt,
-        decode_token_id=args.decode_token_id,
         bundle_path=args.bundle_path,
         save_dtype=args.save_dtype,
         model_path=args.model_path,
@@ -69,16 +42,12 @@ def run_prepare(args) -> None:
     print(f"[prepare] bundle saved to {args.bundle_path}")
     print(
         f"[prepare] prompt={bundle['prompt']!r} "
-        f"prefill_seq_len={bundle['prefill_seq_len']} "
-        f"total_seq_len={bundle['total_seq_len']} "
-        f"decode_token_id={bundle['decode_token_id']} "
-        f"decode_source={bundle['decode_source']!r} "
+        f"seq_len={bundle['input_ids'].shape[-1]} "
         f"num_layers={len(bundle['layers'])} "
         f"save_dtype={bundle['save_dtype']}"
     )
     print(
-        f"[prepare] decode_input_shape={tuple(bundle['decode_input_ids'].shape)} "
-        f"layer_input_shape={tuple(bundle['layer_input'].shape)} "
+        f"[prepare] layer_input_shape={tuple(bundle['layer_input'].shape)} "
         f"stage_output_shape={tuple(bundle['stage_output'].shape)} "
         f"logits_shape={tuple(bundle['logits'].shape)}"
     )
@@ -99,11 +68,11 @@ def run_prepare(args) -> None:
 
 def run_direct(args) -> None:
     device = get_device(args.device)
-    bundle, compute_dtype = load_decode_bundle(args.bundle_path, device, args.compute_dtype)
+    bundle, compute_dtype = load_runtime_bundle(args.bundle_path, device, args.compute_dtype)
 
-    decode_input_ids = bundle["decode_input_ids"]
-    embedded_input = forward_text_embeddings(decode_input_ids, bundle)
-    trace = trace_text_decode_logits(embedded_input, bundle)
+    input_ids = bundle["input_ids"]
+    embedded_input = forward_text_embeddings(input_ids, bundle)
+    trace = trace_text_prefill_logits(embedded_input, bundle)
 
     reference_layer_input = bundle["layer_input"]
     reference_stage_output = bundle["stage_output"]
@@ -117,11 +86,10 @@ def run_direct(args) -> None:
 
     print(
         f"[run] device={device} compute_dtype={compute_dtype} "
-        f"prompt={bundle['prompt']!r} prefill_seq_len={bundle['prefill_seq_len']} "
-        f"total_seq_len={bundle['total_seq_len']} decode_token_id={bundle['decode_token_id']}"
+        f"prompt={bundle['prompt']!r} seq_len={input_ids.shape[-1]}"
     )
     print(
-        f"[run] decode_input_shape={tuple(decode_input_ids.shape)} "
+        f"[run] input_ids_shape={tuple(input_ids.shape)} "
         f"embedded_input_shape={tuple(embedded_input.shape)} "
         f"logits_shape={tuple(trace['logits'].shape)}"
     )
@@ -135,12 +103,11 @@ def run_direct(args) -> None:
 
 def run_prepare_pp(args) -> None:
     stage_ranges = parse_stage_ranges(args.stage_ranges)
-    manifest = prepare_text_decode_pipeline(
+    manifest = prepare_text_prefill_pipeline(
         stage_ranges=stage_ranges,
         bundle_dir=args.bundle_dir,
         manifest_path=args.manifest_path,
         prompt=args.prompt,
-        decode_token_id=args.decode_token_id,
         save_dtype=args.save_dtype,
         model_path=args.model_path,
     )
@@ -151,10 +118,7 @@ def run_prepare_pp(args) -> None:
     print(f"[prepare-pp] bundle_dir={args.bundle_dir}")
     print(
         f"[prepare-pp] prompt={stage0_bundle['prompt']!r} "
-        f"prefill_seq_len={stage0_bundle['prefill_seq_len']} "
-        f"total_seq_len={stage0_bundle['total_seq_len']} "
-        f"decode_token_id={stage0_bundle['decode_token_id']} "
-        f"decode_source={stage0_bundle['decode_source']!r} "
+        f"seq_len={stage0_bundle['input_ids'].shape[-1]} "
         f"num_stages={manifest.num_stages} "
         f"stage_ranges={manifest.stage_ranges} "
         f"save_dtype={manifest.save_dtype}"
@@ -240,35 +204,33 @@ def run_pp(args) -> None:
 
 
 def build_parser():
-    parser = argparse.ArgumentParser(description="Qwen3-VL text-only direct/PP decode logits baseline with KV cache.")
+    parser = argparse.ArgumentParser(description="Qwen3-VL text-only direct/PP prefill logits baseline.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    prepare_parser = subparsers.add_parser("prepare", help="抓取 text-only decode logits bundle。")
+    prepare_parser = subparsers.add_parser("prepare", help="抓取 text-only prefill logits bundle。")
     prepare_parser.add_argument("--prompt", type=str, default="请用中文简要介绍一下人工智能。")
-    prepare_parser.add_argument("--decode-token-id", type=int, default=None)
-    prepare_parser.add_argument("--bundle-path", type=str, default=TEXT_DECODE_BUNDLE_PATH)
+    prepare_parser.add_argument("--bundle-path", type=str, default=TEXT_PREFILL_BUNDLE_PATH)
     prepare_parser.add_argument("--save-dtype", choices=["auto", "float16", "float32", "bfloat16"], default="auto")
     prepare_parser.add_argument("--model-path", type=str, default=MODEL_PATH)
     prepare_parser.add_argument("--topk", type=int, default=5)
 
-    run_parser = subparsers.add_parser("run", help="运行 text-only direct decode logits replay。")
-    run_parser.add_argument("--bundle-path", type=str, default=TEXT_DECODE_BUNDLE_PATH)
+    run_parser = subparsers.add_parser("run", help="运行 text-only direct prefill logits replay。")
+    run_parser.add_argument("--bundle-path", type=str, default=TEXT_PREFILL_BUNDLE_PATH)
     run_parser.add_argument("--device", choices=["cpu", "cuda"], default="cpu")
     run_parser.add_argument("--compute-dtype", choices=["auto", "float16", "float32", "bfloat16"], default="auto")
     run_parser.add_argument("--topk", type=int, default=5)
 
-    prepare_pp_parser = subparsers.add_parser("prepare-pp", help="抓取 text-only PP decode logits pipeline。")
+    prepare_pp_parser = subparsers.add_parser("prepare-pp", help="抓取 text-only PP prefill logits pipeline。")
     prepare_pp_parser.add_argument("--prompt", type=str, default="请用中文简要介绍一下人工智能。")
-    prepare_pp_parser.add_argument("--decode-token-id", type=int, default=None)
     prepare_pp_parser.add_argument("--stage-ranges", nargs="+", default=["0:17", "18:35"])
-    prepare_pp_parser.add_argument("--bundle-dir", type=str, default=TEXT_DECODE_PIPELINE_BUNDLE_DIR)
-    prepare_pp_parser.add_argument("--manifest-path", type=str, default=TEXT_DECODE_PIPELINE_MANIFEST_PATH)
+    prepare_pp_parser.add_argument("--bundle-dir", type=str, default=TEXT_PREFILL_PIPELINE_BUNDLE_DIR)
+    prepare_pp_parser.add_argument("--manifest-path", type=str, default=TEXT_PREFILL_PIPELINE_MANIFEST_PATH)
     prepare_pp_parser.add_argument("--save-dtype", choices=["auto", "float16", "float32", "bfloat16"], default="auto")
     prepare_pp_parser.add_argument("--model-path", type=str, default=MODEL_PATH)
     prepare_pp_parser.add_argument("--topk", type=int, default=5)
 
-    pp_parser = subparsers.add_parser("pp", help="运行 text-only PP decode logits replay。")
-    pp_parser.add_argument("--manifest-path", type=str, default=TEXT_DECODE_PIPELINE_MANIFEST_PATH)
+    pp_parser = subparsers.add_parser("pp", help="运行 text-only PP prefill logits replay。")
+    pp_parser.add_argument("--manifest-path", type=str, default=TEXT_PREFILL_PIPELINE_MANIFEST_PATH)
     pp_parser.add_argument("--device", choices=["cpu", "cuda"], default="cpu")
     pp_parser.add_argument("--compute-dtype", choices=["auto", "float16", "float32", "bfloat16"], default="auto")
     pp_parser.add_argument("--comm-dtype", choices=["auto", "float32", "bfloat16"], default="auto")

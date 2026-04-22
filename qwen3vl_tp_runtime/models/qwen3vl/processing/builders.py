@@ -1,13 +1,13 @@
-"""Input construction and local model loading helpers for Qwen3-VL experiments."""
+"""Input builders for text-only and multimodal Qwen3-VL experiments."""
+
+from __future__ import annotations
 
 import glob
 import os
 
-from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
-
 from qwen_vl_utils import process_vision_info
 
-from qwen3vl_tp_runtime.hexgen_core.config import FRAME_DIR, MODEL_PATH
+from qwen3vl_tp_runtime.hexgen_core.config import FRAME_DIR
 
 
 def list_frames(num_frames: int, frame_dir: str = FRAME_DIR) -> list[str]:
@@ -99,22 +99,8 @@ def build_text_inputs(
     return inputs
 
 
-def load_model(
-    model_path: str = MODEL_PATH,
-    *,
-    attn_implementation: str = "eager",
-):
-    return Qwen3VLForConditionalGeneration.from_pretrained(
-        model_path,
-        torch_dtype="auto",
-        device_map="auto",
-        attn_implementation=attn_implementation,
-        local_files_only=True,
-    ).eval()
-
-
-def load_processor(model_path: str = MODEL_PATH):
-    return AutoProcessor.from_pretrained(
-        model_path,
-        local_files_only=True,
-    )
+__all__ = [
+    "list_frames",
+    "build_inputs",
+    "build_text_inputs",
+]

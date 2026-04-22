@@ -1,9 +1,10 @@
-"""Qwen3-VL model package containing capture, inputs, ops, and replay kernels."""
+"""Qwen3-VL runtime package with execution, processing, vision, and live helpers."""
 
 from qwen3vl_tp_runtime.models.qwen3vl.capture import (
     capture_decoder_layer_params,
     capture_multimodal_decode_bundle,
     capture_multimodal_decode_stage_bundle,
+    capture_multimodal_generate_stage_bundle,
     capture_multimodal_prefill_bundle,
     capture_multimodal_prefill_stage_bundle,
     capture_text_decode_bundle,
@@ -21,7 +22,7 @@ from qwen3vl_tp_runtime.models.qwen3vl.capture import (
     resolve_runtime_tensors,
     run_forward_with_runtime_hook,
 )
-from qwen3vl_tp_runtime.models.qwen3vl.forward import (
+from qwen3vl_tp_runtime.models.qwen3vl.execution import (
     apply_deepstack,
     compose_layer_bundle,
     forward_attention_cached,
@@ -62,14 +63,27 @@ from qwen3vl_tp_runtime.models.qwen3vl.forward import (
     trace_text_stage,
     trace_text_stage_tp,
 )
-from qwen3vl_tp_runtime.models.qwen3vl.inputs import (
+from qwen3vl_tp_runtime.models.qwen3vl.processing import (
     build_inputs,
     build_text_inputs,
     list_frames,
     load_model,
     load_processor,
 )
-from qwen3vl_tp_runtime.models.qwen3vl.ops import (
+from qwen3vl_tp_runtime.models.qwen3vl.live import (
+    MultimodalRuntimeInputs,
+    build_cache_by_layer_from_past_key_values,
+    build_live_multimodal_stage_bundle,
+    extract_decoder_layer_params_live,
+    prepare_multimodal_decode_runtime_inputs,
+    prepare_multimodal_prefill_runtime_inputs,
+)
+from qwen3vl_tp_runtime.models.qwen3vl.vision import (
+    encode_image_features,
+    encode_video_features,
+    materialize_visual_features,
+)
+from qwen3vl_tp_runtime.models.qwen3vl.functional import (
     apply_rope,
     attn_eager,
     build_causal_mask,
@@ -86,6 +100,7 @@ __all__ = [
     "capture_decoder_layer_params",
     "capture_multimodal_decode_bundle",
     "capture_multimodal_decode_stage_bundle",
+    "capture_multimodal_generate_stage_bundle",
     "capture_multimodal_prefill_bundle",
     "capture_multimodal_prefill_stage_bundle",
     "capture_text_decode_bundle",
@@ -107,6 +122,15 @@ __all__ = [
     "list_frames",
     "load_model",
     "load_processor",
+    "MultimodalRuntimeInputs",
+    "prepare_multimodal_prefill_runtime_inputs",
+    "prepare_multimodal_decode_runtime_inputs",
+    "extract_decoder_layer_params_live",
+    "build_cache_by_layer_from_past_key_values",
+    "build_live_multimodal_stage_bundle",
+    "encode_image_features",
+    "encode_video_features",
+    "materialize_visual_features",
     "compose_layer_bundle",
     "apply_deepstack",
     "get_deepstack_embeds",

@@ -6,7 +6,7 @@ from typing import Any
 import torch
 
 from qwen3vl_tp_runtime.hexgen_core.schema import StageHandoffPayload
-from qwen3vl_tp_runtime.models.qwen3vl.forward import (
+from qwen3vl_tp_runtime.models.qwen3vl.execution import (
     forward_text_decode_logits,
     forward_text_decode_logits_tp,
     forward_text_decode_stage,

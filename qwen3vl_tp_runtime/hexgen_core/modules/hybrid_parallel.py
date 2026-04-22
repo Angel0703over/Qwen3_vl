@@ -13,6 +13,7 @@ from qwen3vl_tp_runtime.hexgen_core.gen_hetero_groups import (
 from qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel import (
     load_stage_bundle_by_index,
     prepare_multimodal_decode_pipeline,
+    prepare_multimodal_generate_pipeline,
     prepare_multimodal_prefill_pipeline,
     prepare_text_decode_pipeline,
     prepare_text_generate_pipeline,
@@ -32,13 +33,13 @@ from qwen3vl_tp_runtime.hexgen_core.stage import (
     run_stage_tp,
 )
 from qwen3vl_tp_runtime.hexgen_core.transport import StageHandoffTransport
-from qwen3vl_tp_runtime.models.qwen3vl.forward import (
+from qwen3vl_tp_runtime.models.qwen3vl.execution import (
     forward_text_embeddings,
     trace_text_decode_logits_tp_with_runtime_cache,
     trace_text_decode_stage_tp_with_runtime_cache,
     trace_text_prefill_stage_logits_tp,
 )
-from qwen3vl_tp_runtime.models.qwen3vl.ops import resolve_comm_dtype
+from qwen3vl_tp_runtime.models.qwen3vl.functional import resolve_comm_dtype
 
 
 def _build_rank_group_index(rank_groups: list[list[int]], world_size: int) -> list[int]:
@@ -184,6 +185,44 @@ def prepare_multimodal_decode_hybrid(
         pipeline_manifest,
         layout,
         runtime="multimodal_decode_hybrid",
+    )
+    torch.save(manifest.to_dict(), manifest_path)
+    return manifest
+
+
+def prepare_multimodal_generate_hybrid(
+    *,
+    stage_ranges: list[tuple[int, int]],
+    tp_degrees: list[int],
+    bundle_dir: str,
+    manifest_path: str,
+    num_frames: int = 8,
+    max_new_tokens: int = 4,
+    save_dtype: str = "auto",
+    model_path: str | None = None,
+    frame_dir: str | None = None,
+) -> TextHybridManifest:
+    pipeline_manifest = prepare_multimodal_generate_pipeline(
+        stage_ranges=stage_ranges,
+        bundle_dir=bundle_dir,
+        manifest_path=manifest_path,
+        num_frames=num_frames,
+        max_new_tokens=max_new_tokens,
+        save_dtype=save_dtype,
+        model_path=model_path,
+        frame_dir=frame_dir,
+    )
+    tp_degrees = parse_tp_degrees(tp_degrees)
+    if len(tp_degrees) != pipeline_manifest.num_stages:
+        raise ValueError(
+            f"stage 数是 {pipeline_manifest.num_stages}，但 TP 度数拿到 {len(tp_degrees)} 个。"
+        )
+
+    layout = build_hybrid_layout(tp_degrees)
+    manifest = TextHybridManifest.from_pipeline_manifest(
+        pipeline_manifest,
+        layout,
+        runtime="multimodal_generate_hybrid",
     )
     torch.save(manifest.to_dict(), manifest_path)
     return manifest
@@ -497,7 +536,10 @@ def _run_text_generate_hybrid_phase(
     if is_first_stage:
         if rank_stage.local_rank == 0:
             if phase_kind == "prefill":
-                leader_input = forward_text_embeddings(runtime_bundle["input_ids"], runtime_bundle)
+                if runtime_bundle.get("embed_tokens_weight") is not None and "input_ids" in runtime_bundle:
+                    leader_input = forward_text_embeddings(runtime_bundle["input_ids"], runtime_bundle)
+                else:
+                    leader_input = reference_input
             elif phase_kind == "decode":
                 if current_token_id is None:
                     raise ValueError("decode phase 需要 current_token_id，但当前拿到 None。")
@@ -866,7 +908,7 @@ def run_text_hybrid_rank(
     dump_topk: int = 5,
     return_tensors: bool = False,
 ) -> dict:
-    if manifest.pipeline_type == "text_generate":
+    if manifest.pipeline_type in {"text_generate", "multimodal_generate"}:
         return _run_text_generate_hybrid_rank(
             rank=rank,
             world_size=world_size,
@@ -1019,6 +1061,7 @@ __all__ = [
     "HybridRankContext",
     "prepare_text_hybrid",
     "prepare_multimodal_decode_hybrid",
+    "prepare_multimodal_generate_hybrid",
     "prepare_multimodal_prefill_hybrid",
     "prepare_text_decode_hybrid",
     "prepare_text_generate_hybrid",
