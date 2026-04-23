@@ -6,6 +6,7 @@ DST_HOST="${DST_HOST:-10.126.126.3}"
 DST_USER="${DST_USER:-nvidia}"
 DST_DIR="${DST_DIR:-/mnt/ssd/code/Qwen3_vl}"
 SSH_PORT="${SSH_PORT:-22}"
+SSH_KEY_PATH="${SSH_KEY_PATH:-$HOME/.ssh/id_ed25519_jetson2}"
 
 DELETE_REMOTE=0
 DRY_RUN=0
@@ -23,6 +24,7 @@ Options:
   --host HOST        Remote host. Default: 10.126.126.3
   --user USER        Remote SSH user. Default: nvidia
   --port PORT        Remote SSH port. Default: 22
+  --identity PATH    SSH private key path. Default: ~/.ssh/id_ed25519_jetson2 if it exists
   --delete           Delete remote files that no longer exist locally
   --dry-run          Show what would be synced without changing the remote side
   --git-changed      Sync only git-modified/untracked files under SRC_DIR
@@ -35,6 +37,7 @@ Examples:
   bash sync-to-jetson2.sh --delete
   bash sync-to-jetson2.sh --git-changed
   bash sync-to-jetson2.sh --path qwen3vl_tp_runtime/scripts/runtime.py
+  bash sync-to-jetson2.sh --identity ~/.ssh/id_ed25519_jetson2
   DST_USER=myuser bash sync-to-jetson2.sh
 EOF
 }
@@ -59,6 +62,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --port)
       SSH_PORT="$2"
+      shift 2
+      ;;
+    --identity)
+      SSH_KEY_PATH="$2"
       shift 2
       ;;
     --delete)
@@ -104,8 +111,20 @@ if ! command -v ssh >/dev/null 2>&1; then
   exit 1
 fi
 
+if [[ -n "${SSH_KEY_PATH}" && ! -f "${SSH_KEY_PATH}" ]]; then
+  if [[ "${SSH_KEY_PATH}" == "$HOME/.ssh/id_ed25519_jetson2" ]]; then
+    SSH_KEY_PATH=""
+  else
+    echo "SSH private key does not exist: ${SSH_KEY_PATH}" >&2
+    exit 1
+  fi
+fi
+
 REMOTE="${DST_USER}@${DST_HOST}"
-SSH_CMD=(ssh -p "$SSH_PORT")
+RSYNC_SSH="ssh -p ${SSH_PORT}"
+if [[ -n "${SSH_KEY_PATH}" ]]; then
+  RSYNC_SSH+=" -i ${SSH_KEY_PATH} -o IdentitiesOnly=yes"
+fi
 RSYNC_CMD=(
   rsync
   -az
@@ -117,7 +136,7 @@ RSYNC_CMD=(
   --rsync-path
   "mkdir -p \"${DST_DIR}\" && rsync"
   -e
-  "ssh -p ${SSH_PORT}"
+  "${RSYNC_SSH}"
 )
 
 if [[ $DELETE_REMOTE -eq 1 ]]; then
@@ -133,6 +152,9 @@ fi
 echo "[sync] src=${SRC_DIR}"
 echo "[sync] dst=${REMOTE}:${DST_DIR}"
 echo "[sync] ssh_port=${SSH_PORT} delete=${DELETE_REMOTE} dry_run=${DRY_RUN} git_changed=${GIT_CHANGED}"
+if [[ -n "${SSH_KEY_PATH}" ]]; then
+  echo "[sync] ssh_key=${SSH_KEY_PATH}"
+fi
 
 TMP_FILE=""
 cleanup() {

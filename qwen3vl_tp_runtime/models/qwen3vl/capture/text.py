@@ -691,7 +691,7 @@ def capture_text_generate_stage_bundle(
     end_idx: int = 35,
     prompt: str = "请用中文简要介绍一下人工智能。",
     max_new_tokens: int = 4,
-    bundle_path: str = TEXT_STAGE_BUNDLE_PATH,
+    bundle_path: str | None = TEXT_STAGE_BUNDLE_PATH,
     save_dtype: str = "auto",
     model_path: str = MODEL_PATH,
 ) -> dict:
@@ -847,9 +847,10 @@ def capture_text_generate_stage_bundle(
     else:
         bundle["prefill"]["stage_output"] = cast_cpu(prefill_reference["stage_output"], save_dtype_value)
 
-    save_path = Path(bundle_path)
-    save_path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(bundle, save_path)
+    if bundle_path is not None:
+        save_path = Path(bundle_path)
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(bundle, save_path)
     return bundle
 
 
@@ -859,7 +860,7 @@ def capture_text_decode_stage_bundle(
     end_idx: int = 35,
     prompt: str = "请用中文简要介绍一下人工智能。",
     decode_token_id: int | None = None,
-    bundle_path: str = TEXT_STAGE_BUNDLE_PATH,
+    bundle_path: str | None = TEXT_STAGE_BUNDLE_PATH,
     save_dtype: str = "auto",
     model_path: str = MODEL_PATH,
 ) -> dict:
@@ -1084,9 +1085,10 @@ def capture_text_decode_stage_bundle(
         bundle["sanity_max_diff"] = (direct_output - reference_output).abs().max().item()
         bundle["sanity_mean_diff"] = (direct_output - reference_output).abs().mean().item()
 
-    save_path = Path(bundle_path)
-    save_path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(bundle, save_path)
+    if bundle_path is not None:
+        save_path = Path(bundle_path)
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(bundle, save_path)
     return bundle
 
 
@@ -1236,7 +1238,7 @@ def capture_text_prefill_stage_bundle(
     start_idx: int = 0,
     end_idx: int = 35,
     prompt: str = "请用中文简要介绍一下人工智能。",
-    bundle_path: str = TEXT_STAGE_BUNDLE_PATH,
+    bundle_path: str | None = TEXT_STAGE_BUNDLE_PATH,
     save_dtype: str = "auto",
     model_path: str = MODEL_PATH,
 ) -> dict:
@@ -1407,9 +1409,10 @@ def capture_text_prefill_stage_bundle(
         bundle["sanity_max_diff"] = (direct_output - reference_output).abs().max().item()
         bundle["sanity_mean_diff"] = (direct_output - reference_output).abs().mean().item()
 
-    save_path = Path(bundle_path)
-    save_path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(bundle, save_path)
+    if bundle_path is not None:
+        save_path = Path(bundle_path)
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(bundle, save_path)
     return bundle
 
 

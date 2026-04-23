@@ -31,6 +31,7 @@ from qwen3vl_tp_runtime.models.qwen3vl.capture import (
     load_bundle,
     move_bundle,
 )
+from qwen3vl_tp_runtime.models.qwen3vl.runtime_builder import build_direct_stage_bundle
 from qwen3vl_tp_runtime.models.qwen3vl.execution import (
     forward_text_embeddings,
     trace_text_decode_logits_with_runtime_cache,
@@ -641,7 +642,15 @@ def load_stage_bundle_by_index(
     compute_dtype_arg: str,
 ) -> tuple[dict, torch.dtype]:
     stage_meta = manifest.stages[stage_idx]
-    bundle = load_bundle(stage_meta.bundle_path)
+    if stage_meta.bundle_path:
+        bundle = load_bundle(stage_meta.bundle_path)
+    else:
+        bundle = build_direct_stage_bundle(
+            stage_idx=stage_idx,
+            start_idx=stage_meta.start_idx,
+            end_idx=stage_meta.end_idx,
+            runtime_config=manifest.runtime_config,
+        )
     compute_dtype_name = bundle["save_dtype"] if compute_dtype_arg == "auto" else compute_dtype_arg
     compute_dtype = dtype_from_name(compute_dtype_name)
     return move_bundle(bundle, device, compute_dtype), compute_dtype
@@ -948,6 +957,10 @@ class TextGeneratePipelineRunner:
         if self.return_tensors and rank == world_size - 1:
             stats["prefill_output_tensor"] = prefill_stats.pop("stage_output_tensor")
             stats["step_output_tensors"] = step_output_tensors
+            stats["reference_prefill_output_tensor"] = stage_bundle["prefill"]["logits"]
+            stats["reference_step_output_tensors"] = [
+                step_payload["logits"] for step_payload in stage_bundle["decode_steps"]
+            ]
         return stats
 
 

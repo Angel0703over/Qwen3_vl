@@ -78,6 +78,11 @@ from qwen3vl_tp_runtime.models.qwen3vl.live import (
     prepare_multimodal_decode_runtime_inputs,
     prepare_multimodal_prefill_runtime_inputs,
 )
+from qwen3vl_tp_runtime.models.qwen3vl.runtime_builder import (
+    build_direct_hybrid_manifest,
+    build_direct_pipeline_manifest,
+    build_direct_stage_bundle,
+)
 from qwen3vl_tp_runtime.models.qwen3vl.vision import (
     encode_image_features,
     encode_video_features,
@@ -128,6 +133,9 @@ __all__ = [
     "extract_decoder_layer_params_live",
     "build_cache_by_layer_from_past_key_values",
     "build_live_multimodal_stage_bundle",
+    "build_direct_stage_bundle",
+    "build_direct_pipeline_manifest",
+    "build_direct_hybrid_manifest",
     "encode_image_features",
     "encode_video_features",
     "materialize_visual_features",

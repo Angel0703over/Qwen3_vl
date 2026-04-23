@@ -70,6 +70,8 @@ from qwen3vl_tp_runtime.hexgen_core import (
 from qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel import TextHybridRunner
 from qwen3vl_tp_runtime.models.qwen3vl import (
     build_inputs,
+    build_direct_hybrid_manifest,
+    build_direct_pipeline_manifest,
     build_text_inputs,
     list_frames,
     load_bundle,
@@ -382,12 +384,12 @@ def _resolve_defaults(args: argparse.Namespace) -> None:
 
     if args.backend == "bundle" and args.bundle_path is None:
         args.bundle_path = DEFAULT_BUNDLE_PATHS.get(combo)
-    if args.backend == "pp":
+    if args.backend == "pp" and args.action == "prepare":
         if args.bundle_dir is None:
             args.bundle_dir = DEFAULT_PIPELINE_BUNDLE_DIRS.get(combo)
         if args.manifest_path is None:
             args.manifest_path = DEFAULT_PIPELINE_MANIFEST_PATHS.get(combo)
-    if args.backend == "hybrid":
+    if args.backend == "hybrid" and args.action == "prepare":
         if args.bundle_dir is None:
             args.bundle_dir = DEFAULT_HYBRID_BUNDLE_DIRS.get(combo)
         if args.manifest_path is None:
@@ -397,9 +399,9 @@ def _resolve_defaults(args: argparse.Namespace) -> None:
             args.stage_ranges = TP_SINGLE_STAGE_RANGES.copy()
         if args.tp_degrees == DEFAULT_TP_DEGREES:
             args.tp_degrees = TP_SINGLE_STAGE_DEGREES.copy()
-        if args.bundle_dir is None:
+        if args.action == "prepare" and args.bundle_dir is None:
             args.bundle_dir = _derive_tp_output_path(DEFAULT_HYBRID_BUNDLE_DIRS.get(combo))
-        if args.manifest_path is None:
+        if args.action == "prepare" and args.manifest_path is None:
             args.manifest_path = _derive_tp_output_path(DEFAULT_HYBRID_MANIFEST_PATHS.get(combo))
 
 
@@ -431,21 +433,21 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
     if args.backend == "pp":
         if combo not in PIPELINE_PREPARE_RUNNERS:
             parser.error("当前 pp 入口还不支持这个 modality/mode 组合。")
-        if args.bundle_dir is None or args.manifest_path is None:
+        if args.action == "prepare" and (args.bundle_dir is None or args.manifest_path is None):
             parser.error("pp 入口需要 bundle_dir 和 manifest_path。")
         return
 
     if args.backend == "hybrid":
         if combo not in HYBRID_PREPARE_RUNNERS:
             parser.error("当前 hybrid 入口还不支持这个 modality/mode 组合。")
-        if args.bundle_dir is None or args.manifest_path is None:
+        if args.action == "prepare" and (args.bundle_dir is None or args.manifest_path is None):
             parser.error("hybrid 入口需要 bundle_dir 和 manifest_path。")
         return
 
     if args.backend == "tp":
         if combo not in HYBRID_PREPARE_RUNNERS:
             parser.error("当前 tp 入口还不支持这个 modality/mode 组合。")
-        if args.bundle_dir is None or args.manifest_path is None:
+        if args.action == "prepare" and (args.bundle_dir is None or args.manifest_path is None):
             parser.error("tp 入口需要 bundle_dir 和 manifest_path。")
         if len(args.stage_ranges) != 1:
             parser.error("backend=tp 要求恰好一个 --stage-ranges，也就是单 stage 无 PP。")
@@ -467,6 +469,30 @@ def _build_prepare_kwargs(args: argparse.Namespace) -> dict:
         "model_path": args.model_path,
     }
 
+    if args.modality == "text":
+        kwargs["prompt"] = args.prompt
+        if args.mode == "decode":
+            kwargs["decode_token_id"] = args.decode_token_id
+        elif args.mode == "generate":
+            kwargs["max_new_tokens"] = args.max_new_tokens
+    else:
+        kwargs["num_frames"] = args.num_frames
+        kwargs["frame_dir"] = args.frame_dir
+        if args.mode == "decode":
+            kwargs["decode_token_id"] = args.decode_token_id
+        elif args.mode == "generate":
+            kwargs["max_new_tokens"] = args.max_new_tokens
+    return kwargs
+
+
+def _build_direct_manifest_kwargs(args: argparse.Namespace) -> dict:
+    kwargs = {
+        "modality": args.modality,
+        "mode": args.mode,
+        "stage_ranges": parse_stage_ranges(args.stage_ranges),
+        "model_path": args.model_path,
+        "save_dtype": args.save_dtype,
+    }
     if args.modality == "text":
         kwargs["prompt"] = args.prompt
         if args.mode == "decode":
@@ -586,17 +612,22 @@ def _summarize_pipeline_generate_run(stats: dict, manifest, topk: int) -> dict:
     }
 
     if "prefill_output_tensor" in stats:
-        last_bundle = load_bundle(manifest.stages[-1].bundle_path)
         summary["prefill_topk"] = summarize_last_token_topk(stats["prefill_output_tensor"], topk)
-        summary["reference_prefill_topk"] = summarize_last_token_topk(last_bundle["prefill"]["logits"], topk)
+        reference_prefill = stats.get("reference_prefill_output_tensor")
+        reference_steps = stats.get("reference_step_output_tensors")
+        if reference_prefill is None or reference_steps is None:
+            last_bundle = load_bundle(manifest.stages[-1].bundle_path)
+            reference_prefill = last_bundle["prefill"]["logits"]
+            reference_steps = [step_payload["logits"] for step_payload in last_bundle["decode_steps"]]
+        summary["reference_prefill_topk"] = summarize_last_token_topk(reference_prefill, topk)
         summary["step_topks"] = [
             {
                 "step_idx": step_idx,
                 "topk": summarize_last_token_topk(runtime_logits, topk),
-                "reference_topk": summarize_last_token_topk(step_payload["logits"], topk),
+                "reference_topk": summarize_last_token_topk(reference_logits, topk),
             }
-            for step_idx, (runtime_logits, step_payload) in enumerate(
-                zip(stats["step_output_tensors"], last_bundle["decode_steps"])
+            for step_idx, (runtime_logits, reference_logits) in enumerate(
+                zip(stats["step_output_tensors"], reference_steps)
             )
         ]
     return summary
@@ -638,17 +669,22 @@ def _summarize_hybrid_run(
             "token_match": stats["generated_token_ids"] == stats["reference_generated_token_ids"],
         }
         if "prefill_output_tensor" in stats and stats["stage_idx"] == stats["num_stages"] - 1 and stats["local_rank"] == 0:
-            last_bundle = load_bundle(manifest.stages[-1].bundle_path)
             summary["prefill_topk"] = summarize_last_token_topk(stats["prefill_output_tensor"], topk)
-            summary["reference_prefill_topk"] = summarize_last_token_topk(last_bundle["prefill"]["logits"], topk)
+            reference_prefill = stats.get("reference_prefill_output_tensor")
+            reference_steps = stats.get("reference_step_output_tensors")
+            if reference_prefill is None or reference_steps is None:
+                last_bundle = load_bundle(manifest.stages[-1].bundle_path)
+                reference_prefill = last_bundle["prefill"]["logits"]
+                reference_steps = [step_payload["logits"] for step_payload in last_bundle["decode_steps"]]
+            summary["reference_prefill_topk"] = summarize_last_token_topk(reference_prefill, topk)
             summary["step_topks"] = [
                 {
                     "step_idx": step_idx,
                     "topk": summarize_last_token_topk(runtime_logits, topk),
-                    "reference_topk": summarize_last_token_topk(step_payload["logits"], topk),
+                    "reference_topk": summarize_last_token_topk(reference_logits, topk),
                 }
-                for step_idx, (runtime_logits, step_payload) in enumerate(
-                    zip(stats["step_output_tensors"], last_bundle["decode_steps"])
+                for step_idx, (runtime_logits, reference_logits) in enumerate(
+                    zip(stats["step_output_tensors"], reference_steps)
                 )
             ]
         return summary
@@ -713,7 +749,10 @@ def _run_pp_prepare(args: argparse.Namespace) -> None:
 def _run_pp(args: argparse.Namespace) -> None:
     rank, world_size = init_dist()
     device = get_device(args.device)
-    manifest = load_pipeline_manifest(args.manifest_path)
+    if args.manifest_path is None:
+        manifest = build_direct_pipeline_manifest(**_build_direct_manifest_kwargs(args))
+    else:
+        manifest = load_pipeline_manifest(args.manifest_path)
     if manifest.pipeline_type in GENERATE_PIPELINE_TYPES:
         stats = run_text_generate_pipeline_rank(
             rank=rank,
@@ -760,7 +799,14 @@ def _run_tp_prepare(args: argparse.Namespace) -> None:
 
 
 def _run_hybrid_family(args: argparse.Namespace, *, backend: str) -> None:
-    manifest = load_hybrid_manifest(args.manifest_path)
+    if args.manifest_path is None:
+        manifest = build_direct_hybrid_manifest(
+            **_build_direct_manifest_kwargs(args),
+            tp_degrees=args.tp_degrees,
+            backend=backend,
+        )
+    else:
+        manifest = load_hybrid_manifest(args.manifest_path)
     rank, world_size = init_dist()
     device = get_device(args.device)
     runner = TextHybridRunner(

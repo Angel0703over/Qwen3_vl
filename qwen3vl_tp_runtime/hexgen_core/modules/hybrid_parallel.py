@@ -846,6 +846,10 @@ def _run_text_generate_hybrid_rank(
     if return_tensors and rank_stage.stage_idx == manifest.num_stages - 1 and rank_stage.local_rank == 0:
         stats["prefill_output_tensor"] = prefill_stats.pop("stage_output_tensor")
         stats["step_output_tensors"] = step_output_tensors
+        stats["reference_prefill_output_tensor"] = stage_bundle["prefill"]["logits"]
+        stats["reference_step_output_tensors"] = [
+            step_payload["logits"] for step_payload in stage_bundle["decode_steps"]
+        ]
     return stats
 
 
