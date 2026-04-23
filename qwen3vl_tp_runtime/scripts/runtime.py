@@ -10,6 +10,7 @@ from pathlib import Path
 
 import torch
 import torch.distributed as dist
+from torch.distributed.elastic.multiprocessing.errors import record
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
@@ -927,6 +928,7 @@ def run_args(args: argparse.Namespace, parser: argparse.ArgumentParser | None = 
         parser.error(f"未知 backend={args.backend!r}")
 
 
+@record
 def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)

@@ -1,6 +1,7 @@
 """Model-facing exports grouped by concrete model family implementations."""
 
 from qwen3vl_tp_runtime.models.qwen3vl import (
+    DirectStageBundleBuilder,
     apply_deepstack,
     apply_rope,
     attn_eager,
@@ -67,6 +68,8 @@ from qwen3vl_tp_runtime.models.qwen3vl import (
     move_bundle,
     prepare_multimodal_decode_runtime_inputs,
     prepare_multimodal_prefill_runtime_inputs,
+    prepare_text_decode_runtime_inputs,
+    prepare_text_prefill_runtime_inputs,
     repeat_kv,
     resolve_comm_dtype,
     resolve_runtime_tensors,
@@ -90,6 +93,7 @@ from qwen3vl_tp_runtime.models.qwen3vl import (
 )
 
 __all__ = [
+    "DirectStageBundleBuilder",
     "capture_decoder_layer_params",
     "capture_multimodal_decode_bundle",
     "capture_multimodal_decode_stage_bundle",
@@ -125,6 +129,8 @@ __all__ = [
     "encode_video_features",
     "materialize_visual_features",
     "MultimodalRuntimeInputs",
+    "prepare_text_prefill_runtime_inputs",
+    "prepare_text_decode_runtime_inputs",
     "prepare_multimodal_prefill_runtime_inputs",
     "prepare_multimodal_decode_runtime_inputs",
     "compose_layer_bundle",

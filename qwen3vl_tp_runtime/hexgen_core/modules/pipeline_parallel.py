@@ -6,6 +6,7 @@ from pathlib import Path
 import torch
 import torch.distributed as dist
 
+from qwen3vl_tp_runtime.hexgen_core.distributed import startup_log
 from qwen3vl_tp_runtime.hexgen_core.schema import (
     BoundaryStats,
     StageHandoffPayload,
@@ -656,12 +657,34 @@ def load_stage_bundle_by_index(
     return move_bundle(bundle, device, compute_dtype), compute_dtype
 
 
+def _all_stages_are_direct(manifest: TextPipelineManifest) -> bool:
+    return all(stage.bundle_path is None for stage in manifest.stages)
+
+
 def load_stage_bundle_for_rank(
     manifest: TextPipelineManifest,
     rank: int,
     device: torch.device,
     compute_dtype_arg: str,
 ) -> tuple[dict, torch.dtype]:
+    if _all_stages_are_direct(manifest) and dist.is_available() and dist.is_initialized():
+        stage_meta = manifest.stages[rank]
+        startup_log(
+            "pp-direct-loader",
+            f"rank={rank} locally building stage_idx={stage_meta.stage_idx} "
+            f"range={stage_meta.start_idx}:{stage_meta.end_idx}",
+        )
+        bundle, compute_dtype = load_stage_bundle_by_index(
+            manifest,
+            rank,
+            device,
+            compute_dtype_arg,
+        )
+        startup_log("pp-direct-loader", f"rank={rank} entering post-load barrier")
+        dist.barrier()
+        startup_log("pp-direct-loader", f"rank={rank} local stage ready compute_dtype={compute_dtype}")
+        return bundle, compute_dtype
+
     return load_stage_bundle_by_index(manifest, rank, device, compute_dtype_arg)
 
 

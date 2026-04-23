@@ -13,6 +13,41 @@ from qwen3vl_tp_runtime.models.qwen3vl.execution.common import (
 from qwen3vl_tp_runtime.models.qwen3vl.functional import apply_rope, attn_eager, rms_norm
 
 
+def _validate_attention_mask_shape(
+    attention_mask: torch.Tensor | None,
+    *,
+    query_states: torch.Tensor,
+    key_states: torch.Tensor,
+    context: str,
+    hidden_states: torch.Tensor,
+    past_key: torch.Tensor | None,
+) -> None:
+    if attention_mask is None:
+        return
+    if attention_mask.ndim < 2:
+        raise RuntimeError(
+            f"{context}: attention_mask 维度异常，"
+            f"attention_mask_shape={tuple(attention_mask.shape)}"
+        )
+
+    query_len = int(query_states.shape[-2])
+    key_len = int(key_states.shape[-2])
+    mask_query_len = int(attention_mask.shape[-2])
+    mask_key_len = int(attention_mask.shape[-1])
+    if mask_query_len == query_len and mask_key_len == key_len:
+        return
+
+    past_key_shape = None if past_key is None else tuple(past_key.shape)
+    raise RuntimeError(
+        f"{context}: attention mask 与 key/query 长度不匹配，"
+        f"hidden_states_shape={tuple(hidden_states.shape)} "
+        f"query_shape={tuple(query_states.shape)} "
+        f"key_shape={tuple(key_states.shape)} "
+        f"attention_mask_shape={tuple(attention_mask.shape)} "
+        f"past_key_shape={past_key_shape}"
+    )
+
+
 def forward_attention(hidden_states: torch.Tensor, bundle: dict) -> torch.Tensor:
     return trace_attention(hidden_states, bundle)["attn_output"]
 
@@ -56,6 +91,14 @@ def trace_attention(hidden_states: torch.Tensor, bundle: dict) -> dict:
     ).transpose(1, 2)
 
     query_states, key_states = apply_rope(query_states, key_states, bundle["cos"], bundle["sin"])
+    _validate_attention_mask_shape(
+        bundle.get("attention_mask"),
+        query_states=query_states,
+        key_states=key_states,
+        context="prefill_attention",
+        hidden_states=hidden_states,
+        past_key=None,
+    )
     attn_output, _ = attn_eager(
         query_states,
         key_states,
@@ -112,6 +155,14 @@ def _trace_attention_cached_core(
     query_states, key_states = apply_rope(query_states, key_states, bundle["cos"], bundle["sin"])
     full_key_states = _concat_past_key_value(key_states, past_key)
     full_value_states = _concat_past_key_value(value_states, past_value)
+    _validate_attention_mask_shape(
+        bundle.get("attention_mask"),
+        query_states=query_states,
+        key_states=full_key_states,
+        context="cached_attention",
+        hidden_states=hidden_states,
+        past_key=past_key,
+    )
 
     attn_output, _ = attn_eager(
         query_states,
@@ -210,6 +261,14 @@ def trace_attention_cached_tp(
     past_value = _cast_optional_tensor(bundle.get("past_value"), device=device, dtype=orig_dtype)
     full_key = _concat_past_key_value(current_key, past_key)
     full_value = _concat_past_key_value(current_value, past_value)
+    _validate_attention_mask_shape(
+        bundle.get("attention_mask"),
+        query_states=full_q,
+        key_states=full_key,
+        context="cached_attention_tp",
+        hidden_states=hidden_states,
+        past_key=past_key,
+    )
 
     full_attn_output, _ = attn_eager(
         full_q,

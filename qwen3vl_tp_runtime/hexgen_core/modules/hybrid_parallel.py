@@ -3,7 +3,11 @@
 import torch
 import torch.distributed as dist
 
-from qwen3vl_tp_runtime.hexgen_core.distributed import broadcast_cpu
+from qwen3vl_tp_runtime.hexgen_core.distributed import (
+    broadcast_cpu,
+    broadcast_object_cpu,
+    startup_log,
+)
 from qwen3vl_tp_runtime.hexgen_core.gen_hetero_groups import (
     build_hybrid_layout,
     build_p2p_lists,
@@ -11,7 +15,6 @@ from qwen3vl_tp_runtime.hexgen_core.gen_hetero_groups import (
     parse_tp_degrees,
 )
 from qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel import (
-    load_stage_bundle_by_index,
     prepare_multimodal_decode_pipeline,
     prepare_multimodal_generate_pipeline,
     prepare_multimodal_prefill_pipeline,
@@ -39,7 +42,9 @@ from qwen3vl_tp_runtime.models.qwen3vl.execution import (
     trace_text_decode_stage_tp_with_runtime_cache,
     trace_text_prefill_stage_logits_tp,
 )
-from qwen3vl_tp_runtime.models.qwen3vl.functional import resolve_comm_dtype
+from qwen3vl_tp_runtime.models.qwen3vl.functional import dtype_from_name, resolve_comm_dtype
+from qwen3vl_tp_runtime.models.qwen3vl.runtime_builder import build_direct_stage_bundle
+from qwen3vl_tp_runtime.models.qwen3vl.capture import load_bundle, move_bundle
 
 
 def _build_rank_group_index(rank_groups: list[list[int]], world_size: int) -> list[int]:
@@ -52,6 +57,71 @@ def _build_rank_group_index(rank_groups: list[list[int]], world_size: int) -> li
     if any(group_idx < 0 for group_idx in group_index_by_rank):
         raise ValueError("并不是所有 rank 都能映射到 group。")
     return group_index_by_rank
+
+
+def _all_hybrid_stages_are_direct(manifest: TextHybridManifest) -> bool:
+    return all(stage.bundle_path is None for stage in manifest.stages)
+
+
+def load_stage_bundle_for_hybrid_rank(
+    manifest: TextHybridManifest,
+    *,
+    rank: int,
+    rank_stage: HybridRankContext,
+    device: torch.device,
+    compute_dtype_arg: str,
+) -> tuple[dict, torch.dtype]:
+    stage_meta = manifest.stages[rank_stage.stage_idx]
+
+    if _all_hybrid_stages_are_direct(manifest):
+        if rank_stage.local_rank == 0:
+            startup_log(
+                "hybrid-direct-loader",
+                f"rank={rank} stage_idx={rank_stage.stage_idx} leader building local direct stage "
+                f"range={stage_meta.start_idx}:{stage_meta.end_idx}",
+            )
+            leader_bundle = build_direct_stage_bundle(
+                stage_idx=stage_meta.stage_idx,
+                start_idx=stage_meta.start_idx,
+                end_idx=stage_meta.end_idx,
+                runtime_config=manifest.runtime_config,
+            )
+        else:
+            leader_bundle = None
+
+        startup_log(
+            "hybrid-direct-loader",
+            f"rank={rank} stage_idx={rank_stage.stage_idx} waiting stage-group broadcast from leader={rank_stage.leader_rank}",
+        )
+        bundle = broadcast_object_cpu(
+            leader_bundle,
+            src=rank_stage.leader_rank,
+            group=rank_stage.stage_group,
+            label=f"stage_bundle stage_idx={rank_stage.stage_idx}",
+        )
+        startup_log("hybrid-direct-loader", f"rank={rank} entering post-load barrier")
+        dist.barrier()
+    else:
+        if rank_stage.local_rank == 0:
+            startup_log(
+                "hybrid-direct-loader",
+                f"rank={rank} stage_idx={rank_stage.stage_idx} leader loading bundle file {stage_meta.bundle_path}",
+            )
+        leader_bundle = load_bundle(stage_meta.bundle_path) if rank_stage.local_rank == 0 else None
+        bundle = broadcast_object_cpu(
+            leader_bundle,
+            src=rank_stage.leader_rank,
+            group=rank_stage.stage_group,
+            label=f"bundle-file stage_idx={rank_stage.stage_idx}",
+        )
+
+    compute_dtype_name = bundle["save_dtype"] if compute_dtype_arg == "auto" else compute_dtype_arg
+    compute_dtype = dtype_from_name(compute_dtype_name)
+    startup_log(
+        "hybrid-direct-loader",
+        f"rank={rank} stage_idx={rank_stage.stage_idx} moving stage bundle to device={device} compute_dtype={compute_dtype}",
+    )
+    return move_bundle(bundle, device, compute_dtype), compute_dtype
 
 
 def prepare_text_hybrid(
@@ -752,11 +822,12 @@ def _run_text_generate_hybrid_rank(
         recv_empty_list=manifest.recv_empty_list,
     )
 
-    stage_bundle, compute_dtype = load_stage_bundle_by_index(
+    stage_bundle, compute_dtype = load_stage_bundle_for_hybrid_rank(
         manifest,
-        rank_stage.stage_idx,
-        device,
-        compute_dtype_arg,
+        rank=rank,
+        rank_stage=rank_stage,
+        device=device,
+        compute_dtype_arg=compute_dtype_arg,
     )
     comm_dtype = resolve_comm_dtype(comm_dtype_arg, compute_dtype)
     handoff_transport = StageHandoffTransport(device=device, comm_dtype=comm_dtype)
@@ -944,11 +1015,12 @@ def run_text_hybrid_rank(
         recv_empty_list=manifest.recv_empty_list,
     )
 
-    bundle, compute_dtype = load_stage_bundle_by_index(
+    bundle, compute_dtype = load_stage_bundle_for_hybrid_rank(
         manifest,
-        rank_stage.stage_idx,
-        device,
-        compute_dtype_arg,
+        rank=rank,
+        rank_stage=rank_stage,
+        device=device,
+        compute_dtype_arg=compute_dtype_arg,
     )
     comm_dtype = resolve_comm_dtype(comm_dtype_arg, compute_dtype)
     handoff_transport = StageHandoffTransport(device=device, comm_dtype=comm_dtype)
