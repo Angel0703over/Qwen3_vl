@@ -350,6 +350,53 @@ def _build_qwen_text_generation_prompt(prompt: str) -> str:
     return f"<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n"
 
 
+def compact_runtime_only_text_prompt_metadata_for_broadcast(
+    prompt_metadata: dict[str, torch.Tensor] | None,
+) -> dict[str, object] | None:
+    if prompt_metadata is None:
+        return None
+
+    input_ids = prompt_metadata["input_ids"]
+    if input_ids.ndim != 2 or int(input_ids.shape[0]) != 1:
+        raise RuntimeError(
+            "runtime-only text prompt metadata 当前只支持 batch_size=1 的 input_ids 广播压缩。"
+        )
+
+    compact_payload: dict[str, object] = {
+        "input_ids_list": [int(token_id) for token_id in input_ids[0].tolist()],
+    }
+    attention_mask = prompt_metadata.get("attention_mask")
+    if attention_mask is not None:
+        if attention_mask.ndim != 2 or tuple(attention_mask.shape) != tuple(input_ids.shape):
+            raise RuntimeError("runtime-only text attention_mask 形状和 input_ids 不匹配，无法压缩广播。")
+        if not torch.all(attention_mask == 1):
+            compact_payload["attention_mask_list"] = [int(mask) for mask in attention_mask[0].tolist()]
+    return compact_payload
+
+
+def restore_runtime_only_text_prompt_metadata_from_broadcast(
+    prompt_metadata: dict[str, object],
+) -> dict[str, torch.Tensor]:
+    if "input_ids" in prompt_metadata:
+        restored = {
+            "input_ids": prompt_metadata["input_ids"],
+        }
+        if prompt_metadata.get("attention_mask") is not None:
+            restored["attention_mask"] = prompt_metadata["attention_mask"]
+        return restored
+
+    input_ids_list = prompt_metadata.get("input_ids_list")
+    if input_ids_list is None:
+        raise RuntimeError("runtime-only text prompt metadata 广播负载缺少 input_ids 或 input_ids_list。")
+
+    input_ids = torch.tensor([input_ids_list], dtype=torch.int64)
+    restored = {"input_ids": input_ids}
+    attention_mask_list = prompt_metadata.get("attention_mask_list")
+    if attention_mask_list is not None:
+        restored["attention_mask"] = torch.tensor([attention_mask_list], dtype=torch.int64)
+    return restored
+
+
 def _normalize_runtime_only_text_prompt_metadata(
     raw_inputs: dict[str, Any],
 ) -> dict[str, torch.Tensor]:
@@ -2732,5 +2779,7 @@ __all__ = [
     "materialize_direct_text_stage_bundle_from_scaffold",
     "build_direct_pipeline_manifest",
     "build_direct_hybrid_manifest",
+    "compact_runtime_only_text_prompt_metadata_for_broadcast",
     "prepare_runtime_only_text_generate_prompt_metadata",
+    "restore_runtime_only_text_prompt_metadata_from_broadcast",
 ]

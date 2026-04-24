@@ -6,7 +6,7 @@ from pathlib import Path
 import torch
 import torch.distributed as dist
 
-from qwen3vl_tp_runtime.hexgen_core.distributed import startup_log
+from qwen3vl_tp_runtime.hexgen_core.distributed import broadcast_object_cpu, startup_log, startup_timer
 from qwen3vl_tp_runtime.hexgen_core.schema import (
     BoundaryStats,
     StageHandoffPayload,
@@ -32,7 +32,12 @@ from qwen3vl_tp_runtime.models.qwen3vl.capture import (
     load_bundle,
     move_bundle,
 )
-from qwen3vl_tp_runtime.models.qwen3vl.runtime_builder import build_direct_stage_bundle
+from qwen3vl_tp_runtime.models.qwen3vl.runtime_builder import (
+    build_direct_stage_bundle,
+    compact_runtime_only_text_prompt_metadata_for_broadcast,
+    prepare_runtime_only_text_generate_prompt_metadata,
+    restore_runtime_only_text_prompt_metadata_from_broadcast,
+)
 from qwen3vl_tp_runtime.models.qwen3vl.execution import (
     forward_text_embeddings,
     trace_text_decode_logits_with_runtime_cache,
@@ -665,6 +670,47 @@ def _all_stages_are_direct(manifest: TextPipelineManifest) -> bool:
     return all(stage.bundle_path is None for stage in manifest.stages)
 
 
+def _should_seed_runtime_only_text_prompt_metadata(manifest: TextPipelineManifest) -> bool:
+    runtime_config = manifest.runtime_config
+    return (
+        _all_stages_are_direct(manifest)
+        and str(runtime_config.get("modality", "multimodal")) == "text"
+        and str(runtime_config.get("mode", "")) == "generate"
+        and not bool(runtime_config.get("include_runtime_reference", True))
+    )
+
+
+def _seed_runtime_only_text_prompt_metadata(manifest: TextPipelineManifest, *, rank: int) -> None:
+    runtime_config = manifest.runtime_config
+    if runtime_config.get("_runtime_only_prompt_metadata_ready") or not _should_seed_runtime_only_text_prompt_metadata(
+        manifest
+    ):
+        return
+
+    prompt_metadata = None
+    if rank == 0:
+        with startup_timer("pp-direct-loader", "prepare runtime-only text prompt metadata"):
+            prompt_metadata = prepare_runtime_only_text_generate_prompt_metadata(runtime_config)
+        prompt_metadata = compact_runtime_only_text_prompt_metadata_for_broadcast(prompt_metadata)
+
+    startup_log(
+        "pp-direct-loader",
+        f"rank={rank} waiting runtime-only text prompt metadata broadcast from src=0",
+    )
+    prompt_metadata = broadcast_object_cpu(
+        prompt_metadata,
+        src=0,
+        label="runtime_only_text_prompt_metadata",
+    )
+    prompt_metadata = restore_runtime_only_text_prompt_metadata_from_broadcast(prompt_metadata)
+    runtime_config["_runtime_only_input_ids"] = prompt_metadata["input_ids"]
+    if prompt_metadata.get("attention_mask") is not None:
+        runtime_config["_runtime_only_attention_mask"] = prompt_metadata["attention_mask"]
+    else:
+        runtime_config.pop("_runtime_only_attention_mask", None)
+    runtime_config["_runtime_only_prompt_metadata_ready"] = True
+
+
 def load_stage_bundle_for_rank(
     manifest: TextPipelineManifest,
     rank: int,
@@ -672,6 +718,7 @@ def load_stage_bundle_for_rank(
     compute_dtype_arg: str,
 ) -> tuple[dict, torch.dtype]:
     if _all_stages_are_direct(manifest) and dist.is_available() and dist.is_initialized():
+        _seed_runtime_only_text_prompt_metadata(manifest, rank=rank)
         stage_meta = manifest.stages[rank]
         startup_log(
             "pp-direct-loader",

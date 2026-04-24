@@ -45,8 +45,10 @@ from qwen3vl_tp_runtime.models.qwen3vl.execution import (
 from qwen3vl_tp_runtime.models.qwen3vl.functional import dtype_from_name, resolve_comm_dtype
 from qwen3vl_tp_runtime.models.qwen3vl.runtime_builder import (
     build_direct_stage_bundle,
+    compact_runtime_only_text_prompt_metadata_for_broadcast,
     materialize_direct_text_stage_bundle_from_scaffold,
     prepare_runtime_only_text_generate_prompt_metadata,
+    restore_runtime_only_text_prompt_metadata_from_broadcast,
 )
 from qwen3vl_tp_runtime.models.qwen3vl.capture import load_bundle, move_bundle
 from qwen3vl_tp_runtime.models.qwen3vl.weights import (
@@ -82,53 +84,6 @@ def _should_seed_runtime_only_text_prompt_metadata(manifest: TextHybridManifest)
     )
 
 
-def _compact_runtime_only_text_prompt_metadata_for_broadcast(
-    prompt_metadata: dict[str, torch.Tensor] | None,
-) -> dict[str, object] | None:
-    if prompt_metadata is None:
-        return None
-
-    input_ids = prompt_metadata["input_ids"]
-    if input_ids.ndim != 2 or int(input_ids.shape[0]) != 1:
-        raise RuntimeError(
-            "runtime-only text prompt metadata 当前只支持 batch_size=1 的 input_ids 广播压缩。"
-        )
-
-    compact_payload: dict[str, object] = {
-        "input_ids_list": [int(token_id) for token_id in input_ids[0].tolist()],
-    }
-    attention_mask = prompt_metadata.get("attention_mask")
-    if attention_mask is not None:
-        if attention_mask.ndim != 2 or tuple(attention_mask.shape) != tuple(input_ids.shape):
-            raise RuntimeError("runtime-only text attention_mask 形状和 input_ids 不匹配，无法压缩广播。")
-        if not torch.all(attention_mask == 1):
-            compact_payload["attention_mask_list"] = [int(mask) for mask in attention_mask[0].tolist()]
-    return compact_payload
-
-
-def _restore_runtime_only_text_prompt_metadata_from_broadcast(
-    prompt_metadata: dict[str, object],
-) -> dict[str, torch.Tensor]:
-    if "input_ids" in prompt_metadata:
-        restored = {
-            "input_ids": prompt_metadata["input_ids"],
-        }
-        if prompt_metadata.get("attention_mask") is not None:
-            restored["attention_mask"] = prompt_metadata["attention_mask"]
-        return restored
-
-    input_ids_list = prompt_metadata.get("input_ids_list")
-    if input_ids_list is None:
-        raise RuntimeError("runtime-only text prompt metadata 广播负载缺少 input_ids 或 input_ids_list。")
-
-    input_ids = torch.tensor([input_ids_list], dtype=torch.int64)
-    restored = {"input_ids": input_ids}
-    attention_mask_list = prompt_metadata.get("attention_mask_list")
-    if attention_mask_list is not None:
-        restored["attention_mask"] = torch.tensor([attention_mask_list], dtype=torch.int64)
-    return restored
-
-
 def _seed_runtime_only_text_prompt_metadata(manifest: TextHybridManifest, *, rank: int) -> None:
     runtime_config = manifest.runtime_config
     if runtime_config.get("_runtime_only_prompt_metadata_ready") or not _should_seed_runtime_only_text_prompt_metadata(
@@ -140,7 +95,7 @@ def _seed_runtime_only_text_prompt_metadata(manifest: TextHybridManifest, *, ran
     if rank == 0:
         with startup_timer("hybrid-direct-loader", "prepare runtime-only text prompt metadata"):
             prompt_metadata = prepare_runtime_only_text_generate_prompt_metadata(runtime_config)
-        prompt_metadata = _compact_runtime_only_text_prompt_metadata_for_broadcast(prompt_metadata)
+        prompt_metadata = compact_runtime_only_text_prompt_metadata_for_broadcast(prompt_metadata)
 
     startup_log(
         "hybrid-direct-loader",
@@ -151,7 +106,7 @@ def _seed_runtime_only_text_prompt_metadata(manifest: TextHybridManifest, *, ran
         src=0,
         label="runtime_only_text_prompt_metadata",
     )
-    prompt_metadata = _restore_runtime_only_text_prompt_metadata_from_broadcast(prompt_metadata)
+    prompt_metadata = restore_runtime_only_text_prompt_metadata_from_broadcast(prompt_metadata)
     runtime_config["_runtime_only_input_ids"] = prompt_metadata["input_ids"]
     if prompt_metadata.get("attention_mask") is not None:
         runtime_config["_runtime_only_attention_mask"] = prompt_metadata["attention_mask"]
