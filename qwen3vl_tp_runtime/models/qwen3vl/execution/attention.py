@@ -5,10 +5,11 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
-from qwen3vl_tp_runtime.hexgen_core.distributed import broadcast_cpu
+from qwen3vl_tp_runtime.hexgen_core.distributed import all_reduce_cpu, broadcast_cpu
 from qwen3vl_tp_runtime.models.qwen3vl.execution.common import (
     _cast_optional_tensor,
     _resolve_tp_math_dtype,
+    _slice_local_past_states,
 )
 from qwen3vl_tp_runtime.models.qwen3vl.functional import apply_rope, attn_eager, rms_norm
 
@@ -68,8 +69,98 @@ def _concat_past_key_value(
         raise ValueError(
             "past_states 和 current_states 的 batch/head/head_dim 不一致，"
             f"past_shape={tuple(past_states.shape)} current_shape={tuple(current_states.shape)}"
-        )
+    )
     return torch.cat([past_states, current_states], dim=-2)
+
+
+def _is_tp_weight_sharded(bundle: dict) -> bool:
+    return bool(bundle.get("tp_weight_sharded"))
+
+
+def _resolve_tp_attention_layout(bundle: dict, world_size: int) -> tuple[int, int, int, int]:
+    num_heads = int(bundle["num_attention_heads"])
+    num_kv_heads = int(bundle["num_key_value_heads"])
+    if _is_tp_weight_sharded(bundle):
+        shard_world_size = int(bundle.get("tp_shard_world_size") or world_size)
+        if shard_world_size != world_size:
+            raise ValueError(
+                "TP attention bundle 的 shard world_size 和当前 world_size 不一致，"
+                f"bundle_world_size={shard_world_size} world_size={world_size}"
+            )
+        local_q_heads = int(bundle["tp_local_num_attention_heads"])
+        local_kv_heads = int(bundle["tp_local_num_key_value_heads"])
+        return num_heads, num_kv_heads, local_q_heads, local_kv_heads
+
+    if num_heads % world_size != 0 or num_kv_heads % world_size != 0:
+        raise ValueError("当前 TP attention 要求 num_heads 和 num_kv_heads 都能被 world_size 整除。")
+    return num_heads, num_kv_heads, num_heads // world_size, num_kv_heads // world_size
+
+
+def _resolve_tp_past_states(
+    past_states: torch.Tensor | None,
+    *,
+    rank: int,
+    world_size: int,
+    full_num_heads: int,
+    local_num_heads: int,
+    device: torch.device,
+    dtype: torch.dtype,
+    tensor_name: str,
+) -> torch.Tensor | None:
+    if past_states is None:
+        return None
+    if past_states.shape[1] == local_num_heads:
+        return past_states.to(device=device, dtype=dtype)
+    return _slice_local_past_states(
+        past_states,
+        rank=rank,
+        world_size=world_size,
+        full_num_heads=full_num_heads,
+        device=device,
+        dtype=dtype,
+        tensor_name=tensor_name,
+    )
+
+
+def _reduce_tp_attention_output(
+    hidden_states: torch.Tensor,
+    projected_attn_context: torch.Tensor,
+    bundle: dict,
+    *,
+    sharded: bool,
+    is_leader_rank: bool,
+    tp_group,
+    tp_src_rank: int,
+    comm_dtype: torch.dtype,
+    orig_dtype: torch.dtype,
+) -> torch.Tensor:
+    device = hidden_states.device
+    o_bias = _cast_optional_tensor(bundle["o_bias"], device=device, dtype=orig_dtype)
+    if sharded:
+        local_o_weight = bundle["o_weight"].to(device=device, dtype=orig_dtype)
+        local_output_partial = F.linear(projected_attn_context, local_o_weight, bias=None)
+        attn_output = all_reduce_cpu(
+            local_output_partial,
+            target_device=device,
+            target_dtype=orig_dtype,
+            comm_dtype=comm_dtype,
+            group=tp_group,
+        )
+        if o_bias is not None:
+            attn_output = attn_output + o_bias
+        return attn_output
+
+    full_o_weight = bundle["o_weight"].to(device=device, dtype=orig_dtype)
+    leader_output = None
+    if is_leader_rank:
+        leader_output = F.linear(projected_attn_context, full_o_weight, o_bias)
+    return broadcast_cpu(
+        hidden_states,
+        leader_output,
+        src=tp_src_rank,
+        comm_dtype=comm_dtype,
+        group=tp_group,
+    )
 
 
 def trace_attention(hidden_states: torch.Tensor, bundle: dict) -> dict:
@@ -184,6 +275,138 @@ def _trace_attention_cached_core(
     }
 
 
+def _trace_attention_tp_core(
+    hidden_states: torch.Tensor,
+    bundle: dict,
+    *,
+    rank: int,
+    world_size: int,
+    comm_dtype: torch.dtype,
+    tp_group,
+    tp_src_rank: int,
+    math_mode: str,
+    past_key: torch.Tensor | None,
+    past_value: torch.Tensor | None,
+) -> dict:
+    full_num_heads, full_num_kv_heads, local_q_heads, local_kv_heads = _resolve_tp_attention_layout(
+        bundle,
+        world_size,
+    )
+    sharded = _is_tp_weight_sharded(bundle)
+    head_dim = int(bundle["head_dim"])
+    orig_dtype, _ = _resolve_tp_math_dtype(hidden_states, math_mode)
+    device = hidden_states.device
+
+    x = hidden_states.to(dtype=orig_dtype)
+    q_weight = bundle["q_weight"].to(device=device, dtype=orig_dtype)
+    q_bias = _cast_optional_tensor(bundle["q_bias"], device=device, dtype=orig_dtype)
+    k_weight = bundle["k_weight"].to(device=device, dtype=orig_dtype)
+    k_bias = _cast_optional_tensor(bundle["k_bias"], device=device, dtype=orig_dtype)
+    v_weight = bundle["v_weight"].to(device=device, dtype=orig_dtype)
+    v_bias = _cast_optional_tensor(bundle["v_bias"], device=device, dtype=orig_dtype)
+    q_norm_weight = bundle["q_norm_weight"].to(device=device, dtype=orig_dtype)
+    k_norm_weight = bundle["k_norm_weight"].to(device=device, dtype=orig_dtype)
+
+    q_proj = F.linear(x, q_weight, q_bias)
+    query_states = rms_norm(
+        q_proj.view(*hidden_states.shape[:-1], local_q_heads if sharded else full_num_heads, head_dim),
+        q_norm_weight,
+        bundle["rms_norm_eps"],
+    ).transpose(1, 2)
+
+    k_proj = F.linear(x, k_weight, k_bias)
+    current_key = rms_norm(
+        k_proj.view(*hidden_states.shape[:-1], local_kv_heads if sharded else full_num_kv_heads, head_dim),
+        k_norm_weight,
+        bundle["rms_norm_eps"],
+    ).transpose(1, 2)
+
+    v_proj = F.linear(x, v_weight, v_bias)
+    current_value = v_proj.view(
+        *hidden_states.shape[:-1],
+        local_kv_heads if sharded else full_num_kv_heads,
+        head_dim,
+    ).transpose(1, 2)
+
+    query_states, current_key = apply_rope(query_states, current_key, bundle["cos"], bundle["sin"])
+    local_past_key = _resolve_tp_past_states(
+        past_key,
+        rank=rank,
+        world_size=world_size,
+        full_num_heads=full_num_kv_heads,
+        local_num_heads=local_kv_heads,
+        device=device,
+        dtype=orig_dtype,
+        tensor_name="past_key",
+    )
+    local_past_value = _resolve_tp_past_states(
+        past_value,
+        rank=rank,
+        world_size=world_size,
+        full_num_heads=full_num_kv_heads,
+        local_num_heads=local_kv_heads,
+        device=device,
+        dtype=orig_dtype,
+        tensor_name="past_value",
+    )
+    full_key = _concat_past_key_value(current_key, local_past_key)
+    full_value = _concat_past_key_value(current_value, local_past_value)
+    _validate_attention_mask_shape(
+        bundle.get("attention_mask"),
+        query_states=query_states,
+        key_states=full_key,
+        context="cached_attention_tp" if past_key is not None or past_value is not None else "prefill_attention_tp",
+        hidden_states=hidden_states,
+        past_key=local_past_key,
+    )
+
+    attn_output, _ = attn_eager(
+        query_states,
+        full_key,
+        full_value,
+        bundle["attention_mask"],
+        num_key_value_groups=(local_q_heads if sharded else full_num_heads)
+        // (local_kv_heads if sharded else full_num_kv_heads),
+        scaling=bundle["scaling"],
+        compute_dtype=None,
+        score_output_dtype=None,
+        probabilities_dtype=orig_dtype,
+        output_dtype=orig_dtype,
+    )
+    full_or_local_attn_context = attn_output.reshape(*hidden_states.shape[:-1], -1).contiguous()
+    if sharded:
+        local_attn_context = full_or_local_attn_context
+        projected_attn_context = local_attn_context
+    else:
+        q_head_start = rank * local_q_heads
+        q_head_end = (rank + 1) * local_q_heads
+        local_attn_context = full_or_local_attn_context[
+            ...,
+            q_head_start * head_dim : q_head_end * head_dim,
+        ].contiguous()
+        projected_attn_context = full_or_local_attn_context
+
+    reduced_output = _reduce_tp_attention_output(
+        hidden_states,
+        projected_attn_context,
+        bundle,
+        sharded=sharded,
+        is_leader_rank=rank == 0,
+        tp_group=tp_group,
+        tp_src_rank=tp_src_rank,
+        comm_dtype=comm_dtype,
+        orig_dtype=orig_dtype,
+    )
+    return {
+        "attn_context": local_attn_context,
+        "attn_output": reduced_output,
+        "current_key": current_key,
+        "current_value": current_value,
+        "full_key": full_key,
+        "full_value": full_value,
+    }
+
+
 def forward_attention_cached_tp(
     hidden_states: torch.Tensor,
     bundle: dict,
@@ -216,97 +439,18 @@ def trace_attention_cached_tp(
     tp_src_rank: int = 0,
     math_mode: str = "orig",
 ) -> dict:
-    num_heads = bundle["num_attention_heads"]
-    num_kv_heads = bundle["num_key_value_heads"]
-    head_dim = bundle["head_dim"]
-    orig_dtype, _ = _resolve_tp_math_dtype(hidden_states, math_mode)
-    device = hidden_states.device
-
-    if num_heads % world_size != 0 or num_kv_heads % world_size != 0:
-        raise ValueError("当前 TP attention 要求 num_heads 和 num_kv_heads 都能被 world_size 整除。")
-
-    local_q_heads = num_heads // world_size
-    q_head_start = rank * local_q_heads
-    q_head_end = (rank + 1) * local_q_heads
-
-    x = hidden_states.to(dtype=orig_dtype)
-    q_weight = bundle["q_weight"].to(device=device, dtype=orig_dtype)
-    q_bias = _cast_optional_tensor(bundle["q_bias"], device=device, dtype=orig_dtype)
-    k_weight = bundle["k_weight"].to(device=device, dtype=orig_dtype)
-    k_bias = _cast_optional_tensor(bundle["k_bias"], device=device, dtype=orig_dtype)
-    v_weight = bundle["v_weight"].to(device=device, dtype=orig_dtype)
-    v_bias = _cast_optional_tensor(bundle["v_bias"], device=device, dtype=orig_dtype)
-    q_norm_weight = bundle["q_norm_weight"].to(device=device, dtype=orig_dtype)
-    k_norm_weight = bundle["k_norm_weight"].to(device=device, dtype=orig_dtype)
-
-    full_q_proj = F.linear(x, q_weight, q_bias)
-    full_q = rms_norm(
-        full_q_proj.view(*hidden_states.shape[:-1], num_heads, head_dim),
-        q_norm_weight,
-        bundle["rms_norm_eps"],
-    ).transpose(1, 2)
-
-    full_k_proj = F.linear(x, k_weight, k_bias)
-    current_key = rms_norm(
-        full_k_proj.view(*hidden_states.shape[:-1], num_kv_heads, head_dim),
-        k_norm_weight,
-        bundle["rms_norm_eps"],
-    ).transpose(1, 2)
-
-    full_v_proj = F.linear(x, v_weight, v_bias)
-    current_value = full_v_proj.view(*hidden_states.shape[:-1], num_kv_heads, head_dim).transpose(1, 2)
-
-    full_q, current_key = apply_rope(full_q, current_key, bundle["cos"], bundle["sin"])
-    past_key = _cast_optional_tensor(bundle.get("past_key"), device=device, dtype=orig_dtype)
-    past_value = _cast_optional_tensor(bundle.get("past_value"), device=device, dtype=orig_dtype)
-    full_key = _concat_past_key_value(current_key, past_key)
-    full_value = _concat_past_key_value(current_value, past_value)
-    _validate_attention_mask_shape(
-        bundle.get("attention_mask"),
-        query_states=full_q,
-        key_states=full_key,
-        context="cached_attention_tp",
-        hidden_states=hidden_states,
-        past_key=past_key,
-    )
-
-    full_attn_output, _ = attn_eager(
-        full_q,
-        full_key,
-        full_value,
-        bundle["attention_mask"],
-        num_key_value_groups=num_heads // num_kv_heads,
-        scaling=bundle["scaling"],
-        compute_dtype=None,
-        score_output_dtype=None,
-        probabilities_dtype=orig_dtype,
-        output_dtype=orig_dtype,
-    )
-    full_attn_context = full_attn_output.reshape(*hidden_states.shape[:-1], -1).contiguous()
-    local_attn_context = full_attn_context[
-        ...,
-        q_head_start * head_dim : q_head_end * head_dim,
-    ].contiguous()
-    full_o_weight = bundle["o_weight"].to(device=device, dtype=orig_dtype)
-    full_o_bias = _cast_optional_tensor(bundle["o_bias"], device=device, dtype=orig_dtype)
-    leader_output = None
-    if rank == 0:
-        leader_output = F.linear(full_attn_context, full_o_weight, full_o_bias)
-    attn_output = broadcast_cpu(
+    return _trace_attention_tp_core(
         hidden_states,
-        leader_output,
-        src=tp_src_rank,
+        bundle,
+        rank=rank,
+        world_size=world_size,
         comm_dtype=comm_dtype,
-        group=tp_group,
+        tp_group=tp_group,
+        tp_src_rank=tp_src_rank,
+        math_mode=math_mode,
+        past_key=bundle.get("past_key"),
+        past_value=bundle.get("past_value"),
     )
-    return {
-        "attn_context": local_attn_context,
-        "attn_output": attn_output,
-        "current_key": current_key,
-        "current_value": current_value,
-        "full_key": full_key,
-        "full_value": full_value,
-    }
 
 
 def forward_attention_tp(
@@ -341,79 +485,21 @@ def trace_attention_tp(
     tp_src_rank: int = 0,
     math_mode: str = "orig",
 ) -> dict:
-    num_heads = bundle["num_attention_heads"]
-    num_kv_heads = bundle["num_key_value_heads"]
-    head_dim = bundle["head_dim"]
-    orig_dtype, _ = _resolve_tp_math_dtype(hidden_states, math_mode)
-    device = hidden_states.device
-
-    if num_heads % world_size != 0 or num_kv_heads % world_size != 0:
-        raise ValueError("当前 TP attention 要求 num_heads 和 num_kv_heads 都能被 world_size 整除。")
-
-    local_q_heads = num_heads // world_size
-    q_head_start = rank * local_q_heads
-    q_head_end = (rank + 1) * local_q_heads
-
-    x = hidden_states.to(dtype=orig_dtype)
-    q_weight = bundle["q_weight"].to(device=device, dtype=orig_dtype)
-    q_bias = _cast_optional_tensor(bundle["q_bias"], device=device, dtype=orig_dtype)
-    k_weight = bundle["k_weight"].to(device=device, dtype=orig_dtype)
-    k_bias = _cast_optional_tensor(bundle["k_bias"], device=device, dtype=orig_dtype)
-    v_weight = bundle["v_weight"].to(device=device, dtype=orig_dtype)
-    v_bias = _cast_optional_tensor(bundle["v_bias"], device=device, dtype=orig_dtype)
-    q_norm_weight = bundle["q_norm_weight"].to(device=device, dtype=orig_dtype)
-    k_norm_weight = bundle["k_norm_weight"].to(device=device, dtype=orig_dtype)
-
-    full_q_proj = F.linear(x, q_weight, q_bias)
-    full_q = rms_norm(
-        full_q_proj.view(*hidden_states.shape[:-1], num_heads, head_dim),
-        q_norm_weight,
-        bundle["rms_norm_eps"],
-    ).transpose(1, 2)
-
-    full_k_proj = F.linear(x, k_weight, k_bias)
-    full_k = rms_norm(
-        full_k_proj.view(*hidden_states.shape[:-1], num_kv_heads, head_dim),
-        k_norm_weight,
-        bundle["rms_norm_eps"],
-    ).transpose(1, 2)
-
-    full_v_proj = F.linear(x, v_weight, v_bias)
-    full_v = full_v_proj.view(*hidden_states.shape[:-1], num_kv_heads, head_dim).transpose(1, 2)
-
-    full_q, full_k = apply_rope(full_q, full_k, bundle["cos"], bundle["sin"])
-    full_attn_output, _ = attn_eager(
-        full_q,
-        full_k,
-        full_v,
-        bundle["attention_mask"],
-        num_key_value_groups=num_heads // num_kv_heads,
-        scaling=bundle["scaling"],
-        compute_dtype=None,
-        score_output_dtype=None,
-        probabilities_dtype=orig_dtype,
-        output_dtype=orig_dtype,
-    )
-    full_attn_context = full_attn_output.reshape(*hidden_states.shape[:-1], -1).contiguous()
-    local_attn_context = full_attn_context[
-        ...,
-        q_head_start * head_dim : q_head_end * head_dim,
-    ].contiguous()
-    full_o_weight = bundle["o_weight"].to(device=device, dtype=orig_dtype)
-    full_o_bias = _cast_optional_tensor(bundle["o_bias"], device=device, dtype=orig_dtype)
-    leader_output = None
-    if rank == 0:
-        leader_output = F.linear(full_attn_context, full_o_weight, full_o_bias)
-    attn_output = broadcast_cpu(
+    trace = _trace_attention_tp_core(
         hidden_states,
-        leader_output,
-        src=tp_src_rank,
+        bundle,
+        rank=rank,
+        world_size=world_size,
         comm_dtype=comm_dtype,
-        group=tp_group,
+        tp_group=tp_group,
+        tp_src_rank=tp_src_rank,
+        math_mode=math_mode,
+        past_key=None,
+        past_value=None,
     )
     return {
-        "attn_context": local_attn_context,
-        "attn_output": attn_output,
+        "attn_context": trace["attn_context"],
+        "attn_output": trace["attn_output"],
     }
 
 

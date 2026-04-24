@@ -20,6 +20,7 @@ from qwen3vl_tp_runtime.models.qwen3vl.execution import (
     trace_text_stage,
     trace_text_stage_tp,
 )
+from qwen3vl_tp_runtime.models.qwen3vl.functional import dtype_from_name
 
 
 @dataclass(slots=True)
@@ -78,13 +79,54 @@ def build_stage_bundle(stage_type: str, bundle: dict[str, Any]) -> dict[str, Any
     return as_stage_bundle_view(bundle).with_stage_type(stage_type).payload
 
 
+def _infer_hidden_states_dtype(bundle: dict[str, Any]) -> torch.dtype:
+    stage_input = bundle.get("stage_input")
+    if torch.is_tensor(stage_input):
+        return stage_input.dtype
+
+    layer_input = bundle.get("layer_input")
+    if torch.is_tensor(layer_input):
+        return layer_input.dtype
+
+    for key in ("embed_tokens_weight", "final_norm_weight", "lm_head_weight"):
+        tensor = bundle.get(key)
+        if torch.is_tensor(tensor):
+            return tensor.dtype
+
+    layers = bundle.get("layers")
+    if isinstance(layers, list):
+        for layer_bundle in layers:
+            if not isinstance(layer_bundle, dict):
+                continue
+            for key in (
+                "input_layernorm_weight",
+                "q_weight",
+                "k_weight",
+                "v_weight",
+                "o_weight",
+                "gate_weight",
+                "up_weight",
+                "down_weight",
+                "post_attention_layernorm_weight",
+            ):
+                tensor = layer_bundle.get(key)
+                if torch.is_tensor(tensor):
+                    return tensor.dtype
+
+    save_dtype = bundle.get("save_dtype")
+    if isinstance(save_dtype, str) and save_dtype and save_dtype != "auto":
+        return dtype_from_name(save_dtype)
+
+    raise KeyError("stage bundle 缺少可用于推断 hidden_states dtype 的输入或权重。")
+
+
 def build_stage_handoff_target_dtypes(
     stage_bundle: dict[str, Any] | StageBundleView,
 ) -> dict[str, torch.dtype]:
     bundle_view = as_stage_bundle_view(stage_bundle)
     bundle = bundle_view.payload
     target_dtypes = {
-        StageHandoffPayload.HIDDEN_STATES_KEY: bundle_view.stage_input.dtype,
+        StageHandoffPayload.HIDDEN_STATES_KEY: _infer_hidden_states_dtype(bundle),
     }
 
     visual_pos_masks = bundle.get("visual_pos_masks")

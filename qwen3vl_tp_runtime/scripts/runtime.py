@@ -243,7 +243,7 @@ def _decode_generated_token_ids(
 def _attach_generated_texts(summary: dict, args: argparse.Namespace) -> dict:
     if args.mode != "generate":
         return summary
-    if "generated_token_ids" not in summary or "reference_generated_token_ids" not in summary:
+    if "generated_token_ids" not in summary:
         return summary
 
     generated_text, generated_error = _decode_generated_token_ids(
@@ -252,12 +252,16 @@ def _attach_generated_texts(summary: dict, args: argparse.Namespace) -> dict:
         keep_special_tokens=args.keep_special_tokens,
         clean_up_tokenization_spaces=args.clean_up_tokenization_spaces,
     )
-    reference_text, reference_error = _decode_generated_token_ids(
-        summary["reference_generated_token_ids"],
-        model_path=args.model_path,
-        keep_special_tokens=args.keep_special_tokens,
-        clean_up_tokenization_spaces=args.clean_up_tokenization_spaces,
-    )
+    reference_generated_token_ids = summary.get("reference_generated_token_ids")
+    reference_text = None
+    reference_error = None
+    if reference_generated_token_ids is not None:
+        reference_text, reference_error = _decode_generated_token_ids(
+            reference_generated_token_ids,
+            model_path=args.model_path,
+            keep_special_tokens=args.keep_special_tokens,
+            clean_up_tokenization_spaces=args.clean_up_tokenization_spaces,
+        )
 
     if generated_text is not None:
         summary["generated_text"] = generated_text
@@ -487,12 +491,14 @@ def _build_prepare_kwargs(args: argparse.Namespace) -> dict:
 
 
 def _build_direct_manifest_kwargs(args: argparse.Namespace) -> dict:
+    include_runtime_reference = args.compare_direct or args.trace_layers or args.dump_layer is not None
     kwargs = {
         "modality": args.modality,
         "mode": args.mode,
         "stage_ranges": parse_stage_ranges(args.stage_ranges),
         "model_path": args.model_path,
         "save_dtype": args.save_dtype,
+        "include_runtime_reference": include_runtime_reference,
     }
     if args.modality == "text":
         kwargs["prompt"] = args.prompt
@@ -591,6 +597,30 @@ def _summarize_generate_phase_stats(phase_stats: dict) -> dict:
     }
 
 
+def _maybe_load_generate_reference_logits(bundle_path: str | None) -> tuple[torch.Tensor | None, list[torch.Tensor] | None]:
+    if not bundle_path:
+        return None, None
+    last_bundle = load_bundle(bundle_path)
+    if last_bundle.get("runtime_only_generate"):
+        return None, None
+    prefill_bundle = last_bundle.get("prefill")
+    decode_steps = last_bundle.get("decode_steps")
+    if not isinstance(prefill_bundle, dict) or decode_steps is None:
+        return None, None
+    reference_prefill = prefill_bundle.get("logits")
+    if reference_prefill is None:
+        return None, None
+    reference_steps = []
+    for step_payload in decode_steps:
+        if not isinstance(step_payload, dict):
+            return None, None
+        logits = step_payload.get("logits")
+        if logits is None:
+            return None, None
+        reference_steps.append(logits)
+    return reference_prefill, reference_steps
+
+
 def _summarize_pipeline_generate_run(stats: dict, manifest, topk: int) -> dict:
     summary = {
         "rank": stats["rank"],
@@ -608,29 +638,43 @@ def _summarize_pipeline_generate_run(stats: dict, manifest, topk: int) -> dict:
         "prefill": _summarize_generate_phase_stats(stats["prefill"]),
         "steps": [_summarize_generate_phase_stats(step) for step in stats["steps"]],
         "generated_token_ids": stats["generated_token_ids"],
-        "reference_generated_token_ids": stats["reference_generated_token_ids"],
-        "token_match": stats["generated_token_ids"] == stats["reference_generated_token_ids"],
     }
+    if stats.get("reference_generated_token_ids") is not None:
+        summary["reference_generated_token_ids"] = stats["reference_generated_token_ids"]
+        summary["token_match"] = stats["generated_token_ids"] == stats["reference_generated_token_ids"]
 
     if "prefill_output_tensor" in stats:
         summary["prefill_topk"] = summarize_last_token_topk(stats["prefill_output_tensor"], topk)
         reference_prefill = stats.get("reference_prefill_output_tensor")
         reference_steps = stats.get("reference_step_output_tensors")
-        if reference_prefill is None or reference_steps is None:
-            last_bundle = load_bundle(manifest.stages[-1].bundle_path)
-            reference_prefill = last_bundle["prefill"]["logits"]
-            reference_steps = [step_payload["logits"] for step_payload in last_bundle["decode_steps"]]
-        summary["reference_prefill_topk"] = summarize_last_token_topk(reference_prefill, topk)
-        summary["step_topks"] = [
-            {
-                "step_idx": step_idx,
-                "topk": summarize_last_token_topk(runtime_logits, topk),
-                "reference_topk": summarize_last_token_topk(reference_logits, topk),
-            }
-            for step_idx, (runtime_logits, reference_logits) in enumerate(
-                zip(stats["step_output_tensors"], reference_steps)
+        if (reference_prefill is None or reference_steps is None) and manifest.stages[-1].bundle_path:
+            bundle_reference_prefill, bundle_reference_steps = _maybe_load_generate_reference_logits(
+                manifest.stages[-1].bundle_path
             )
-        ]
+            if reference_prefill is None:
+                reference_prefill = bundle_reference_prefill
+            if reference_steps is None:
+                reference_steps = bundle_reference_steps
+        if reference_prefill is not None and reference_steps is not None:
+            summary["reference_prefill_topk"] = summarize_last_token_topk(reference_prefill, topk)
+            summary["step_topks"] = [
+                {
+                    "step_idx": step_idx,
+                    "topk": summarize_last_token_topk(runtime_logits, topk),
+                    "reference_topk": summarize_last_token_topk(reference_logits, topk),
+                }
+                for step_idx, (runtime_logits, reference_logits) in enumerate(
+                    zip(stats["step_output_tensors"], reference_steps)
+                )
+            ]
+        else:
+            summary["step_topks"] = [
+                {
+                    "step_idx": step_idx,
+                    "topk": summarize_last_token_topk(runtime_logits, topk),
+                }
+                for step_idx, runtime_logits in enumerate(stats["step_output_tensors"])
+            ]
     return summary
 
 
@@ -666,28 +710,42 @@ def _summarize_hybrid_run(
             "prefill": _summarize_generate_phase_stats(stats["prefill"]),
             "steps": [_summarize_generate_phase_stats(step) for step in stats["steps"]],
             "generated_token_ids": stats["generated_token_ids"],
-            "reference_generated_token_ids": stats["reference_generated_token_ids"],
-            "token_match": stats["generated_token_ids"] == stats["reference_generated_token_ids"],
         }
+        if stats.get("reference_generated_token_ids") is not None:
+            summary["reference_generated_token_ids"] = stats["reference_generated_token_ids"]
+            summary["token_match"] = stats["generated_token_ids"] == stats["reference_generated_token_ids"]
         if "prefill_output_tensor" in stats and stats["stage_idx"] == stats["num_stages"] - 1 and stats["local_rank"] == 0:
             summary["prefill_topk"] = summarize_last_token_topk(stats["prefill_output_tensor"], topk)
             reference_prefill = stats.get("reference_prefill_output_tensor")
             reference_steps = stats.get("reference_step_output_tensors")
-            if reference_prefill is None or reference_steps is None:
-                last_bundle = load_bundle(manifest.stages[-1].bundle_path)
-                reference_prefill = last_bundle["prefill"]["logits"]
-                reference_steps = [step_payload["logits"] for step_payload in last_bundle["decode_steps"]]
-            summary["reference_prefill_topk"] = summarize_last_token_topk(reference_prefill, topk)
-            summary["step_topks"] = [
-                {
-                    "step_idx": step_idx,
-                    "topk": summarize_last_token_topk(runtime_logits, topk),
-                    "reference_topk": summarize_last_token_topk(reference_logits, topk),
-                }
-                for step_idx, (runtime_logits, reference_logits) in enumerate(
-                    zip(stats["step_output_tensors"], reference_steps)
+            if (reference_prefill is None or reference_steps is None) and manifest.stages[-1].bundle_path:
+                bundle_reference_prefill, bundle_reference_steps = _maybe_load_generate_reference_logits(
+                    manifest.stages[-1].bundle_path
                 )
-            ]
+                if reference_prefill is None:
+                    reference_prefill = bundle_reference_prefill
+                if reference_steps is None:
+                    reference_steps = bundle_reference_steps
+            if reference_prefill is not None and reference_steps is not None:
+                summary["reference_prefill_topk"] = summarize_last_token_topk(reference_prefill, topk)
+                summary["step_topks"] = [
+                    {
+                        "step_idx": step_idx,
+                        "topk": summarize_last_token_topk(runtime_logits, topk),
+                        "reference_topk": summarize_last_token_topk(reference_logits, topk),
+                    }
+                    for step_idx, (runtime_logits, reference_logits) in enumerate(
+                        zip(stats["step_output_tensors"], reference_steps)
+                    )
+                ]
+            else:
+                summary["step_topks"] = [
+                    {
+                        "step_idx": step_idx,
+                        "topk": summarize_last_token_topk(runtime_logits, topk),
+                    }
+                    for step_idx, runtime_logits in enumerate(stats["step_output_tensors"])
+                ]
         return summary
 
     summary = {

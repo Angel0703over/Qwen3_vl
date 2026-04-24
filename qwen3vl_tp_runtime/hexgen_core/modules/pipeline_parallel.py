@@ -37,9 +37,13 @@ from qwen3vl_tp_runtime.models.qwen3vl.execution import (
     forward_text_embeddings,
     trace_text_decode_logits_with_runtime_cache,
     trace_text_decode_stage_with_runtime_cache,
-    trace_text_prefill_stage_logits,
 )
 from qwen3vl_tp_runtime.models.qwen3vl.functional import dtype_from_name, resolve_comm_dtype
+from qwen3vl_tp_runtime.models.qwen3vl.weights import (
+    build_text_rotary_embedding,
+    build_text_runtime_aux_tensors,
+    load_text_model_config_spec,
+)
 
 
 def tensor_diff_stats(lhs: torch.Tensor, rhs: torch.Tensor) -> tuple[float, float]:
@@ -710,6 +714,19 @@ def _build_generate_phase_bundle(
     return runtime_bundle
 
 
+def _strip_runtime_layer_cache(stage_bundle: dict) -> dict:
+    stripped_bundle = dict(stage_bundle)
+    stripped_bundle["layers"] = [
+        {
+            key: value
+            for key, value in layer_bundle.items()
+            if key not in {"past_key", "past_value"}
+        }
+        for layer_bundle in stage_bundle["layers"]
+    ]
+    return stripped_bundle
+
+
 def _build_generate_cache_map(stage_bundle: dict) -> dict[int, tuple[torch.Tensor | None, torch.Tensor | None]]:
     return {
         int(layer_bundle["layer_idx"]): (
@@ -718,6 +735,96 @@ def _build_generate_cache_map(stage_bundle: dict) -> dict[int, tuple[torch.Tenso
         )
         for layer_bundle in stage_bundle["layers"]
     }
+
+
+def _is_runtime_only_generate_bundle(stage_bundle: dict) -> bool:
+    return bool(stage_bundle.get("runtime_only_generate"))
+
+
+def _infer_runtime_tensor_device(stage_bundle: dict) -> torch.device:
+    if "embed_tokens_weight" in stage_bundle and stage_bundle["embed_tokens_weight"] is not None:
+        return stage_bundle["embed_tokens_weight"].device
+    if stage_bundle.get("layers"):
+        return stage_bundle["layers"][0]["q_weight"].device
+    if "final_norm_weight" in stage_bundle and stage_bundle["final_norm_weight"] is not None:
+        return stage_bundle["final_norm_weight"].device
+    if stage_bundle.get("input_ids") is not None:
+        return stage_bundle["input_ids"].device
+    return stage_bundle["prefill_attention_mask_2d"].device
+
+
+def _infer_runtime_tensor_dtype(stage_bundle: dict) -> torch.dtype:
+    if "embed_tokens_weight" in stage_bundle and stage_bundle["embed_tokens_weight"] is not None:
+        return stage_bundle["embed_tokens_weight"].dtype
+    if stage_bundle.get("layers"):
+        return stage_bundle["layers"][0]["q_weight"].dtype
+    if "final_norm_weight" in stage_bundle and stage_bundle["final_norm_weight"] is not None:
+        return stage_bundle["final_norm_weight"].dtype
+    return torch.float32
+
+
+def _infer_runtime_token_dtype(stage_bundle: dict) -> torch.dtype:
+    if stage_bundle.get("input_ids") is not None:
+        return stage_bundle["input_ids"].dtype
+    token_id_dtype = stage_bundle.get("token_id_dtype")
+    if isinstance(token_id_dtype, str):
+        return dtype_from_name(token_id_dtype)
+    return torch.int64
+
+
+def _build_runtime_only_stage_input_template(stage_bundle: dict, *, query_len: int) -> torch.Tensor:
+    batch_size = int(stage_bundle["batch_size"])
+    hidden_size = int(stage_bundle["hidden_size"])
+    return torch.empty(
+        (batch_size, query_len, hidden_size),
+        device=_infer_runtime_tensor_device(stage_bundle),
+        dtype=_infer_runtime_tensor_dtype(stage_bundle),
+    )
+
+
+def _build_runtime_only_text_generate_phase_bundle(
+    stage_bundle: dict,
+    *,
+    phase_kind: str,
+    attention_mask_2d: torch.Tensor,
+    config_spec,
+    rotary_emb,
+) -> dict:
+    query_len = int(stage_bundle["prefill_seq_len"]) if phase_kind == "prefill" else 1
+    runtime_bundle = dict(stage_bundle)
+    runtime_bundle["stage_type"] = (
+        "text_prefill_last"
+        if phase_kind == "prefill" and "final_norm_weight" in stage_bundle
+        else "text"
+        if phase_kind == "prefill"
+        else "text_decode_last"
+        if "final_norm_weight" in stage_bundle
+        else "text_decode"
+    )
+    runtime_bundle["attention_mask_2d"] = attention_mask_2d
+    runtime_aux = build_text_runtime_aux_tensors(
+        attention_mask_2d=attention_mask_2d,
+        batch_size=int(stage_bundle["batch_size"]),
+        seq_len=query_len,
+        past_length=int(attention_mask_2d.shape[-1]) - query_len,
+        config_spec=config_spec,
+        device=_infer_runtime_tensor_device(stage_bundle),
+        compute_dtype=_infer_runtime_tensor_dtype(stage_bundle),
+        rotary_emb=rotary_emb,
+    )
+    runtime_bundle["attention_mask"] = runtime_aux["attention_mask"]
+    runtime_bundle["position_ids"] = runtime_aux["position_ids"]
+    runtime_bundle["cos"] = runtime_aux["cos"]
+    runtime_bundle["sin"] = runtime_aux["sin"]
+    if phase_kind == "prefill" and stage_bundle.get("input_ids") is not None:
+        runtime_bundle["input_ids"] = stage_bundle["input_ids"]
+    if phase_kind == "decode":
+        runtime_bundle["decode_input_ids"] = torch.zeros(
+            (int(stage_bundle["batch_size"]), 1),
+            device=_infer_runtime_tensor_device(stage_bundle),
+            dtype=_infer_runtime_token_dtype(stage_bundle),
+        )
+    return runtime_bundle
 
 
 def _token_tensor_to_list(token_tensor: torch.Tensor) -> list[int]:
@@ -750,30 +857,36 @@ def _run_text_generate_phase(
     is_last_stage = rank == world_size - 1
     embedding_max = None
     embedding_mean = None
+    reference_input = runtime_bundle.get("stage_input")
+    if reference_input is None:
+        reference_input = runtime_bundle.get("layer_input")
+    query_len = int(runtime_bundle["prefill_seq_len"]) if phase_kind == "prefill" else 1
 
     if rank == 0:
-        reference_input = get_stage_input(runtime_bundle)
         stage_input = reference_input
         if runtime_bundle.get("embed_tokens_weight") is not None:
             if phase_kind == "prefill" and "input_ids" in runtime_bundle:
                 stage_input = forward_text_embeddings(runtime_bundle["input_ids"], runtime_bundle)
-                embedding_max, embedding_mean = tensor_diff_stats(stage_input, reference_input)
+                if reference_input is not None:
+                    embedding_max, embedding_mean = tensor_diff_stats(stage_input, reference_input)
             elif phase_kind == "decode" and current_token_id is not None and "decode_input_ids" in runtime_bundle:
                 decode_input_ids = torch.tensor(
                     [[current_token_id]],
-                    device=reference_input.device,
+                    device=_infer_runtime_tensor_device(runtime_bundle),
                     dtype=runtime_bundle["decode_input_ids"].dtype,
                 )
                 stage_input = forward_text_embeddings(decode_input_ids, runtime_bundle)
-                embedding_max, embedding_mean = tensor_diff_stats(stage_input, reference_input)
+                if reference_input is not None:
+                    embedding_max, embedding_mean = tensor_diff_stats(stage_input, reference_input)
                 runtime_bundle["decode_input_ids_runtime"] = decode_input_ids
+        if stage_input is None:
+            raise RuntimeError("首 stage 缺少可用的 stage_input。")
         runtime_bundle["stage_input"] = stage_input
         runtime_bundle["layer_input"] = stage_input
         boundary_max = None
         boundary_mean = None
         received_payload_keys: list[str] = []
     else:
-        reference_input = get_stage_input(runtime_bundle)
         received_message = handoff_transport.recv(src=rank - 1, stage_bundle=runtime_bundle)
         handoff = received_message.handoff
         if handoff is None or handoff.hidden_states is None:
@@ -781,7 +894,10 @@ def _run_text_generate_phase(
 
         runtime_bundle = apply_stage_handoff_payload(runtime_bundle, handoff)
         stage_input = get_stage_input(runtime_bundle)
-        boundary_max, boundary_mean = tensor_diff_stats(stage_input, reference_input)
+        if reference_input is None:
+            boundary_max, boundary_mean = None, None
+        else:
+            boundary_max, boundary_mean = tensor_diff_stats(stage_input, reference_input)
         received_payload_keys = received_message.summary.payload_keys
 
     hidden_stage_max = None
@@ -794,16 +910,31 @@ def _run_text_generate_phase(
 
     if phase_kind == "prefill":
         if is_last_stage:
-            trace = trace_text_prefill_stage_logits(stage_input, runtime_bundle)
-            stage_output = trace["logits"]
-            hidden_stage_output = trace["hidden_stage_output"]
-            hidden_stage_max, hidden_stage_mean = tensor_diff_stats(
-                hidden_stage_output,
-                runtime_bundle["hidden_stage_output"],
+            prefill_runtime_bundle = _strip_runtime_layer_cache(runtime_bundle)
+            trace = trace_text_decode_logits_with_runtime_cache(
+                stage_input,
+                prefill_runtime_bundle,
+                cache_by_layer={},
             )
-            norm_max, norm_mean = tensor_diff_stats(trace["norm_output"], runtime_bundle["norm_output"])
+            stage_output = trace["logits"]
+            if runtime_bundle.get("hidden_stage_output") is not None:
+                hidden_stage_output = trace["stage_output"]
+                hidden_stage_max, hidden_stage_mean = tensor_diff_stats(
+                    hidden_stage_output,
+                    runtime_bundle["hidden_stage_output"],
+                )
+            if runtime_bundle.get("norm_output") is not None:
+                norm_max, norm_mean = tensor_diff_stats(trace["norm_output"], runtime_bundle["norm_output"])
+            updated_cache = trace["cache_by_layer"]
         else:
-            stage_output = run_stage(stage_input, runtime_bundle)
+            prefill_runtime_bundle = _strip_runtime_layer_cache(runtime_bundle)
+            trace = trace_text_decode_stage_with_runtime_cache(
+                stage_input,
+                prefill_runtime_bundle,
+                cache_by_layer={},
+            )
+            stage_output = trace["stage_output"]
+            updated_cache = trace["cache_by_layer"]
     elif phase_kind == "decode":
         if is_last_stage:
             trace = trace_text_decode_logits_with_runtime_cache(
@@ -812,12 +943,14 @@ def _run_text_generate_phase(
                 cache_by_layer=cache_by_layer,
             )
             stage_output = trace["logits"]
-            hidden_stage_output = trace["stage_output"]
-            hidden_stage_max, hidden_stage_mean = tensor_diff_stats(
-                hidden_stage_output,
-                runtime_bundle["hidden_stage_output"],
-            )
-            norm_max, norm_mean = tensor_diff_stats(trace["norm_output"], runtime_bundle["norm_output"])
+            if runtime_bundle.get("hidden_stage_output") is not None:
+                hidden_stage_output = trace["stage_output"]
+                hidden_stage_max, hidden_stage_mean = tensor_diff_stats(
+                    hidden_stage_output,
+                    runtime_bundle["hidden_stage_output"],
+                )
+            if runtime_bundle.get("norm_output") is not None:
+                norm_max, norm_mean = tensor_diff_stats(trace["norm_output"], runtime_bundle["norm_output"])
             updated_cache = trace["cache_by_layer"]
         else:
             trace = trace_text_decode_stage_with_runtime_cache(
@@ -830,8 +963,13 @@ def _run_text_generate_phase(
     else:
         raise ValueError(f"不支持的 phase_kind={phase_kind!r}")
 
-    reference_output = get_stage_output(runtime_bundle)
-    stage_max, stage_mean = tensor_diff_stats(stage_output, reference_output)
+    reference_output = runtime_bundle.get("stage_output")
+    if reference_output is None:
+        reference_output = runtime_bundle.get("layer_output")
+    if reference_output is None:
+        stage_max, stage_mean = None, None
+    else:
+        stage_max, stage_mean = tensor_diff_stats(stage_output, reference_output)
 
     sent_shape = None
     sent_payload_keys: list[str] = []
@@ -850,7 +988,8 @@ def _run_text_generate_phase(
 
     if is_last_stage:
         predicted_token_id = int(stage_output[0, -1].argmax().item())
-        reference_token_id = int(runtime_bundle["output_token_id"])
+        if runtime_bundle.get("output_token_id") is not None:
+            reference_token_id = int(runtime_bundle["output_token_id"])
 
     stats = {
         "input_shape": tuple(stage_input.shape),
@@ -908,13 +1047,30 @@ class TextGeneratePipelineRunner:
         )
         comm_dtype = resolve_comm_dtype(self.comm_dtype_arg, compute_dtype)
         handoff_transport = StageHandoffTransport(device=self.device, comm_dtype=comm_dtype)
+        runtime_only_generate = _is_runtime_only_generate_bundle(stage_bundle)
+        runtime_only_context = None
+        if runtime_only_generate:
+            config_spec = load_text_model_config_spec(self.manifest.runtime_config["model_path"])
+            runtime_only_context = {
+                "config_spec": config_spec,
+                "rotary_emb": build_text_rotary_embedding(config_spec, device=self.device),
+            }
 
-        prefill_bundle = _build_generate_phase_bundle(
-            stage_bundle,
-            stage_bundle["prefill"],
-            stage_type=("text_prefill_last" if rank == world_size - 1 else "text"),
-        )
-        prefill_stats, _ = _run_text_generate_phase(
+        if runtime_only_generate:
+            prefill_bundle = _build_runtime_only_text_generate_phase_bundle(
+                stage_bundle,
+                phase_kind="prefill",
+                attention_mask_2d=stage_bundle["prefill_attention_mask_2d"],
+                config_spec=runtime_only_context["config_spec"],
+                rotary_emb=runtime_only_context["rotary_emb"],
+            )
+        else:
+            prefill_bundle = _build_generate_phase_bundle(
+                stage_bundle,
+                stage_bundle["prefill"],
+                stage_type=("text_prefill_last" if rank == world_size - 1 else "text"),
+            )
+        prefill_stats, prefill_cache = _run_text_generate_phase(
             rank=rank,
             world_size=world_size,
             manifest=self.manifest,
@@ -931,16 +1087,42 @@ class TextGeneratePipelineRunner:
             src=world_size - 1,
         )
         generated_token_ids = [current_token_id]
-        cache_by_layer = _build_generate_cache_map(stage_bundle)
+        cache_by_layer = prefill_cache if prefill_cache is not None else _build_generate_cache_map(stage_bundle)
         step_stats = []
         step_output_tensors = []
+        current_attention_mask_2d = stage_bundle["prefill_attention_mask_2d"]
 
-        for step_payload in stage_bundle["decode_steps"]:
-            decode_bundle = _build_generate_phase_bundle(
-                stage_bundle,
-                step_payload,
-                stage_type=("text_decode_last" if rank == world_size - 1 else "text_decode"),
-            )
+        decode_iterable = (
+            range(int(stage_bundle["max_new_tokens"]) - 1)
+            if runtime_only_generate
+            else stage_bundle["decode_steps"]
+        )
+        for step_payload in decode_iterable:
+            if runtime_only_generate:
+                current_attention_mask_2d = torch.cat(
+                    [
+                        current_attention_mask_2d,
+                        torch.ones(
+                            (current_attention_mask_2d.shape[0], 1),
+                            device=current_attention_mask_2d.device,
+                            dtype=current_attention_mask_2d.dtype,
+                        ),
+                    ],
+                    dim=-1,
+                )
+                decode_bundle = _build_runtime_only_text_generate_phase_bundle(
+                    stage_bundle,
+                    phase_kind="decode",
+                    attention_mask_2d=current_attention_mask_2d,
+                    config_spec=runtime_only_context["config_spec"],
+                    rotary_emb=runtime_only_context["rotary_emb"],
+                )
+            else:
+                decode_bundle = _build_generate_phase_bundle(
+                    stage_bundle,
+                    step_payload,
+                    stage_type=("text_decode_last" if rank == world_size - 1 else "text_decode"),
+                )
             current_step_stats, cache_by_layer = _run_text_generate_phase(
                 rank=rank,
                 world_size=world_size,
@@ -975,15 +1157,20 @@ class TextGeneratePipelineRunner:
             "prefill": prefill_stats,
             "steps": step_stats,
             "generated_token_ids": generated_token_ids,
-            "reference_generated_token_ids": _token_tensor_to_list(stage_bundle["generated_token_ids"]),
+            "reference_generated_token_ids": (
+                None
+                if runtime_only_generate or stage_bundle.get("generated_token_ids") is None
+                else _token_tensor_to_list(stage_bundle["generated_token_ids"])
+            ),
         }
         if self.return_tensors and rank == world_size - 1:
             stats["prefill_output_tensor"] = prefill_stats.pop("stage_output_tensor")
             stats["step_output_tensors"] = step_output_tensors
-            stats["reference_prefill_output_tensor"] = stage_bundle["prefill"]["logits"]
-            stats["reference_step_output_tensors"] = [
-                step_payload["logits"] for step_payload in stage_bundle["decode_steps"]
-            ]
+            if not runtime_only_generate:
+                stats["reference_prefill_output_tensor"] = stage_bundle["prefill"]["logits"]
+                stats["reference_step_output_tensors"] = [
+                    step_payload["logits"] for step_payload in stage_bundle["decode_steps"]
+                ]
         return stats
 
 

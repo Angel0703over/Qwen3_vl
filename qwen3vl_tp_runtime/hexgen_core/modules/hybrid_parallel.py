@@ -7,6 +7,7 @@ from qwen3vl_tp_runtime.hexgen_core.distributed import (
     broadcast_cpu,
     broadcast_object_cpu,
     startup_log,
+    startup_timer,
 )
 from qwen3vl_tp_runtime.hexgen_core.gen_hetero_groups import (
     build_hybrid_layout,
@@ -40,11 +41,19 @@ from qwen3vl_tp_runtime.models.qwen3vl.execution import (
     forward_text_embeddings,
     trace_text_decode_logits_tp_with_runtime_cache,
     trace_text_decode_stage_tp_with_runtime_cache,
-    trace_text_prefill_stage_logits_tp,
 )
 from qwen3vl_tp_runtime.models.qwen3vl.functional import dtype_from_name, resolve_comm_dtype
-from qwen3vl_tp_runtime.models.qwen3vl.runtime_builder import build_direct_stage_bundle
+from qwen3vl_tp_runtime.models.qwen3vl.runtime_builder import (
+    build_direct_stage_bundle,
+    materialize_direct_text_stage_bundle_from_scaffold,
+    prepare_runtime_only_text_generate_prompt_metadata,
+)
 from qwen3vl_tp_runtime.models.qwen3vl.capture import load_bundle, move_bundle
+from qwen3vl_tp_runtime.models.qwen3vl.weights import (
+    build_text_rotary_embedding,
+    build_text_runtime_aux_tensors,
+    load_text_model_config_spec,
+)
 
 
 def _build_rank_group_index(rank_groups: list[list[int]], world_size: int) -> list[int]:
@@ -63,6 +72,94 @@ def _all_hybrid_stages_are_direct(manifest: TextHybridManifest) -> bool:
     return all(stage.bundle_path is None for stage in manifest.stages)
 
 
+def _should_seed_runtime_only_text_prompt_metadata(manifest: TextHybridManifest) -> bool:
+    runtime_config = manifest.runtime_config
+    return (
+        _all_hybrid_stages_are_direct(manifest)
+        and str(runtime_config.get("modality", "multimodal")) == "text"
+        and str(runtime_config.get("mode", "")) == "generate"
+        and not bool(runtime_config.get("include_runtime_reference", True))
+    )
+
+
+def _compact_runtime_only_text_prompt_metadata_for_broadcast(
+    prompt_metadata: dict[str, torch.Tensor] | None,
+) -> dict[str, object] | None:
+    if prompt_metadata is None:
+        return None
+
+    input_ids = prompt_metadata["input_ids"]
+    if input_ids.ndim != 2 or int(input_ids.shape[0]) != 1:
+        raise RuntimeError(
+            "runtime-only text prompt metadata 当前只支持 batch_size=1 的 input_ids 广播压缩。"
+        )
+
+    compact_payload: dict[str, object] = {
+        "input_ids_list": [int(token_id) for token_id in input_ids[0].tolist()],
+    }
+    attention_mask = prompt_metadata.get("attention_mask")
+    if attention_mask is not None:
+        if attention_mask.ndim != 2 or tuple(attention_mask.shape) != tuple(input_ids.shape):
+            raise RuntimeError("runtime-only text attention_mask 形状和 input_ids 不匹配，无法压缩广播。")
+        if not torch.all(attention_mask == 1):
+            compact_payload["attention_mask_list"] = [int(mask) for mask in attention_mask[0].tolist()]
+    return compact_payload
+
+
+def _restore_runtime_only_text_prompt_metadata_from_broadcast(
+    prompt_metadata: dict[str, object],
+) -> dict[str, torch.Tensor]:
+    if "input_ids" in prompt_metadata:
+        restored = {
+            "input_ids": prompt_metadata["input_ids"],
+        }
+        if prompt_metadata.get("attention_mask") is not None:
+            restored["attention_mask"] = prompt_metadata["attention_mask"]
+        return restored
+
+    input_ids_list = prompt_metadata.get("input_ids_list")
+    if input_ids_list is None:
+        raise RuntimeError("runtime-only text prompt metadata 广播负载缺少 input_ids 或 input_ids_list。")
+
+    input_ids = torch.tensor([input_ids_list], dtype=torch.int64)
+    restored = {"input_ids": input_ids}
+    attention_mask_list = prompt_metadata.get("attention_mask_list")
+    if attention_mask_list is not None:
+        restored["attention_mask"] = torch.tensor([attention_mask_list], dtype=torch.int64)
+    return restored
+
+
+def _seed_runtime_only_text_prompt_metadata(manifest: TextHybridManifest, *, rank: int) -> None:
+    runtime_config = manifest.runtime_config
+    if runtime_config.get("_runtime_only_prompt_metadata_ready") or not _should_seed_runtime_only_text_prompt_metadata(
+        manifest
+    ):
+        return
+
+    prompt_metadata = None
+    if rank == 0:
+        with startup_timer("hybrid-direct-loader", "prepare runtime-only text prompt metadata"):
+            prompt_metadata = prepare_runtime_only_text_generate_prompt_metadata(runtime_config)
+        prompt_metadata = _compact_runtime_only_text_prompt_metadata_for_broadcast(prompt_metadata)
+
+    startup_log(
+        "hybrid-direct-loader",
+        f"rank={rank} waiting runtime-only text prompt metadata broadcast from src=0",
+    )
+    prompt_metadata = broadcast_object_cpu(
+        prompt_metadata,
+        src=0,
+        label="runtime_only_text_prompt_metadata",
+    )
+    prompt_metadata = _restore_runtime_only_text_prompt_metadata_from_broadcast(prompt_metadata)
+    runtime_config["_runtime_only_input_ids"] = prompt_metadata["input_ids"]
+    if prompt_metadata.get("attention_mask") is not None:
+        runtime_config["_runtime_only_attention_mask"] = prompt_metadata["attention_mask"]
+    else:
+        runtime_config.pop("_runtime_only_attention_mask", None)
+    runtime_config["_runtime_only_prompt_metadata_ready"] = True
+
+
 def load_stage_bundle_for_hybrid_rank(
     manifest: TextHybridManifest,
     *,
@@ -70,10 +167,98 @@ def load_stage_bundle_for_hybrid_rank(
     rank_stage: HybridRankContext,
     device: torch.device,
     compute_dtype_arg: str,
-) -> tuple[dict, torch.dtype]:
+    ) -> tuple[dict, torch.dtype]:
     stage_meta = manifest.stages[rank_stage.stage_idx]
+    all_direct = _all_hybrid_stages_are_direct(manifest)
+    runtime_modality = str(manifest.runtime_config.get("modality", "multimodal"))
+    _seed_runtime_only_text_prompt_metadata(manifest, rank=rank)
+    use_rank_local_text_tp_bundle = (
+        all_direct
+        and runtime_modality == "text"
+        and rank_stage.tp_degree > 1
+    )
+    use_single_rank_direct_bundle = all_direct and rank_stage.tp_degree == 1
 
-    if _all_hybrid_stages_are_direct(manifest):
+    if use_single_rank_direct_bundle:
+        if rank_stage.local_rank != 0:
+            raise ValueError(
+                "tp_degree=1 的 direct stage 只能有 local_rank=0，"
+                f"当前拿到 local_rank={rank_stage.local_rank}"
+            )
+        startup_log(
+            "hybrid-direct-loader",
+            f"rank={rank} stage_idx={rank_stage.stage_idx} leader building local direct stage "
+            f"range={stage_meta.start_idx}:{stage_meta.end_idx} without stage-group broadcast",
+        )
+        bundle = build_direct_stage_bundle(
+            stage_idx=stage_meta.stage_idx,
+            start_idx=stage_meta.start_idx,
+            end_idx=stage_meta.end_idx,
+            runtime_config=manifest.runtime_config,
+        )
+        compute_dtype_name = bundle["save_dtype"] if compute_dtype_arg == "auto" else compute_dtype_arg
+        compute_dtype = dtype_from_name(compute_dtype_name)
+        startup_log("hybrid-direct-loader", f"rank={rank} entering post-load barrier")
+        dist.barrier()
+        startup_log(
+            "hybrid-direct-loader",
+            f"rank={rank} stage_idx={rank_stage.stage_idx} moving local direct bundle "
+            f"to device={device} compute_dtype={compute_dtype}",
+        )
+        return move_bundle(bundle, device, compute_dtype), compute_dtype
+
+    if use_rank_local_text_tp_bundle:
+        if rank_stage.local_rank == 0:
+            startup_log(
+                "hybrid-direct-loader",
+                f"rank={rank} stage_idx={rank_stage.stage_idx} leader building shared text scaffold "
+                f"range={stage_meta.start_idx}:{stage_meta.end_idx}",
+            )
+            leader_scaffold = build_direct_stage_bundle(
+                stage_idx=stage_meta.stage_idx,
+                start_idx=stage_meta.start_idx,
+                end_idx=stage_meta.end_idx,
+                runtime_config=manifest.runtime_config,
+                include_text_weights=False,
+            )
+        else:
+            leader_scaffold = None
+
+        startup_log(
+            "hybrid-direct-loader",
+            f"rank={rank} stage_idx={rank_stage.stage_idx} waiting text scaffold broadcast from leader="
+            f"{rank_stage.leader_rank}",
+        )
+        scaffold = broadcast_object_cpu(
+            leader_scaffold,
+            src=rank_stage.leader_rank,
+            group=rank_stage.stage_group,
+            label=f"text_scaffold stage_idx={rank_stage.stage_idx}",
+        )
+        compute_dtype_name = scaffold["save_dtype"] if compute_dtype_arg == "auto" else compute_dtype_arg
+        compute_dtype = dtype_from_name(compute_dtype_name)
+        startup_log(
+            "hybrid-direct-loader",
+            f"rank={rank} stage_idx={rank_stage.stage_idx} materializing local text shard "
+            f"tp_local_rank={rank_stage.local_rank}/{rank_stage.tp_degree} "
+            f"compute_dtype={compute_dtype}",
+        )
+        bundle = materialize_direct_text_stage_bundle_from_scaffold(
+            stage_bundle_scaffold=scaffold,
+            runtime_config=manifest.runtime_config,
+            compute_dtype=compute_dtype,
+            tp_shard_rank=rank_stage.local_rank,
+            tp_shard_world_size=rank_stage.tp_degree,
+        )
+        startup_log("hybrid-direct-loader", f"rank={rank} entering post-load barrier")
+        dist.barrier()
+        startup_log(
+            "hybrid-direct-loader",
+            f"rank={rank} stage_idx={rank_stage.stage_idx} moving materialized local bundle "
+            f"to device={device} compute_dtype={compute_dtype}",
+        )
+        return move_bundle(bundle, device, compute_dtype), compute_dtype
+    elif all_direct:
         if rank_stage.local_rank == 0:
             startup_log(
                 "hybrid-direct-loader",
@@ -554,6 +739,19 @@ def _build_generate_phase_bundle(
     return runtime_bundle
 
 
+def _strip_runtime_layer_cache(stage_bundle: dict) -> dict:
+    stripped_bundle = dict(stage_bundle)
+    stripped_bundle["layers"] = [
+        {
+            key: value
+            for key, value in layer_bundle.items()
+            if key not in {"past_key", "past_value"}
+        }
+        for layer_bundle in stage_bundle["layers"]
+    ]
+    return stripped_bundle
+
+
 def _build_generate_cache_map(stage_bundle: dict) -> dict[int, tuple[torch.Tensor | None, torch.Tensor | None]]:
     return {
         int(layer_bundle["layer_idx"]): (
@@ -562,6 +760,96 @@ def _build_generate_cache_map(stage_bundle: dict) -> dict[int, tuple[torch.Tenso
         )
         for layer_bundle in stage_bundle["layers"]
     }
+
+
+def _is_runtime_only_generate_bundle(stage_bundle: dict) -> bool:
+    return bool(stage_bundle.get("runtime_only_generate"))
+
+
+def _infer_runtime_tensor_device(stage_bundle: dict) -> torch.device:
+    if "embed_tokens_weight" in stage_bundle and stage_bundle["embed_tokens_weight"] is not None:
+        return stage_bundle["embed_tokens_weight"].device
+    if stage_bundle.get("layers"):
+        return stage_bundle["layers"][0]["q_weight"].device
+    if "final_norm_weight" in stage_bundle and stage_bundle["final_norm_weight"] is not None:
+        return stage_bundle["final_norm_weight"].device
+    if stage_bundle.get("input_ids") is not None:
+        return stage_bundle["input_ids"].device
+    return stage_bundle["prefill_attention_mask_2d"].device
+
+
+def _infer_runtime_tensor_dtype(stage_bundle: dict) -> torch.dtype:
+    if "embed_tokens_weight" in stage_bundle and stage_bundle["embed_tokens_weight"] is not None:
+        return stage_bundle["embed_tokens_weight"].dtype
+    if stage_bundle.get("layers"):
+        return stage_bundle["layers"][0]["q_weight"].dtype
+    if "final_norm_weight" in stage_bundle and stage_bundle["final_norm_weight"] is not None:
+        return stage_bundle["final_norm_weight"].dtype
+    return torch.float32
+
+
+def _infer_runtime_token_dtype(stage_bundle: dict) -> torch.dtype:
+    if stage_bundle.get("input_ids") is not None:
+        return stage_bundle["input_ids"].dtype
+    token_id_dtype = stage_bundle.get("token_id_dtype")
+    if isinstance(token_id_dtype, str):
+        return dtype_from_name(token_id_dtype)
+    return torch.int64
+
+
+def _build_runtime_only_stage_input_template(stage_bundle: dict, *, query_len: int) -> torch.Tensor:
+    batch_size = int(stage_bundle["batch_size"])
+    hidden_size = int(stage_bundle["hidden_size"])
+    return torch.empty(
+        (batch_size, query_len, hidden_size),
+        device=_infer_runtime_tensor_device(stage_bundle),
+        dtype=_infer_runtime_tensor_dtype(stage_bundle),
+    )
+
+
+def _build_runtime_only_text_generate_phase_bundle(
+    stage_bundle: dict,
+    *,
+    phase_kind: str,
+    attention_mask_2d: torch.Tensor,
+    config_spec,
+    rotary_emb,
+) -> dict:
+    query_len = int(stage_bundle["prefill_seq_len"]) if phase_kind == "prefill" else 1
+    runtime_bundle = dict(stage_bundle)
+    runtime_bundle["stage_type"] = (
+        "text_prefill_last"
+        if phase_kind == "prefill" and "final_norm_weight" in stage_bundle
+        else "text"
+        if phase_kind == "prefill"
+        else "text_decode_last"
+        if "final_norm_weight" in stage_bundle
+        else "text_decode"
+    )
+    runtime_bundle["attention_mask_2d"] = attention_mask_2d
+    runtime_aux = build_text_runtime_aux_tensors(
+        attention_mask_2d=attention_mask_2d,
+        batch_size=int(stage_bundle["batch_size"]),
+        seq_len=query_len,
+        past_length=int(attention_mask_2d.shape[-1]) - query_len,
+        config_spec=config_spec,
+        device=_infer_runtime_tensor_device(stage_bundle),
+        compute_dtype=_infer_runtime_tensor_dtype(stage_bundle),
+        rotary_emb=rotary_emb,
+    )
+    runtime_bundle["attention_mask"] = runtime_aux["attention_mask"]
+    runtime_bundle["position_ids"] = runtime_aux["position_ids"]
+    runtime_bundle["cos"] = runtime_aux["cos"]
+    runtime_bundle["sin"] = runtime_aux["sin"]
+    if phase_kind == "prefill" and stage_bundle.get("input_ids") is not None:
+        runtime_bundle["input_ids"] = stage_bundle["input_ids"]
+    if phase_kind == "decode":
+        runtime_bundle["decode_input_ids"] = torch.zeros(
+            (int(stage_bundle["batch_size"]), 1),
+            device=_infer_runtime_tensor_device(stage_bundle),
+            dtype=_infer_runtime_token_dtype(stage_bundle),
+        )
+    return runtime_bundle
 
 
 def _token_tensor_to_list(token_tensor: torch.Tensor) -> list[int]:
@@ -597,7 +885,9 @@ def _run_text_generate_hybrid_phase(
     is_first_stage = rank_stage.stage_idx == 0
     is_last_stage = rank_stage.stage_idx == manifest.num_stages - 1
 
-    reference_input = get_stage_input(runtime_bundle)
+    reference_input = runtime_bundle.get("stage_input")
+    if reference_input is None:
+        reference_input = runtime_bundle.get("layer_input")
     incoming_handoff, received_payload_keys = _recv_stage_handoff_for_rank(
         rank,
         rank_stage,
@@ -619,7 +909,7 @@ def _run_text_generate_hybrid_phase(
                     raise ValueError("decode phase 需要 current_token_id，但当前拿到 None。")
                 decode_input_ids = torch.tensor(
                     [[current_token_id]],
-                    device=reference_input.device,
+                    device=_infer_runtime_tensor_device(runtime_bundle),
                     dtype=runtime_bundle["decode_input_ids"].dtype,
                 )
                 leader_input = forward_text_embeddings(decode_input_ids, runtime_bundle)
@@ -640,13 +930,20 @@ def _run_text_generate_hybrid_phase(
         boundary_max, boundary_mean = None, None
 
     stage_input = broadcast_cpu(
-        reference_tensor=reference_input,
+        reference_tensor=(
+            reference_input
+            if reference_input is not None
+            else _build_runtime_only_stage_input_template(
+                runtime_bundle,
+                query_len=(int(runtime_bundle["prefill_seq_len"]) if phase_kind == "prefill" else 1),
+            )
+        ),
         tensor=leader_input,
         src=rank_stage.leader_rank,
         comm_dtype=comm_dtype,
         group=rank_stage.stage_group,
     )
-    if not is_first_stage:
+    if not is_first_stage and reference_input is not None:
         boundary_max, boundary_mean = (
             (stage_input - reference_input).abs().max().item(),
             (stage_input - reference_input).abs().mean().item(),
@@ -654,7 +951,7 @@ def _run_text_generate_hybrid_phase(
 
     embedding_max = None
     embedding_mean = None
-    if is_first_stage:
+    if is_first_stage and reference_input is not None:
         embedding_diff = (stage_input - reference_input).abs()
         embedding_max = embedding_diff.max().item()
         embedding_mean = embedding_diff.mean().item()
@@ -669,9 +966,10 @@ def _run_text_generate_hybrid_phase(
 
     if phase_kind == "prefill":
         if is_last_stage:
-            trace = trace_text_prefill_stage_logits_tp(
+            prefill_runtime_bundle = _strip_runtime_layer_cache(runtime_bundle)
+            trace = trace_text_decode_logits_tp_with_runtime_cache(
                 stage_input,
-                runtime_bundle,
+                prefill_runtime_bundle,
                 rank_stage.local_rank,
                 rank_stage.tp_degree,
                 comm_dtype,
@@ -679,26 +977,34 @@ def _run_text_generate_hybrid_phase(
                 tp_src_rank=rank_stage.leader_rank,
                 attn_math_mode=tp_attn_math_mode,
                 mlp_math_mode=tp_mlp_math_mode,
+                cache_by_layer={},
             )
             stage_output = trace["logits"]
-            hidden_stage_diff = (trace["hidden_stage_output"] - runtime_bundle["hidden_stage_output"]).abs()
-            hidden_stage_max = hidden_stage_diff.max().item()
-            hidden_stage_mean = hidden_stage_diff.mean().item()
-            norm_diff = (trace["norm_output"] - runtime_bundle["norm_output"]).abs()
-            norm_max = norm_diff.max().item()
-            norm_mean = norm_diff.mean().item()
+            if runtime_bundle.get("hidden_stage_output") is not None:
+                hidden_stage_diff = (trace["stage_output"] - runtime_bundle["hidden_stage_output"]).abs()
+                hidden_stage_max = hidden_stage_diff.max().item()
+                hidden_stage_mean = hidden_stage_diff.mean().item()
+            if runtime_bundle.get("norm_output") is not None:
+                norm_diff = (trace["norm_output"] - runtime_bundle["norm_output"]).abs()
+                norm_max = norm_diff.max().item()
+                norm_mean = norm_diff.mean().item()
+            updated_cache = trace["cache_by_layer"]
         else:
-            stage_output = run_stage_tp(
+            prefill_runtime_bundle = _strip_runtime_layer_cache(runtime_bundle)
+            trace = trace_text_decode_stage_tp_with_runtime_cache(
                 stage_input,
-                runtime_bundle,
+                prefill_runtime_bundle,
                 rank_stage.local_rank,
                 rank_stage.tp_degree,
                 comm_dtype,
                 tp_group=rank_stage.stage_group,
                 tp_src_rank=rank_stage.leader_rank,
-                tp_attn_math_mode=tp_attn_math_mode,
-                tp_mlp_math_mode=tp_mlp_math_mode,
+                attn_math_mode=tp_attn_math_mode,
+                mlp_math_mode=tp_mlp_math_mode,
+                cache_by_layer={},
             )
+            stage_output = trace["stage_output"]
+            updated_cache = trace["cache_by_layer"]
     elif phase_kind == "decode":
         if is_last_stage:
             trace = trace_text_decode_logits_tp_with_runtime_cache(
@@ -715,12 +1021,14 @@ def _run_text_generate_hybrid_phase(
             )
             stage_output = trace["logits"]
             updated_cache = trace["cache_by_layer"]
-            hidden_stage_diff = (trace["stage_output"] - runtime_bundle["hidden_stage_output"]).abs()
-            hidden_stage_max = hidden_stage_diff.max().item()
-            hidden_stage_mean = hidden_stage_diff.mean().item()
-            norm_diff = (trace["norm_output"] - runtime_bundle["norm_output"]).abs()
-            norm_max = norm_diff.max().item()
-            norm_mean = norm_diff.mean().item()
+            if runtime_bundle.get("hidden_stage_output") is not None:
+                hidden_stage_diff = (trace["stage_output"] - runtime_bundle["hidden_stage_output"]).abs()
+                hidden_stage_max = hidden_stage_diff.max().item()
+                hidden_stage_mean = hidden_stage_diff.mean().item()
+            if runtime_bundle.get("norm_output") is not None:
+                norm_diff = (trace["norm_output"] - runtime_bundle["norm_output"]).abs()
+                norm_max = norm_diff.max().item()
+                norm_mean = norm_diff.mean().item()
         else:
             trace = trace_text_decode_stage_tp_with_runtime_cache(
                 stage_input,
@@ -739,10 +1047,15 @@ def _run_text_generate_hybrid_phase(
     else:
         raise ValueError(f"不支持的 phase_kind={phase_kind!r}")
 
-    reference_output = get_stage_output(runtime_bundle)
-    stage_diff = (stage_output - reference_output).abs()
-    stage_max = stage_diff.max().item()
-    stage_mean = stage_diff.mean().item()
+    reference_output = runtime_bundle.get("stage_output")
+    if reference_output is None:
+        reference_output = runtime_bundle.get("layer_output")
+    if reference_output is None:
+        stage_max, stage_mean = None, None
+    else:
+        stage_diff = (stage_output - reference_output).abs()
+        stage_max = stage_diff.max().item()
+        stage_mean = stage_diff.mean().item()
 
     sent_shape = None
     sent_payload_keys: list[str] = []
@@ -768,7 +1081,8 @@ def _run_text_generate_hybrid_phase(
 
     if is_last_stage and rank_stage.local_rank == 0:
         predicted_token_id = int(stage_output[0, -1].argmax().item())
-        reference_token_id = int(runtime_bundle["output_token_id"])
+        if runtime_bundle.get("output_token_id") is not None:
+            reference_token_id = int(runtime_bundle["output_token_id"])
 
     stats = {
         "input_shape": tuple(stage_input.shape),
@@ -831,13 +1145,30 @@ def _run_text_generate_hybrid_rank(
     )
     comm_dtype = resolve_comm_dtype(comm_dtype_arg, compute_dtype)
     handoff_transport = StageHandoffTransport(device=device, comm_dtype=comm_dtype)
+    runtime_only_generate = _is_runtime_only_generate_bundle(stage_bundle)
+    runtime_only_context = None
+    if runtime_only_generate:
+        config_spec = load_text_model_config_spec(manifest.runtime_config["model_path"])
+        runtime_only_context = {
+            "config_spec": config_spec,
+            "rotary_emb": build_text_rotary_embedding(config_spec, device=device),
+        }
 
-    prefill_bundle = _build_generate_phase_bundle(
-        stage_bundle,
-        stage_bundle["prefill"],
-        stage_type=("text_prefill_last" if rank_stage.stage_idx == manifest.num_stages - 1 else "text"),
-    )
-    prefill_stats, _ = _run_text_generate_hybrid_phase(
+    if runtime_only_generate:
+        prefill_bundle = _build_runtime_only_text_generate_phase_bundle(
+            stage_bundle,
+            phase_kind="prefill",
+            attention_mask_2d=stage_bundle["prefill_attention_mask_2d"],
+            config_spec=runtime_only_context["config_spec"],
+            rotary_emb=runtime_only_context["rotary_emb"],
+        )
+    else:
+        prefill_bundle = _build_generate_phase_bundle(
+            stage_bundle,
+            stage_bundle["prefill"],
+            stage_type=("text_prefill_last" if rank_stage.stage_idx == manifest.num_stages - 1 else "text"),
+        )
+    prefill_stats, prefill_cache = _run_text_generate_hybrid_phase(
         rank=rank,
         rank_stage=rank_stage,
         manifest=manifest,
@@ -857,16 +1188,42 @@ def _run_text_generate_hybrid_rank(
         src=manifest.stage_rank_groups[-1][0],
     )
     generated_token_ids = [current_token_id]
-    cache_by_layer = _build_generate_cache_map(stage_bundle)
+    cache_by_layer = prefill_cache if prefill_cache is not None else _build_generate_cache_map(stage_bundle)
     step_stats = []
     step_output_tensors = []
+    current_attention_mask_2d = stage_bundle["prefill_attention_mask_2d"]
 
-    for step_payload in stage_bundle["decode_steps"]:
-        decode_bundle = _build_generate_phase_bundle(
-            stage_bundle,
-            step_payload,
-            stage_type=("text_decode_last" if rank_stage.stage_idx == manifest.num_stages - 1 else "text_decode"),
-        )
+    decode_iterable = (
+        range(int(stage_bundle["max_new_tokens"]) - 1)
+        if runtime_only_generate
+        else stage_bundle["decode_steps"]
+    )
+    for step_payload in decode_iterable:
+        if runtime_only_generate:
+            current_attention_mask_2d = torch.cat(
+                [
+                    current_attention_mask_2d,
+                    torch.ones(
+                        (current_attention_mask_2d.shape[0], 1),
+                        device=current_attention_mask_2d.device,
+                        dtype=current_attention_mask_2d.dtype,
+                    ),
+                ],
+                dim=-1,
+            )
+            decode_bundle = _build_runtime_only_text_generate_phase_bundle(
+                stage_bundle,
+                phase_kind="decode",
+                attention_mask_2d=current_attention_mask_2d,
+                config_spec=runtime_only_context["config_spec"],
+                rotary_emb=runtime_only_context["rotary_emb"],
+            )
+        else:
+            decode_bundle = _build_generate_phase_bundle(
+                stage_bundle,
+                step_payload,
+                stage_type=("text_decode_last" if rank_stage.stage_idx == manifest.num_stages - 1 else "text_decode"),
+            )
         current_step_stats, cache_by_layer = _run_text_generate_hybrid_phase(
             rank=rank,
             rank_stage=rank_stage,
@@ -912,15 +1269,20 @@ def _run_text_generate_hybrid_rank(
         "prefill": prefill_stats,
         "steps": step_stats,
         "generated_token_ids": generated_token_ids,
-        "reference_generated_token_ids": _token_tensor_to_list(stage_bundle["generated_token_ids"]),
+        "reference_generated_token_ids": (
+            None
+            if runtime_only_generate or stage_bundle.get("generated_token_ids") is None
+            else _token_tensor_to_list(stage_bundle["generated_token_ids"])
+        ),
     }
     if return_tensors and rank_stage.stage_idx == manifest.num_stages - 1 and rank_stage.local_rank == 0:
         stats["prefill_output_tensor"] = prefill_stats.pop("stage_output_tensor")
         stats["step_output_tensors"] = step_output_tensors
-        stats["reference_prefill_output_tensor"] = stage_bundle["prefill"]["logits"]
-        stats["reference_step_output_tensors"] = [
-            step_payload["logits"] for step_payload in stage_bundle["decode_steps"]
-        ]
+        if not runtime_only_generate:
+            stats["reference_prefill_output_tensor"] = stage_bundle["prefill"]["logits"]
+            stats["reference_step_output_tensors"] = [
+                step_payload["logits"] for step_payload in stage_bundle["decode_steps"]
+            ]
     return stats
 
 

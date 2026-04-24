@@ -3,12 +3,17 @@
 from contextlib import contextmanager
 import io
 import os
+import pickle
 import socket
 import time
 from typing import Any
 
 import torch
 import torch.distributed as dist
+
+
+_PICKLE_WIRE_FORMAT_MAGIC = b"HXPK1"
+_TORCH_WIRE_FORMAT_MAGIC = b"HXTS1"
 
 
 def getenv_int(name: str, default: int) -> int:
@@ -123,17 +128,46 @@ def broadcast_cpu(
     return payload.to(device=reference_tensor.device, dtype=reference_tensor.dtype)
 
 
+def _payload_can_use_pickle_wire_format(payload: Any) -> bool:
+    if torch.is_tensor(payload):
+        return False
+    if payload is None or isinstance(payload, (bool, int, float, str, bytes)):
+        return True
+    if isinstance(payload, (list, tuple)):
+        return all(_payload_can_use_pickle_wire_format(item) for item in payload)
+    if isinstance(payload, (set, frozenset)):
+        return all(_payload_can_use_pickle_wire_format(item) for item in payload)
+    if isinstance(payload, dict):
+        return all(
+            _payload_can_use_pickle_wire_format(key) and _payload_can_use_pickle_wire_format(value)
+            for key, value in payload.items()
+        )
+    return False
+
+
 def _serialize_object_to_uint8(payload: Any) -> torch.Tensor:
-    buffer = io.BytesIO()
-    torch.save(payload, buffer)
-    view = memoryview(buffer.getbuffer())
+    if _payload_can_use_pickle_wire_format(payload):
+        serialized = _PICKLE_WIRE_FORMAT_MAGIC + pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL)
+    else:
+        buffer = io.BytesIO()
+        torch.save(payload, buffer)
+        serialized = _TORCH_WIRE_FORMAT_MAGIC + buffer.getvalue()
+    view = memoryview(bytearray(serialized))
     return torch.frombuffer(view, dtype=torch.uint8).clone()
 
 
 def _deserialize_object_from_uint8(payload: torch.Tensor) -> Any:
     if payload.numel() == 0:
         return None
-    buffer = io.BytesIO(payload.cpu().numpy().tobytes())
+    raw_payload = payload.cpu().numpy().tobytes()
+    if raw_payload.startswith(_PICKLE_WIRE_FORMAT_MAGIC):
+        return pickle.loads(raw_payload[len(_PICKLE_WIRE_FORMAT_MAGIC) :])
+    if raw_payload.startswith(_TORCH_WIRE_FORMAT_MAGIC):
+        buffer = io.BytesIO(raw_payload[len(_TORCH_WIRE_FORMAT_MAGIC) :])
+        return torch.load(buffer, map_location="cpu")
+
+    # Backward compatibility for payloads produced before the wire-format header existed.
+    buffer = io.BytesIO(raw_payload)
     return torch.load(buffer, map_location="cpu")
 
 

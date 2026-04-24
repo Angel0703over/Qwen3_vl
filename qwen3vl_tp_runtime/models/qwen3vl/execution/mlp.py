@@ -6,7 +6,7 @@ import torch
 import torch.nn.functional as F
 from transformers.activations import ACT2FN
 
-from qwen3vl_tp_runtime.hexgen_core.distributed import all_gather_cpu, broadcast_cpu
+from qwen3vl_tp_runtime.hexgen_core.distributed import all_gather_cpu, all_reduce_cpu, broadcast_cpu
 from qwen3vl_tp_runtime.models.qwen3vl.execution.common import (
     _cast_optional_tensor,
     _resolve_tp_math_dtype,
@@ -45,16 +45,14 @@ def trace_mlp_tp(
     tp_src_rank: int = 0,
     math_mode: str = "orig",
 ) -> dict:
-    intermediate_size = bundle["gate_weight"].shape[0]
+    sharded = bool(bundle.get("tp_weight_sharded"))
+    intermediate_size = int(bundle["gate_weight"].shape[0])
     orig_dtype, _ = _resolve_tp_math_dtype(hidden_states, math_mode)
     device = hidden_states.device
-    if intermediate_size % world_size != 0:
+    if not sharded and intermediate_size % world_size != 0:
         raise ValueError("当前 TP MLP 要求 intermediate_size 能被 world_size 整除。")
 
     act_fn = ACT2FN[bundle["hidden_act"]]
-    shard = intermediate_size // world_size
-    start = rank * shard
-    end = (rank + 1) * shard
 
     x = hidden_states.to(dtype=orig_dtype)
     gate_weight = bundle["gate_weight"].to(device=device, dtype=orig_dtype)
@@ -64,29 +62,55 @@ def trace_mlp_tp(
     down_weight = bundle["down_weight"].to(device=device, dtype=orig_dtype)
     down_bias = _cast_optional_tensor(bundle["down_bias"], device=device, dtype=orig_dtype)
 
-    full_gate_out = F.linear(x, gate_weight, gate_bias)
-    full_up_out = F.linear(x, up_weight, up_bias)
-    gate_out = full_gate_out[..., start:end]
-    up_out = full_up_out[..., start:end]
+    if sharded:
+        shard_world_size = int(bundle.get("tp_shard_world_size") or world_size)
+        if shard_world_size != world_size:
+            raise ValueError(
+                "TP MLP bundle 的 shard world_size 和当前 world_size 不一致，"
+                f"bundle_world_size={shard_world_size} world_size={world_size}"
+            )
+        gate_out = F.linear(x, gate_weight, gate_bias)
+        up_out = F.linear(x, up_weight, up_bias)
+    else:
+        shard = intermediate_size // world_size
+        start = rank * shard
+        end = (rank + 1) * shard
+        full_gate_out = F.linear(x, gate_weight, gate_bias)
+        full_up_out = F.linear(x, up_weight, up_bias)
+        gate_out = full_gate_out[..., start:end]
+        up_out = full_up_out[..., start:end]
+
     fused_out = act_fn(gate_out) * up_out
-    gathered_fused = all_gather_cpu(
-        fused_out,
-        device,
-        orig_dtype,
-        comm_dtype,
-        group=tp_group,
-    )
-    full_fused = torch.cat(gathered_fused, dim=-1)
-    leader_output = None
-    if rank == 0:
-        leader_output = F.linear(full_fused, down_weight, down_bias)
-    mlp_output = broadcast_cpu(
-        hidden_states,
-        leader_output,
-        src=tp_src_rank,
-        comm_dtype=comm_dtype,
-        group=tp_group,
-    )
+    if sharded:
+        local_output_partial = F.linear(fused_out, down_weight, bias=None)
+        mlp_output = all_reduce_cpu(
+            local_output_partial,
+            target_device=device,
+            target_dtype=orig_dtype,
+            comm_dtype=comm_dtype,
+            group=tp_group,
+        )
+        if down_bias is not None:
+            mlp_output = mlp_output + down_bias
+    else:
+        gathered_fused = all_gather_cpu(
+            fused_out,
+            device,
+            orig_dtype,
+            comm_dtype,
+            group=tp_group,
+        )
+        full_fused = torch.cat(gathered_fused, dim=-1)
+        leader_output = None
+        if rank == 0:
+            leader_output = F.linear(full_fused, down_weight, down_bias)
+        mlp_output = broadcast_cpu(
+            hidden_states,
+            leader_output,
+            src=tp_src_rank,
+            comm_dtype=comm_dtype,
+            group=tp_group,
+        )
 
     return {
         "gate_out": gate_out,
