@@ -56,7 +56,7 @@ class PipelineDirectLoaderTest(unittest.TestCase):
         }
 
         with patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.prepare_runtime_only_text_generate_prompt_metadata",
+            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.prepare_text_prompt_meta",
             return_value=prompt_metadata,
         ) as prepare_meta_mock, patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.broadcast_object_cpu",
@@ -109,7 +109,7 @@ class PipelineDirectLoaderTest(unittest.TestCase):
         }
 
         with patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.prepare_runtime_only_text_generate_prompt_metadata",
+            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.prepare_text_prompt_meta",
         ) as prepare_meta_mock, patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.broadcast_object_cpu",
             return_value={"input_ids_list": [7, 8, 9]},

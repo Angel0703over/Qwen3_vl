@@ -11,8 +11,8 @@ import torch
 from qwen3vl_tp_runtime.hexgen_core.schema import StageSpec
 from qwen3vl_tp_runtime.models.qwen3vl.runtime_builder import (
     DirectStageBundleBuilder,
-    materialize_direct_text_stage_bundle_from_scaffold,
-    prepare_runtime_only_text_generate_prompt_metadata,
+    materialize_text_stage,
+    prepare_text_prompt_meta,
 )
 from qwen3vl_tp_runtime.models.qwen3vl.weights import (
     build_text_causal_mask,
@@ -223,7 +223,7 @@ class ModelWeightLoaderTest(unittest.TestCase):
             self.assertEqual(config.attention_dropout, 0.125)
             self.assertEqual(config.pad_token_id, 42)
 
-    def test_prepare_runtime_only_text_generate_prompt_metadata_prefers_tokenizer_backend(self) -> None:
+    def test_prepare_text_prompt_meta_prefers_tokenizer_backend(self) -> None:
         runtime_config = {
             "model_path": "/tmp/fake-model",
             "prompt": "hello",
@@ -252,7 +252,7 @@ class ModelWeightLoaderTest(unittest.TestCase):
             "qwen3vl_tp_runtime.models.qwen3vl.runtime_builder.load_processor",
             side_effect=AssertionError("backend 路径命中后不应回退到 processor"),
         ):
-            metadata = prepare_runtime_only_text_generate_prompt_metadata(runtime_config)
+            metadata = prepare_text_prompt_meta(runtime_config)
 
         self.assertTrue(torch.equal(metadata["input_ids"], torch.tensor([[1, 2, 3]], dtype=torch.long)))
         self.assertIsNone(metadata["attention_mask"])
@@ -632,7 +632,7 @@ class ModelWeightLoaderTest(unittest.TestCase):
             self.assertNotIn("cos", scaffold["decode_steps"][0])
             self.assertNotIn("sin", scaffold["decode_steps"][0])
 
-    def test_materialize_direct_text_stage_bundle_from_scaffold_restores_tp_local_weights(self) -> None:
+    def test_materialize_text_stage_restores_tp_local_weights(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             model_dir = Path(tmpdir)
             self._write_text_config(
@@ -703,7 +703,7 @@ class ModelWeightLoaderTest(unittest.TestCase):
                     ) as builder:
                         reference_bundle = builder.build_stage_bundle(0)
 
-            materialized = materialize_direct_text_stage_bundle_from_scaffold(
+            materialized = materialize_text_stage(
                 stage_bundle_scaffold=scaffold,
                 runtime_config=runtime_config,
                 compute_dtype=torch.float32,
@@ -1020,7 +1020,7 @@ class ModelWeightLoaderTest(unittest.TestCase):
             )
 
             with patch(
-                "qwen3vl_tp_runtime.models.qwen3vl.runtime_builder.prepare_runtime_only_text_generate_prompt_metadata",
+                "qwen3vl_tp_runtime.models.qwen3vl.runtime_builder.prepare_text_prompt_meta",
                 side_effect=AssertionError("预广播 metadata 后不应再重建 prompt metadata"),
             ):
                 with DirectStageBundleBuilder(
@@ -1104,7 +1104,7 @@ class ModelWeightLoaderTest(unittest.TestCase):
             self.assertNotIn("batch_size", scaffold)
             self.assertNotIn("token_id_dtype", scaffold)
 
-            materialized = materialize_direct_text_stage_bundle_from_scaffold(
+            materialized = materialize_text_stage(
                 stage_bundle_scaffold=scaffold,
                 runtime_config=runtime_config,
                 compute_dtype=torch.float32,

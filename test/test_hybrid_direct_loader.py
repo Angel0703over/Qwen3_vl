@@ -140,7 +140,7 @@ class HybridDirectLoaderTest(unittest.TestCase):
             "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.broadcast_object_cpu",
             return_value=scaffold,
         ) as bcast_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.materialize_direct_text_stage_bundle_from_scaffold",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.materialize_text_stage",
             return_value=local_bundle,
         ) as materialize_mock, patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.dist.barrier",
@@ -199,7 +199,7 @@ class HybridDirectLoaderTest(unittest.TestCase):
         }
 
         with patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.prepare_runtime_only_text_generate_prompt_metadata",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.prepare_text_prompt_meta",
         ) as prepare_meta_mock, patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.broadcast_object_cpu",
             return_value=prompt_metadata,
@@ -260,7 +260,7 @@ class HybridDirectLoaderTest(unittest.TestCase):
         }
 
         with patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.prepare_runtime_only_text_generate_prompt_metadata",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.prepare_text_prompt_meta",
         ) as prepare_meta_mock, patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.broadcast_object_cpu",
             return_value=prompt_metadata,

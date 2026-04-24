@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import patch
 
 import torch
 
 from qwen3vl_tp_runtime.hexgen_core.schema import StageSpec, TextHybridManifest, TextPipelineManifest
-from qwen3vl_tp_runtime.scripts.runtime import _summarize_hybrid_run, _summarize_pipeline_generate_run
+from qwen3vl_tp_runtime.scripts.runtime_summary import (
+    _summarize_hybrid_run,
+    _summarize_pipeline_generate_run,
+)
 
 
 def _build_generate_phase_stats(predicted_token_id: int) -> dict:
@@ -32,7 +34,7 @@ def _build_generate_phase_stats(predicted_token_id: int) -> dict:
 
 
 class RuntimeSummaryTest(unittest.TestCase):
-    def test_pipeline_generate_summary_skips_reference_fallback_for_runtime_only_bundle(self) -> None:
+    def test_pipeline_generate_summary_skips_missing_reference_tensors(self) -> None:
         manifest = TextPipelineManifest(
             pipeline_type="text_generate",
             num_stages=1,
@@ -74,11 +76,7 @@ class RuntimeSummaryTest(unittest.TestCase):
             ],
         }
 
-        with patch(
-            "qwen3vl_tp_runtime.scripts.runtime.load_bundle",
-            return_value={"runtime_only_generate": True},
-        ):
-            summary = _summarize_pipeline_generate_run(stats, manifest, topk=2)
+        summary = _summarize_pipeline_generate_run(stats, manifest, topk=2)
 
         self.assertIn("prefill_topk", summary)
         self.assertIn("step_topks", summary)
@@ -88,7 +86,7 @@ class RuntimeSummaryTest(unittest.TestCase):
         self.assertEqual(len(summary["step_topks"]), 2)
         self.assertNotIn("reference_topk", summary["step_topks"][0])
 
-    def test_hybrid_generate_summary_skips_reference_fallback_for_runtime_only_bundle(self) -> None:
+    def test_hybrid_generate_summary_skips_missing_reference_tensors(self) -> None:
         manifest = TextHybridManifest(
             runtime="text_generate_hybrid",
             tp_degrees=[1],
@@ -139,19 +137,15 @@ class RuntimeSummaryTest(unittest.TestCase):
             ],
         }
 
-        with patch(
-            "qwen3vl_tp_runtime.scripts.runtime.load_bundle",
-            return_value={"runtime_only_generate": True},
-        ):
-            summary = _summarize_hybrid_run(
-                stats,
-                manifest,
-                backend="hybrid",
-                topk=2,
-                compare_direct=False,
-                trace_layers=False,
-                dump_layer=None,
-            )
+        summary = _summarize_hybrid_run(
+            stats,
+            manifest,
+            backend="hybrid",
+            topk=2,
+            compare_direct=False,
+            trace_layers=False,
+            dump_layer=None,
+        )
 
         self.assertIn("prefill_topk", summary)
         self.assertIn("step_topks", summary)

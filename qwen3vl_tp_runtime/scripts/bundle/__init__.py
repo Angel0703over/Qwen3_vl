@@ -1,1 +1,0 @@
-"""Bundle-based verification entrypoints."""

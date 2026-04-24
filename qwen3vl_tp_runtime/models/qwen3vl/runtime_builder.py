@@ -34,11 +34,22 @@ from qwen3vl_tp_runtime.models.qwen3vl.processing import (
     load_text_tokenizer,
     load_text_tokenizer_backend,
 )
+from qwen3vl_tp_runtime.models.qwen3vl.runtime_text import (
+    _prep_rt_text_session,
+    compact_text_prompt_meta,
+    prepare_text_prompt_meta,
+    restore_text_prompt_meta,
+)
+from qwen3vl_tp_runtime.models.qwen3vl.runtime_text_stage import (
+    build_rt_text_bundle,
+    compact_rt_text_scaffold,
+    compact_text_scaffold,
+    materialize_text_stage_bundle,
+)
 from qwen3vl_tp_runtime.models.qwen3vl.weights import (
     TextModelConfigSpec,
     TextStageWeightBundle,
     build_text_rotary_embedding,
-    build_text_runtime_aux_tensors,
     load_model_weight_index,
     load_tensors_from_index,
     load_text_decoder_stage_weight_bundle,
@@ -131,153 +142,6 @@ def _default_runtime_device() -> torch.device:
     return torch.device("cpu")
 
 
-def _strip_text_phase_runtime_inputs(phase_payload: dict[str, Any]) -> dict[str, Any]:
-    compact_payload = dict(phase_payload)
-    compact_payload.pop("attention_mask", None)
-    compact_payload.pop("cos", None)
-    compact_payload.pop("sin", None)
-    compact_payload.pop("position_ids", None)
-    return compact_payload
-
-
-def _compact_text_generate_scaffold(bundle: dict[str, Any]) -> dict[str, Any]:
-    scaffold = dict(bundle)
-    scaffold["runtime_inputs_local_rebuild"] = True
-    scaffold["runtime_prefill_cache_policy"] = "recompute"
-    scaffold.pop("cache_by_layer", None)
-    scaffold["prefill"] = _strip_text_phase_runtime_inputs(scaffold["prefill"])
-    scaffold["decode_steps"] = [
-        _strip_text_phase_runtime_inputs(step_payload)
-        for step_payload in scaffold["decode_steps"]
-    ]
-    return scaffold
-
-
-def _compact_runtime_only_text_generate_scaffold(bundle: dict[str, Any]) -> dict[str, Any]:
-    scaffold = dict(bundle)
-    scaffold["runtime_only_prompt_local_rebuild"] = True
-    scaffold.pop("input_ids", None)
-    scaffold.pop("prefill_attention_mask_2d", None)
-    scaffold.pop("prefill_seq_len", None)
-    scaffold.pop("batch_size", None)
-    scaffold.pop("token_id_dtype", None)
-    return scaffold
-
-
-def _build_runtime_only_text_generate_bundle(
-    *,
-    spec: StageSpec,
-    bundle_device: torch.device,
-    compute_dtype: torch.dtype,
-    prefill_attention_mask_2d: torch.Tensor,
-    prefill_seq_len: int,
-    batch_size: int,
-    token_id_dtype: torch.dtype,
-    hidden_size: int,
-    layers: list[dict[str, Any]],
-    text_stage_weights: TextStageWeightBundle | None,
-) -> dict[str, Any]:
-    bundle = {
-        "module_name": "text_generate_stage",
-        "stage_type": "text_generate_runtime_only",
-        "runtime_only_generate": True,
-        "start_idx": spec.start_idx,
-        "end_idx": spec.end_idx,
-        "save_dtype": _save_dtype_name(compute_dtype),
-        "prefill_seq_len": int(prefill_seq_len),
-        "max_new_tokens": 0,
-        "prefill_attention_mask_2d": _runtime_tensor(prefill_attention_mask_2d, device=bundle_device),
-        "batch_size": int(batch_size),
-        "token_id_dtype": _save_dtype_name(token_id_dtype),
-        "hidden_size": int(hidden_size),
-        "layers": layers,
-        "tp_weight_sharded": False if text_stage_weights is None else text_stage_weights.tp_weight_sharded,
-        "tp_shard_rank": None if text_stage_weights is None else text_stage_weights.tp_shard_rank,
-        "tp_shard_world_size": None if text_stage_weights is None else text_stage_weights.tp_shard_world_size,
-    }
-    return bundle
-
-
-def _restore_text_phase_runtime_inputs(
-    phase_payload: dict[str, Any],
-    *,
-    config_spec: TextModelConfigSpec,
-    compute_dtype: torch.dtype,
-    rotary_emb,
-) -> dict[str, Any]:
-    if (
-        phase_payload.get("attention_mask") is not None
-        and phase_payload.get("cos") is not None
-        and phase_payload.get("sin") is not None
-    ):
-        return phase_payload
-
-    stage_input = phase_payload.get("stage_input")
-    if not torch.is_tensor(stage_input):
-        raise RuntimeError("text scaffold 缺少 stage_input，无法本地重建 runtime inputs。")
-
-    attention_mask_2d = phase_payload.get("attention_mask_2d")
-    if attention_mask_2d is not None and not torch.is_tensor(attention_mask_2d):
-        raise RuntimeError("text scaffold 的 attention_mask_2d 不是 tensor，无法本地重建 runtime inputs。")
-
-    batch_size, seq_len, _hidden_size = stage_input.shape
-    total_seq_len = int(attention_mask_2d.shape[-1]) if attention_mask_2d is not None else seq_len
-    past_length = total_seq_len - seq_len
-    runtime_aux = build_text_runtime_aux_tensors(
-        attention_mask_2d=attention_mask_2d,
-        batch_size=batch_size,
-        seq_len=seq_len,
-        past_length=past_length,
-        config_spec=config_spec,
-        device=torch.device("cpu"),
-        compute_dtype=compute_dtype,
-        rotary_emb=rotary_emb,
-    )
-    restored_payload = dict(phase_payload)
-    restored_payload["attention_mask"] = _runtime_tensor(runtime_aux["attention_mask"], device=torch.device("cpu"))
-    restored_payload["position_ids"] = _runtime_tensor(runtime_aux["position_ids"], device=torch.device("cpu"))
-    restored_payload["cos"] = _runtime_tensor(
-        runtime_aux["cos"],
-        device=torch.device("cpu"),
-        compute_dtype=compute_dtype,
-    )
-    restored_payload["sin"] = _runtime_tensor(
-        runtime_aux["sin"],
-        device=torch.device("cpu"),
-        compute_dtype=compute_dtype,
-    )
-    return restored_payload
-
-
-def _restore_text_generate_bundle_runtime_inputs(
-    bundle: dict[str, Any],
-    *,
-    config_spec: TextModelConfigSpec,
-    compute_dtype: torch.dtype,
-) -> dict[str, Any]:
-    if not bundle.get("runtime_inputs_local_rebuild"):
-        return bundle
-
-    rotary_emb = build_text_rotary_embedding(config_spec, device=torch.device("cpu"))
-    restored_bundle = dict(bundle)
-    restored_bundle["prefill"] = _restore_text_phase_runtime_inputs(
-        restored_bundle["prefill"],
-        config_spec=config_spec,
-        compute_dtype=compute_dtype,
-        rotary_emb=rotary_emb,
-    )
-    restored_bundle["decode_steps"] = [
-        _restore_text_phase_runtime_inputs(
-            step_payload,
-            config_spec=config_spec,
-            compute_dtype=compute_dtype,
-            rotary_emb=rotary_emb,
-        )
-        for step_payload in restored_bundle["decode_steps"]
-    ]
-    return restored_bundle
-
-
 def _prepare_prefill_session(
     runtime_config: dict[str, Any],
 ) -> tuple[torch.nn.Module, dict[str, torch.Tensor], MultimodalRuntimeInputs, dict[str, Any]]:
@@ -304,206 +168,6 @@ def _prepare_prefill_session(
         raise ValueError(f"不支持的 modality={modality!r}")
 
     return model, raw_inputs, runtime_inputs, extra
-
-
-def _load_text_compute_dtype_reference_tensor(
-    weight_index,
-    *,
-    device: torch.device,
-) -> torch.Tensor:
-    candidate_names = (
-        "model.language_model.layers.0.input_layernorm.weight",
-        "model.language_model.norm.weight",
-        "model.language_model.embed_tokens.weight",
-    )
-    for tensor_name in candidate_names:
-        if not weight_index.has_tensor(tensor_name):
-            continue
-        loaded = load_tensors_from_index(
-            weight_index,
-            [tensor_name],
-            device=device,
-            compute_dtype=None,
-            strict=True,
-        )
-        tensor = loaded.get(tensor_name)
-        if tensor is not None:
-            return tensor
-    raise RuntimeError("无法为 text runtime-only session 找到可用于推断 compute dtype 的参考权重。")
-
-
-def _build_text_prompt_messages(prompt: str) -> list[dict[str, Any]]:
-    return [
-        {
-            "role": "user",
-            "content": [
-                {
-                    "type": "text",
-                    "text": prompt,
-                }
-            ],
-        }
-    ]
-
-
-def _build_qwen_text_generation_prompt(prompt: str) -> str:
-    return f"<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n"
-
-
-def compact_runtime_only_text_prompt_metadata_for_broadcast(
-    prompt_metadata: dict[str, torch.Tensor] | None,
-) -> dict[str, object] | None:
-    if prompt_metadata is None:
-        return None
-
-    input_ids = prompt_metadata["input_ids"]
-    if input_ids.ndim != 2 or int(input_ids.shape[0]) != 1:
-        raise RuntimeError(
-            "runtime-only text prompt metadata 当前只支持 batch_size=1 的 input_ids 广播压缩。"
-        )
-
-    compact_payload: dict[str, object] = {
-        "input_ids_list": [int(token_id) for token_id in input_ids[0].tolist()],
-    }
-    attention_mask = prompt_metadata.get("attention_mask")
-    if attention_mask is not None:
-        if attention_mask.ndim != 2 or tuple(attention_mask.shape) != tuple(input_ids.shape):
-            raise RuntimeError("runtime-only text attention_mask 形状和 input_ids 不匹配，无法压缩广播。")
-        if not torch.all(attention_mask == 1):
-            compact_payload["attention_mask_list"] = [int(mask) for mask in attention_mask[0].tolist()]
-    return compact_payload
-
-
-def restore_runtime_only_text_prompt_metadata_from_broadcast(
-    prompt_metadata: dict[str, object],
-) -> dict[str, torch.Tensor]:
-    if "input_ids" in prompt_metadata:
-        restored = {
-            "input_ids": prompt_metadata["input_ids"],
-        }
-        if prompt_metadata.get("attention_mask") is not None:
-            restored["attention_mask"] = prompt_metadata["attention_mask"]
-        return restored
-
-    input_ids_list = prompt_metadata.get("input_ids_list")
-    if input_ids_list is None:
-        raise RuntimeError("runtime-only text prompt metadata 广播负载缺少 input_ids 或 input_ids_list。")
-
-    input_ids = torch.tensor([input_ids_list], dtype=torch.int64)
-    restored = {"input_ids": input_ids}
-    attention_mask_list = prompt_metadata.get("attention_mask_list")
-    if attention_mask_list is not None:
-        restored["attention_mask"] = torch.tensor([attention_mask_list], dtype=torch.int64)
-    return restored
-
-
-def _normalize_runtime_only_text_prompt_metadata(
-    raw_inputs: dict[str, Any],
-) -> dict[str, torch.Tensor]:
-    input_ids = _runtime_tensor(raw_inputs["input_ids"], device=torch.device("cpu"))
-    attention_mask = _runtime_tensor(raw_inputs.get("attention_mask"), device=torch.device("cpu"))
-    if attention_mask is not None and torch.all(attention_mask == 1):
-        attention_mask = None
-    return {
-        "input_ids": input_ids,
-        "attention_mask": attention_mask,
-    }
-
-
-def prepare_runtime_only_text_generate_prompt_metadata(
-    runtime_config: dict[str, Any],
-) -> dict[str, torch.Tensor]:
-    model_path = runtime_config["model_path"]
-    prompt = runtime_config.get("prompt", "请用中文简要介绍一下人工智能。")
-    try:
-        tokenizer_backend = load_text_tokenizer_backend(model_path)
-        encoded = tokenizer_backend.encode(_build_qwen_text_generation_prompt(prompt))
-        return {
-            "input_ids": torch.tensor([encoded.ids], dtype=torch.int64),
-            "attention_mask": None,
-        }
-    except Exception:
-        try:
-            tokenizer = load_text_tokenizer(model_path)
-            raw_inputs = tokenizer.apply_chat_template(
-                _build_text_prompt_messages(prompt),
-                tokenize=True,
-                add_generation_prompt=True,
-                return_dict=True,
-                return_tensors="pt",
-            )
-        except Exception:
-            processor = load_processor(model_path)
-            raw_inputs = build_text_inputs(processor, prompt)
-    return _normalize_runtime_only_text_prompt_metadata(raw_inputs)
-
-
-def _resolve_runtime_only_text_prompt_metadata(
-    runtime_config: dict[str, Any],
-) -> dict[str, torch.Tensor]:
-    input_ids = runtime_config.get("_runtime_only_input_ids")
-    if input_ids is None:
-        return prepare_runtime_only_text_generate_prompt_metadata(runtime_config)
-    return {
-        "input_ids": _runtime_tensor(input_ids, device=torch.device("cpu")),
-        "attention_mask": _runtime_tensor(
-            runtime_config.get("_runtime_only_attention_mask"),
-            device=torch.device("cpu"),
-        ),
-    }
-
-
-def _restore_runtime_only_text_generate_prompt_metadata(
-    bundle: dict[str, Any],
-    *,
-    runtime_config: dict[str, Any],
-) -> dict[str, Any]:
-    if not bundle.get("runtime_only_generate"):
-        return bundle
-
-    needs_restore = bool(bundle.pop("runtime_only_prompt_local_rebuild", False))
-    is_first_stage = int(bundle["start_idx"]) == 0
-    if (
-        not needs_restore
-        and bundle.get("prefill_attention_mask_2d") is not None
-        and (not is_first_stage or bundle.get("input_ids") is not None)
-    ):
-        return bundle
-
-    prompt_metadata = _resolve_runtime_only_text_prompt_metadata(runtime_config)
-    input_ids = _runtime_tensor(prompt_metadata["input_ids"], device=torch.device("cpu"))
-    attention_mask_2d = _default_attention_mask_2d(
-        input_ids,
-        prompt_metadata.get("attention_mask"),
-    )
-
-    restored = dict(bundle)
-    restored["prefill_attention_mask_2d"] = _runtime_tensor(
-        attention_mask_2d,
-        device=torch.device("cpu"),
-    )
-    restored["prefill_seq_len"] = int(input_ids.shape[-1])
-    restored["batch_size"] = int(input_ids.shape[0])
-    restored["token_id_dtype"] = _save_dtype_name(input_ids.dtype)
-    if is_first_stage:
-        restored["input_ids"] = input_ids
-    return restored
-
-
-def _prepare_runtime_only_text_generate_session(
-    weight_index,
-    runtime_config: dict[str, Any],
-) -> tuple[dict[str, torch.Tensor], torch.dtype, dict[str, Any], torch.device]:
-    raw_inputs = _resolve_runtime_only_text_prompt_metadata(runtime_config)
-    compute_dtype_reference = _load_text_compute_dtype_reference_tensor(
-        weight_index,
-        device=torch.device("cpu"),
-    )
-    compute_dtype = _resolve_compute_dtype(
-        compute_dtype_reference,
-        runtime_config.get("save_dtype", "auto"),
-    )
-    return raw_inputs, compute_dtype, {}, _default_runtime_device()
 
 
 def _run_live_prefill_stage_reference(
@@ -1201,7 +865,7 @@ class DirectStageBundleBuilder:
                 self._text_weight_index = load_model_weight_index(self.runtime_config["model_path"])
                 self._text_model_config = load_text_model_config_spec(self.runtime_config["model_path"])
                 if self.runtime_only_text_generate:
-                    self.raw_inputs, self.compute_dtype, self.extra, self.device = _prepare_runtime_only_text_generate_session(
+                    self.raw_inputs, self.compute_dtype, self.extra, self.device = _prep_rt_text_session(
                         self._text_weight_index,
                         runtime_config
                     )
@@ -2534,7 +2198,7 @@ class DirectStageBundleBuilder:
             else None
         )
         layer_bundles = self._build_layers_for_stage(spec)
-        bundle = _build_runtime_only_text_generate_bundle(
+        bundle = build_rt_text_bundle(
             spec=spec,
             bundle_device=self.bundle_device,
             compute_dtype=self.compute_dtype,
@@ -2590,9 +2254,9 @@ class DirectStageBundleBuilder:
                 and not self.include_text_weights
             ):
                 if self.include_runtime_reference:
-                    return _compact_text_generate_scaffold(bundle)
+                    return compact_text_scaffold(bundle)
                 if bundle.get("runtime_only_generate"):
-                    return _compact_runtime_only_text_generate_scaffold(bundle)
+                    return compact_rt_text_scaffold(bundle)
             return bundle
 
 
@@ -2625,7 +2289,7 @@ def build_direct_stage_bundle(
         return builder.build_stage_bundle(stage_idx)
 
 
-def materialize_direct_text_stage_bundle_from_scaffold(
+def materialize_text_stage(
     *,
     stage_bundle_scaffold: dict[str, Any],
     runtime_config: dict[str, Any],
@@ -2633,52 +2297,13 @@ def materialize_direct_text_stage_bundle_from_scaffold(
     tp_shard_rank: int | None = None,
     tp_shard_world_size: int | None = None,
 ) -> dict[str, Any]:
-    bundle = _restore_runtime_only_text_generate_prompt_metadata(
-        dict(stage_bundle_scaffold),
+    return materialize_text_stage_bundle(
+        stage_bundle_scaffold=stage_bundle_scaffold,
         runtime_config=runtime_config,
-    )
-    model_path = runtime_config["model_path"]
-    start_idx = int(bundle["start_idx"])
-    end_idx = int(bundle["end_idx"])
-
-    weight_index = load_model_weight_index(model_path)
-    config_spec = load_text_model_config_spec(model_path)
-    stage_weights = load_text_decoder_stage_weight_bundle(
-        model_path=model_path,
-        start_idx=start_idx,
-        end_idx=end_idx,
-        is_first_stage=start_idx == 0,
-        is_last_stage=end_idx == config_spec.num_hidden_layers - 1,
-        device=torch.device("cpu"),
         compute_dtype=compute_dtype,
-        weight_index=weight_index,
-        config_spec=config_spec,
         tp_shard_rank=tp_shard_rank,
         tp_shard_world_size=tp_shard_world_size,
     )
-
-    bundle["layers"] = [dict(layer_bundle) for layer_bundle in stage_weights.layer_bundles]
-    bundle["tp_weight_sharded"] = stage_weights.tp_weight_sharded
-    bundle["tp_shard_rank"] = stage_weights.tp_shard_rank
-    bundle["tp_shard_world_size"] = stage_weights.tp_shard_world_size
-    bundle.pop("cache_by_layer", None)
-
-    if start_idx == 0 and stage_weights.embed_tokens_weight is not None:
-        bundle["embed_tokens_weight"] = stage_weights.embed_tokens_weight
-    if end_idx == config_spec.num_hidden_layers - 1:
-        if stage_weights.final_norm_weight is not None:
-            bundle["final_norm_weight"] = stage_weights.final_norm_weight
-        if stage_weights.final_norm_eps is not None:
-            bundle["final_norm_eps"] = stage_weights.final_norm_eps
-        if stage_weights.lm_head_weight is not None:
-            bundle["lm_head_weight"] = stage_weights.lm_head_weight
-        bundle["lm_head_bias"] = stage_weights.lm_head_bias
-    bundle = _restore_text_generate_bundle_runtime_inputs(
-        bundle,
-        config_spec=config_spec,
-        compute_dtype=compute_dtype,
-    )
-    return bundle
 
 
 def build_direct_pipeline_manifest(
@@ -2772,14 +2397,13 @@ def build_direct_hybrid_manifest(
         runtime=_runtime_name(modality, mode, backend),
     )
 
-
 __all__ = [
     "DirectStageBundleBuilder",
     "build_direct_stage_bundle",
-    "materialize_direct_text_stage_bundle_from_scaffold",
+    "materialize_text_stage",
     "build_direct_pipeline_manifest",
     "build_direct_hybrid_manifest",
-    "compact_runtime_only_text_prompt_metadata_for_broadcast",
-    "prepare_runtime_only_text_generate_prompt_metadata",
-    "restore_runtime_only_text_prompt_metadata_from_broadcast",
+    "compact_text_prompt_meta",
+    "prepare_text_prompt_meta",
+    "restore_text_prompt_meta",
 ]

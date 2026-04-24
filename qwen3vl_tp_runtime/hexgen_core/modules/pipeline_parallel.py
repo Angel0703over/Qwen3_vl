@@ -34,9 +34,9 @@ from qwen3vl_tp_runtime.models.qwen3vl.capture import (
 )
 from qwen3vl_tp_runtime.models.qwen3vl.runtime_builder import (
     build_direct_stage_bundle,
-    compact_runtime_only_text_prompt_metadata_for_broadcast,
-    prepare_runtime_only_text_generate_prompt_metadata,
-    restore_runtime_only_text_prompt_metadata_from_broadcast,
+    compact_text_prompt_meta,
+    prepare_text_prompt_meta,
+    restore_text_prompt_meta,
 )
 from qwen3vl_tp_runtime.models.qwen3vl.execution import (
     forward_text_embeddings,
@@ -670,7 +670,7 @@ def _all_stages_are_direct(manifest: TextPipelineManifest) -> bool:
     return all(stage.bundle_path is None for stage in manifest.stages)
 
 
-def _should_seed_runtime_only_text_prompt_metadata(manifest: TextPipelineManifest) -> bool:
+def _need_text_prompt_meta(manifest: TextPipelineManifest) -> bool:
     runtime_config = manifest.runtime_config
     return (
         _all_stages_are_direct(manifest)
@@ -680,18 +680,16 @@ def _should_seed_runtime_only_text_prompt_metadata(manifest: TextPipelineManifes
     )
 
 
-def _seed_runtime_only_text_prompt_metadata(manifest: TextPipelineManifest, *, rank: int) -> None:
+def _seed_text_prompt_meta(manifest: TextPipelineManifest, *, rank: int) -> None:
     runtime_config = manifest.runtime_config
-    if runtime_config.get("_runtime_only_prompt_metadata_ready") or not _should_seed_runtime_only_text_prompt_metadata(
-        manifest
-    ):
+    if runtime_config.get("_runtime_only_prompt_metadata_ready") or not _need_text_prompt_meta(manifest):
         return
 
     prompt_metadata = None
     if rank == 0:
         with startup_timer("pp-direct-loader", "prepare runtime-only text prompt metadata"):
-            prompt_metadata = prepare_runtime_only_text_generate_prompt_metadata(runtime_config)
-        prompt_metadata = compact_runtime_only_text_prompt_metadata_for_broadcast(prompt_metadata)
+            prompt_metadata = prepare_text_prompt_meta(runtime_config)
+        prompt_metadata = compact_text_prompt_meta(prompt_metadata)
 
     startup_log(
         "pp-direct-loader",
@@ -702,7 +700,7 @@ def _seed_runtime_only_text_prompt_metadata(manifest: TextPipelineManifest, *, r
         src=0,
         label="runtime_only_text_prompt_metadata",
     )
-    prompt_metadata = restore_runtime_only_text_prompt_metadata_from_broadcast(prompt_metadata)
+    prompt_metadata = restore_text_prompt_meta(prompt_metadata)
     runtime_config["_runtime_only_input_ids"] = prompt_metadata["input_ids"]
     if prompt_metadata.get("attention_mask") is not None:
         runtime_config["_runtime_only_attention_mask"] = prompt_metadata["attention_mask"]
@@ -718,7 +716,7 @@ def load_stage_bundle_for_rank(
     compute_dtype_arg: str,
 ) -> tuple[dict, torch.dtype]:
     if _all_stages_are_direct(manifest) and dist.is_available() and dist.is_initialized():
-        _seed_runtime_only_text_prompt_metadata(manifest, rank=rank)
+        _seed_text_prompt_meta(manifest, rank=rank)
         stage_meta = manifest.stages[rank]
         startup_log(
             "pp-direct-loader",
@@ -1213,11 +1211,6 @@ class TextGeneratePipelineRunner:
         if self.return_tensors and rank == world_size - 1:
             stats["prefill_output_tensor"] = prefill_stats.pop("stage_output_tensor")
             stats["step_output_tensors"] = step_output_tensors
-            if not runtime_only_generate:
-                stats["reference_prefill_output_tensor"] = stage_bundle["prefill"]["logits"]
-                stats["reference_step_output_tensors"] = [
-                    step_payload["logits"] for step_payload in stage_bundle["decode_steps"]
-                ]
         return stats
 
 

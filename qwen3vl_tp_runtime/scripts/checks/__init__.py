@@ -1,1 +1,0 @@
-"""Regression and consistency checks."""

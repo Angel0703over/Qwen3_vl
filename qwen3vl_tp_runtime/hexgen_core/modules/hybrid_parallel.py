@@ -45,10 +45,10 @@ from qwen3vl_tp_runtime.models.qwen3vl.execution import (
 from qwen3vl_tp_runtime.models.qwen3vl.functional import dtype_from_name, resolve_comm_dtype
 from qwen3vl_tp_runtime.models.qwen3vl.runtime_builder import (
     build_direct_stage_bundle,
-    compact_runtime_only_text_prompt_metadata_for_broadcast,
-    materialize_direct_text_stage_bundle_from_scaffold,
-    prepare_runtime_only_text_generate_prompt_metadata,
-    restore_runtime_only_text_prompt_metadata_from_broadcast,
+    compact_text_prompt_meta,
+    materialize_text_stage,
+    prepare_text_prompt_meta,
+    restore_text_prompt_meta,
 )
 from qwen3vl_tp_runtime.models.qwen3vl.capture import load_bundle, move_bundle
 from qwen3vl_tp_runtime.models.qwen3vl.weights import (
@@ -74,7 +74,7 @@ def _all_hybrid_stages_are_direct(manifest: TextHybridManifest) -> bool:
     return all(stage.bundle_path is None for stage in manifest.stages)
 
 
-def _should_seed_runtime_only_text_prompt_metadata(manifest: TextHybridManifest) -> bool:
+def _need_text_prompt_meta(manifest: TextHybridManifest) -> bool:
     runtime_config = manifest.runtime_config
     return (
         _all_hybrid_stages_are_direct(manifest)
@@ -84,18 +84,16 @@ def _should_seed_runtime_only_text_prompt_metadata(manifest: TextHybridManifest)
     )
 
 
-def _seed_runtime_only_text_prompt_metadata(manifest: TextHybridManifest, *, rank: int) -> None:
+def _seed_text_prompt_meta(manifest: TextHybridManifest, *, rank: int) -> None:
     runtime_config = manifest.runtime_config
-    if runtime_config.get("_runtime_only_prompt_metadata_ready") or not _should_seed_runtime_only_text_prompt_metadata(
-        manifest
-    ):
+    if runtime_config.get("_runtime_only_prompt_metadata_ready") or not _need_text_prompt_meta(manifest):
         return
 
     prompt_metadata = None
     if rank == 0:
         with startup_timer("hybrid-direct-loader", "prepare runtime-only text prompt metadata"):
-            prompt_metadata = prepare_runtime_only_text_generate_prompt_metadata(runtime_config)
-        prompt_metadata = compact_runtime_only_text_prompt_metadata_for_broadcast(prompt_metadata)
+            prompt_metadata = prepare_text_prompt_meta(runtime_config)
+        prompt_metadata = compact_text_prompt_meta(prompt_metadata)
 
     startup_log(
         "hybrid-direct-loader",
@@ -106,7 +104,7 @@ def _seed_runtime_only_text_prompt_metadata(manifest: TextHybridManifest, *, ran
         src=0,
         label="runtime_only_text_prompt_metadata",
     )
-    prompt_metadata = restore_runtime_only_text_prompt_metadata_from_broadcast(prompt_metadata)
+    prompt_metadata = restore_text_prompt_meta(prompt_metadata)
     runtime_config["_runtime_only_input_ids"] = prompt_metadata["input_ids"]
     if prompt_metadata.get("attention_mask") is not None:
         runtime_config["_runtime_only_attention_mask"] = prompt_metadata["attention_mask"]
@@ -126,7 +124,7 @@ def load_stage_bundle_for_hybrid_rank(
     stage_meta = manifest.stages[rank_stage.stage_idx]
     all_direct = _all_hybrid_stages_are_direct(manifest)
     runtime_modality = str(manifest.runtime_config.get("modality", "multimodal"))
-    _seed_runtime_only_text_prompt_metadata(manifest, rank=rank)
+    _seed_text_prompt_meta(manifest, rank=rank)
     use_rank_local_text_tp_bundle = (
         all_direct
         and runtime_modality == "text"
@@ -198,7 +196,7 @@ def load_stage_bundle_for_hybrid_rank(
             f"tp_local_rank={rank_stage.local_rank}/{rank_stage.tp_degree} "
             f"compute_dtype={compute_dtype}",
         )
-        bundle = materialize_direct_text_stage_bundle_from_scaffold(
+        bundle = materialize_text_stage(
             stage_bundle_scaffold=scaffold,
             runtime_config=manifest.runtime_config,
             compute_dtype=compute_dtype,
@@ -1233,11 +1231,6 @@ def _run_text_generate_hybrid_rank(
     if return_tensors and rank_stage.stage_idx == manifest.num_stages - 1 and rank_stage.local_rank == 0:
         stats["prefill_output_tensor"] = prefill_stats.pop("stage_output_tensor")
         stats["step_output_tensors"] = step_output_tensors
-        if not runtime_only_generate:
-            stats["reference_prefill_output_tensor"] = stage_bundle["prefill"]["logits"]
-            stats["reference_step_output_tensors"] = [
-                step_payload["logits"] for step_payload in stage_bundle["decode_steps"]
-            ]
     return stats
 
 
