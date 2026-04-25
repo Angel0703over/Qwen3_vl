@@ -7,7 +7,7 @@ from functools import lru_cache
 
 import torch
 
-from qwen3vl_tp_runtime.models.qwen3vl import load_processor
+from qwen3vl_tp_runtime.models.qwen3vl.processing import load_processor
 from qwen3vl_tp_runtime.scripts.common import summarize_last_token_topk
 
 GENERATE_PIPELINE_TYPES = {"text_generate", "multimodal_generate"}

@@ -1,27 +1,15 @@
-"""Qwen3-VL runtime package with execution, processing, vision, and live helpers."""
+"""Qwen3-VL runtime package.
 
-from qwen3vl_tp_runtime.models.qwen3vl.capture import (
-    capture_decoder_layer_params,
-    capture_multimodal_decode_bundle,
-    capture_multimodal_decode_stage_bundle,
-    capture_multimodal_generate_stage_bundle,
-    capture_multimodal_prefill_bundle,
-    capture_multimodal_prefill_stage_bundle,
-    capture_text_decode_bundle,
-    capture_text_decode_stage_bundle,
-    capture_text_generate_bundle,
-    capture_text_generate_stage_bundle,
-    capture_full_layer_bundle,
-    capture_layer_range_bundle,
-    capture_text_prefill_bundle,
-    capture_text_prefill_stage_bundle,
-    capture_text_stage_bundle,
-    extract_past_key_values,
-    load_bundle,
-    move_bundle,
-    resolve_runtime_tensors,
-    run_forward_with_runtime_hook,
-)
+Main direct-runtime helpers stay on the eager import path here.
+Legacy capture/replay helpers remain available for compatibility, but are loaded
+only when explicitly requested.
+"""
+
+from __future__ import annotations
+
+from importlib import import_module
+from typing import Any
+
 from qwen3vl_tp_runtime.models.qwen3vl.execution import (
     apply_deepstack,
     compose_layer_bundle,
@@ -123,27 +111,7 @@ from qwen3vl_tp_runtime.models.qwen3vl.functional import (
     rotate_half,
 )
 
-__all__ = [
-    "capture_decoder_layer_params",
-    "capture_multimodal_decode_bundle",
-    "capture_multimodal_decode_stage_bundle",
-    "capture_multimodal_generate_stage_bundle",
-    "capture_multimodal_prefill_bundle",
-    "capture_multimodal_prefill_stage_bundle",
-    "capture_text_decode_bundle",
-    "capture_text_decode_stage_bundle",
-    "capture_text_generate_bundle",
-    "capture_text_generate_stage_bundle",
-    "capture_full_layer_bundle",
-    "capture_layer_range_bundle",
-    "capture_text_prefill_bundle",
-    "capture_text_prefill_stage_bundle",
-    "capture_text_stage_bundle",
-    "extract_past_key_values",
-    "load_bundle",
-    "move_bundle",
-    "resolve_runtime_tensors",
-    "run_forward_with_runtime_hook",
+_MAIN_EXPORTS = [
     "build_inputs",
     "build_text_inputs",
     "inspect_model_weights",
@@ -231,3 +199,41 @@ __all__ = [
     "repeat_kv",
     "attn_eager",
 ]
+
+_LEGACY_CAPTURE_EXPORTS = [
+    "capture_decoder_layer_params",
+    "capture_multimodal_decode_bundle",
+    "capture_multimodal_decode_stage_bundle",
+    "capture_multimodal_generate_stage_bundle",
+    "capture_multimodal_prefill_bundle",
+    "capture_multimodal_prefill_stage_bundle",
+    "capture_text_decode_bundle",
+    "capture_text_decode_stage_bundle",
+    "capture_text_generate_bundle",
+    "capture_text_generate_stage_bundle",
+    "capture_full_layer_bundle",
+    "capture_layer_range_bundle",
+    "capture_text_prefill_bundle",
+    "capture_text_prefill_stage_bundle",
+    "capture_text_stage_bundle",
+    "extract_past_key_values",
+    "load_bundle",
+    "move_bundle",
+    "resolve_runtime_tensors",
+    "run_forward_with_runtime_hook",
+]
+
+__all__ = [*_MAIN_EXPORTS, *_LEGACY_CAPTURE_EXPORTS]
+
+
+def __getattr__(name: str) -> Any:
+    if name in _LEGACY_CAPTURE_EXPORTS:
+        capture_mod = import_module("qwen3vl_tp_runtime.models.qwen3vl.capture")
+        value = getattr(capture_mod, name)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))

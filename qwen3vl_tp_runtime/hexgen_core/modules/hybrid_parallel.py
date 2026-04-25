@@ -71,7 +71,7 @@ def _build_rank_group_index(rank_groups: list[list[int]], world_size: int) -> li
 
 
 def _all_hybrid_stages_are_direct(manifest: TextHybridManifest) -> bool:
-    return all(stage.bundle_path is None for stage in manifest.stages)
+    return manifest.is_direct
 
 
 def _need_text_prompt_meta(manifest: TextHybridManifest) -> bool:

@@ -6,7 +6,8 @@ import gc
 
 import torch
 
-from qwen3vl_tp_runtime.models.qwen3vl import dtype_from_name, load_bundle, move_bundle
+from qwen3vl_tp_runtime.models.qwen3vl.capture.common import load_bundle, move_bundle
+from qwen3vl_tp_runtime.models.qwen3vl.functional import dtype_from_name
 
 
 def tensor_diff_stats(lhs: torch.Tensor, rhs: torch.Tensor) -> tuple[float, float]:

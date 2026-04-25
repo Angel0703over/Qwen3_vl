@@ -1,4 +1,4 @@
-"""Dedicated tensor-parallel runtime for replaying a captured text stage under TP."""
+"""Debug replay runtime for running one captured text stage under pure TP."""
 
 import torch
 
@@ -10,7 +10,8 @@ from qwen3vl_tp_runtime.hexgen_core.stage import (
     trace_stage,
     trace_stage_tp,
 )
-from qwen3vl_tp_runtime.models.qwen3vl import dtype_from_name, load_bundle, move_bundle, resolve_comm_dtype
+from qwen3vl_tp_runtime.models.qwen3vl.capture.common import load_bundle, move_bundle
+from qwen3vl_tp_runtime.models.qwen3vl.functional import dtype_from_name, resolve_comm_dtype
 
 
 def tensor_diff_stats(lhs: torch.Tensor, rhs: torch.Tensor) -> tuple[float, float]:

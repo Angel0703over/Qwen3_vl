@@ -34,7 +34,7 @@ def _build_manifest(*, stage_ranges: list[tuple[int, int]], tp_degrees: list[int
         send_empty_list=[],
         recv_empty_list=[],
         stage_ranges=stage_ranges,
-        bundle_dir="<direct>",
+        bundle_dir=None,
         stages=stages,
         boundaries=[],
         num_frames=0,
@@ -50,6 +50,114 @@ def _build_manifest(*, stage_ranges: list[tuple[int, int]], tp_degrees: list[int
 
 
 class HybridDirectLoaderTest(unittest.TestCase):
+    def test_multimodal_single_rank_direct_stage_skips_text_prompt_metadata(self) -> None:
+        manifest = _build_manifest(stage_ranges=[(18, 35)], tp_degrees=[1], modality="multimodal")
+        rank_stage = HybridRankContext(
+            stage_idx=0,
+            stage_ranks=[2],
+            tp_degree=1,
+            local_rank=0,
+            leader_rank=2,
+            prev_leader_rank=None,
+            next_leader_rank=None,
+            stage_group=None,
+            pp_group_idx=0,
+            current_pp_group=[2],
+            send_list=[],
+            recv_list=[],
+            send_empty_list=[],
+            recv_empty_list=[],
+        )
+
+        direct_bundle = {
+            "save_dtype": "float32",
+            "stage_idx": 0,
+            "start_idx": 18,
+            "end_idx": 35,
+            "layers": [],
+        }
+
+        with patch(
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.prepare_text_prompt_meta",
+        ) as prepare_meta_mock, patch(
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.build_direct_stage_bundle",
+            return_value=direct_bundle,
+        ) as build_mock, patch(
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.broadcast_object_cpu",
+        ) as bcast_mock, patch(
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.dist.barrier",
+        ) as barrier_mock:
+            bundle, compute_dtype = load_stage_bundle_for_hybrid_rank(
+                manifest,
+                rank=2,
+                rank_stage=rank_stage,
+                device=torch.device("cpu"),
+                compute_dtype_arg="float32",
+            )
+
+        prepare_meta_mock.assert_not_called()
+        build_mock.assert_called_once()
+        bcast_mock.assert_not_called()
+        barrier_mock.assert_called_once()
+        self.assertEqual(compute_dtype, torch.float32)
+        self.assertEqual(bundle["start_idx"], 18)
+
+    def test_multimodal_tp_follower_uses_stage_bundle_broadcast_not_text_scaffold(self) -> None:
+        manifest = _build_manifest(stage_ranges=[(0, 17)], tp_degrees=[2], modality="multimodal")
+        rank_stage = HybridRankContext(
+            stage_idx=0,
+            stage_ranks=[0, 1],
+            tp_degree=2,
+            local_rank=1,
+            leader_rank=0,
+            prev_leader_rank=None,
+            next_leader_rank=None,
+            stage_group="fake-group",
+            pp_group_idx=0,
+            current_pp_group=[1],
+            send_list=[],
+            recv_list=[],
+            send_empty_list=[],
+            recv_empty_list=[],
+        )
+
+        leader_bundle = {
+            "save_dtype": "float32",
+            "stage_idx": 0,
+            "start_idx": 0,
+            "end_idx": 17,
+            "layers": [],
+        }
+
+        with patch(
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.prepare_text_prompt_meta",
+        ) as prepare_meta_mock, patch(
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.build_direct_stage_bundle",
+        ) as build_mock, patch(
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.broadcast_object_cpu",
+            return_value=leader_bundle,
+        ) as bcast_mock, patch(
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.materialize_text_stage",
+        ) as materialize_mock, patch(
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.dist.barrier",
+        ) as barrier_mock:
+            bundle, compute_dtype = load_stage_bundle_for_hybrid_rank(
+                manifest,
+                rank=1,
+                rank_stage=rank_stage,
+                device=torch.device("cpu"),
+                compute_dtype_arg="float32",
+            )
+
+        prepare_meta_mock.assert_not_called()
+        build_mock.assert_not_called()
+        bcast_mock.assert_called_once()
+        self.assertEqual(bcast_mock.call_args.kwargs["label"], "stage_bundle stage_idx=0")
+        materialize_mock.assert_not_called()
+        barrier_mock.assert_called_once()
+        self.assertEqual(compute_dtype, torch.float32)
+        self.assertEqual(bundle["end_idx"], 17)
+
     def test_single_rank_direct_stage_skips_stage_bundle_broadcast(self) -> None:
         manifest = _build_manifest(stage_ranges=[(18, 35)], tp_degrees=[1], modality="text")
         rank_stage = HybridRankContext(

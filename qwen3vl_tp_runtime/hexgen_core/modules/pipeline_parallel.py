@@ -1,4 +1,4 @@
-"""Dedicated pipeline-parallel runtime for captured multimodal text-stage bundles."""
+"""Dedicated pipeline-parallel runtime for direct or captured stage bundles."""
 
 import gc
 from pathlib import Path
@@ -667,7 +667,7 @@ def load_stage_bundle_by_index(
 
 
 def _all_stages_are_direct(manifest: TextPipelineManifest) -> bool:
-    return all(stage.bundle_path is None for stage in manifest.stages)
+    return manifest.is_direct
 
 
 def _need_text_prompt_meta(manifest: TextPipelineManifest) -> bool:

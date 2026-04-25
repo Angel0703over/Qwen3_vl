@@ -4,6 +4,9 @@ This package uses lazy attribute loading to avoid circular imports during captur
 module initialization, especially for:
 
 capture.py -> hexgen_core.config -> hexgen_core.__init__ -> pipeline/hybrid modules -> capture.py
+
+Main direct-runtime helpers and legacy prepare/replay compatibility exports are
+all still available here, but they are resolved lazily.
 """
 
 from importlib import import_module
@@ -139,3 +142,7 @@ def __getattr__(name: str):
             globals()[name] = value
             return value
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))

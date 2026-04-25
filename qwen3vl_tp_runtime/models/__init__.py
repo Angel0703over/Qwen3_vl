@@ -1,139 +1,23 @@
-"""Model-facing exports grouped by concrete model family implementations."""
+"""Compatibility exports for concrete model-family packages.
 
-from qwen3vl_tp_runtime.models.qwen3vl import (
-    DirectStageBundleBuilder,
-    apply_deepstack,
-    apply_rope,
-    attn_eager,
-    build_causal_mask,
-    build_inputs,
-    build_cache_by_layer_from_past_key_values,
-    build_text_causal_mask,
-    build_text_decoder_stage_parameter_names,
-    build_text_decoder_stage_weight_plan,
-    build_direct_hybrid_manifest,
-    build_direct_pipeline_manifest,
-    build_direct_stage_bundle,
-    build_text_hf_config,
-    build_text_rotary_embedding,
-    build_live_multimodal_stage_bundle,
-    build_text_inputs,
-    capture_decoder_layer_params,
-    capture_multimodal_decode_bundle,
-    capture_multimodal_decode_stage_bundle,
-    capture_multimodal_generate_stage_bundle,
-    capture_multimodal_prefill_bundle,
-    capture_multimodal_prefill_stage_bundle,
-    capture_text_decode_bundle,
-    capture_text_decode_stage_bundle,
-    capture_text_generate_bundle,
-    capture_text_generate_stage_bundle,
-    capture_full_layer_bundle,
-    capture_layer_range_bundle,
-    capture_text_prefill_bundle,
-    capture_text_prefill_stage_bundle,
-    capture_text_stage_bundle,
-    cast_cpu,
-    compose_layer_bundle,
-    dtype_from_name,
-    extract_decoder_layer_params_live,
-    extract_past_key_values,
-    forward_attention_cached,
-    forward_attention_cached_tp,
-    forward_attention,
-    forward_attention_tp,
-    forward_decoder_layer_cached,
-    forward_decoder_layer_cached_tp,
-    forward_decoder_layer,
-    forward_decoder_layer_tp,
-    forward_layer_range,
-    forward_layer_range_tp,
-    forward_text_decode_logits,
-    forward_text_decode_logits_tp,
-    trace_text_decode_logits_with_runtime_cache,
-    forward_text_decode_stage,
-    forward_text_decode_stage_tp,
-    forward_text_embeddings,
-    forward_mlp,
-    forward_mlp_tp,
-    forward_text_prefill_logits,
-    forward_text_prefill_stage_logits,
-    forward_text_prefill_stage_logits_tp,
-    forward_text_stage,
-    forward_text_stage_tp,
-    get_deepstack_embeds,
-    list_frames,
-    load_bundle,
-    load_model,
-    load_model_weight_index,
-    load_processor,
-    load_tensors_by_name,
-    load_tensors_from_index,
-    encode_image_features,
-    encode_video_features,
-    materialize_visual_features,
-    inspect_model_weights,
-    ModelWeightIndex,
-    MultimodalRuntimeInputs,
-    move_bundle,
-    prepare_multimodal_decode_runtime_inputs,
-    prepare_multimodal_prefill_runtime_inputs,
-    prepare_text_decode_runtime_inputs,
-    prepare_text_prefill_runtime_inputs,
-    prepare_text_decode_runtime_inputs_from_weights,
-    prepare_text_prefill_runtime_inputs_from_weights,
-    repeat_kv,
-    resolve_comm_dtype,
-    resolve_runtime_tensors,
-    resolve_save_dtype,
-    rms_norm,
-    rotate_half,
-    run_forward_with_runtime_hook,
-    trace_attention_cached,
-    trace_attention_cached_tp,
-    trace_text_prefill_logits,
-    trace_text_prefill_stage_logits,
-    trace_decoder_layer_cached,
-    trace_decoder_layer_cached_tp,
-    trace_decoder_layer,
-    trace_decoder_layer_tp,
-    trace_text_decode_logits,
-    trace_text_decode_stage,
-    trace_text_decode_stage_tp,
-    trace_text_stage,
-    trace_text_stage_tp,
-    TextDecoderStageWeightPlan,
-    TextModelConfigSpec,
-    TextStageWeightBundle,
-    load_text_decoder_stage_weight_bundle,
-    load_text_model_config_spec,
-)
+Prefer importing from the concrete family module such as
+`qwen3vl_tp_runtime.models.qwen3vl.*`.
 
-__all__ = [
+This package keeps the historical flat `qwen3vl_tp_runtime.models.*` surface only
+for compatibility, and resolves names lazily so the main direct-runtime path is
+not coupled to legacy capture/replay helpers by default.
+"""
+
+from __future__ import annotations
+
+from importlib import import_module
+from typing import Any
+
+_MAIN_EXPORTS = [
     "DirectStageBundleBuilder",
-    "capture_decoder_layer_params",
-    "capture_multimodal_decode_bundle",
-    "capture_multimodal_decode_stage_bundle",
-    "capture_multimodal_generate_stage_bundle",
-    "capture_multimodal_prefill_bundle",
-    "capture_multimodal_prefill_stage_bundle",
-    "capture_text_decode_bundle",
-    "capture_text_decode_stage_bundle",
-    "capture_text_generate_bundle",
-    "capture_text_generate_stage_bundle",
-    "capture_full_layer_bundle",
-    "capture_layer_range_bundle",
-    "capture_text_prefill_bundle",
-    "capture_text_prefill_stage_bundle",
-    "capture_text_stage_bundle",
     "extract_decoder_layer_params_live",
-    "extract_past_key_values",
     "inspect_model_weights",
-    "load_bundle",
     "load_model_weight_index",
-    "move_bundle",
-    "resolve_runtime_tensors",
-    "run_forward_with_runtime_hook",
     "build_inputs",
     "build_cache_by_layer_from_past_key_values",
     "build_text_causal_mask",
@@ -217,3 +101,41 @@ __all__ = [
     "rotate_half",
     "repeat_kv",
 ]
+
+_LEGACY_CAPTURE_EXPORTS = [
+    "capture_decoder_layer_params",
+    "capture_multimodal_decode_bundle",
+    "capture_multimodal_decode_stage_bundle",
+    "capture_multimodal_generate_stage_bundle",
+    "capture_multimodal_prefill_bundle",
+    "capture_multimodal_prefill_stage_bundle",
+    "capture_text_decode_bundle",
+    "capture_text_decode_stage_bundle",
+    "capture_text_generate_bundle",
+    "capture_text_generate_stage_bundle",
+    "capture_full_layer_bundle",
+    "capture_layer_range_bundle",
+    "capture_text_prefill_bundle",
+    "capture_text_prefill_stage_bundle",
+    "capture_text_stage_bundle",
+    "extract_past_key_values",
+    "load_bundle",
+    "move_bundle",
+    "resolve_runtime_tensors",
+    "run_forward_with_runtime_hook",
+]
+
+__all__ = [*_MAIN_EXPORTS, *_LEGACY_CAPTURE_EXPORTS]
+
+
+def __getattr__(name: str) -> Any:
+    if name in __all__:
+        model_mod = import_module("qwen3vl_tp_runtime.models.qwen3vl")
+        value = getattr(model_mod, name)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))

@@ -14,17 +14,21 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from qwen3vl_tp_runtime.hexgen_core.config import FRAME_DIR, MODEL_PATH
-from qwen3vl_tp_runtime.models.qwen3vl import (
-    build_inputs,
+from qwen3vl_tp_runtime.models.qwen3vl.execution import (
+    forward_text_prefill_logits,
+    trace_text_decode_logits_with_runtime_cache,
+)
+from qwen3vl_tp_runtime.models.qwen3vl.live import (
     build_cache_by_layer_from_past_key_values,
     build_live_multimodal_stage_bundle,
-    forward_text_prefill_logits,
+    prepare_multimodal_decode_runtime_inputs,
+    prepare_multimodal_prefill_runtime_inputs,
+)
+from qwen3vl_tp_runtime.models.qwen3vl.processing import (
+    build_inputs,
     list_frames,
     load_model,
     load_processor,
-    prepare_multimodal_decode_runtime_inputs,
-    prepare_multimodal_prefill_runtime_inputs,
-    trace_text_decode_logits_with_runtime_cache,
 )
 from qwen3vl_tp_runtime.scripts.common import summarize_last_token_topk, tensor_diff_stats
 

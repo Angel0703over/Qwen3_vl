@@ -20,24 +20,21 @@ from qwen3vl_tp_runtime.hexgen_core import (
     MODEL_PATH,
     get_device,
     init_dist,
-    load_hybrid_manifest,
-    load_pipeline_manifest,
     run_text_generate_pipeline_rank,
     run_text_pipeline_rank,
 )
 from qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel import TextHybridRunner
-from qwen3vl_tp_runtime.models.qwen3vl import (
+from qwen3vl_tp_runtime.models.qwen3vl.processing import (
     build_inputs,
-    build_direct_hybrid_manifest,
-    build_direct_pipeline_manifest,
     build_text_inputs,
     list_frames,
     load_model,
     load_processor,
 )
 from qwen3vl_tp_runtime.scripts.runtime_cli import (
-    _build_direct_manifest_kwargs,
     _emit_debug_path_warnings,
+    _load_hybrid_manifest_for_args,
+    _load_pipeline_manifest_for_args,
     _require_debug_path_opt_in,
     _resolve_defaults,
     _validate_args,
@@ -175,10 +172,7 @@ def _run_live(args: argparse.Namespace) -> None:
 def _run_pp(args: argparse.Namespace) -> None:
     rank, world_size = init_dist()
     device = get_device(args.device)
-    if args.manifest_path is None:
-        manifest = build_direct_pipeline_manifest(**_build_direct_manifest_kwargs(args))
-    else:
-        manifest = load_pipeline_manifest(args.manifest_path)
+    manifest = _load_pipeline_manifest_for_args(args)
     if manifest.pipeline_type in GENERATE_PIPELINE_TYPES:
         stats = run_text_generate_pipeline_rank(
             rank=rank,
@@ -207,14 +201,7 @@ def _run_pp(args: argparse.Namespace) -> None:
 
 
 def _run_hybrid_family(args: argparse.Namespace, *, backend: str) -> None:
-    if args.manifest_path is None:
-        manifest = build_direct_hybrid_manifest(
-            **_build_direct_manifest_kwargs(args),
-            tp_degrees=args.tp_degrees,
-            backend=backend,
-        )
-    else:
-        manifest = load_hybrid_manifest(args.manifest_path)
+    manifest = _load_hybrid_manifest_for_args(args, backend=backend)
     rank, world_size = init_dist()
     device = get_device(args.device)
     runner = TextHybridRunner(

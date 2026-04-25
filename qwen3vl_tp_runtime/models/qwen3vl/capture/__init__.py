@@ -1,4 +1,4 @@
-"""Bundle capture helpers grouped by shared, text, and multimodal workflows."""
+"""Legacy capture/replay helpers kept for debug and regression workflows."""
 
 from qwen3vl_tp_runtime.models.qwen3vl.capture.common import (
     capture_decoder_layer_params,

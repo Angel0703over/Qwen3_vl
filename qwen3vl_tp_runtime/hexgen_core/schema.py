@@ -8,7 +8,7 @@ import torch
 
 @dataclass(slots=True)
 class StageSpec:
-    """Metadata describing one pipeline stage, optionally backed by an on-disk bundle."""
+    """Metadata describing one pipeline stage."""
 
     stage_idx: int
     start_idx: int
@@ -16,6 +16,10 @@ class StageSpec:
     num_layers: int
     save_dtype: str
     bundle_path: str | None = None
+
+    @property
+    def is_direct(self) -> bool:
+        return self.bundle_path is None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "StageSpec":
@@ -38,17 +42,21 @@ class BoundaryStats:
 
 @dataclass(slots=True)
 class TextPipelineManifest:
-    """Serializable manifest for a multi-stage text pipeline runtime."""
+    """Serializable manifest for a multi-stage runtime."""
 
     pipeline_type: str
     num_stages: int
     stage_ranges: list[tuple[int, int]]
-    bundle_dir: str
+    bundle_dir: str | None
     stages: list[StageSpec]
     boundaries: list[BoundaryStats]
     num_frames: int
     save_dtype: str
     runtime_config: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def is_direct(self) -> bool:
+        return all(stage.is_direct for stage in self.stages)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -69,7 +77,7 @@ class TextPipelineManifest:
             pipeline_type=data["pipeline_type"],
             num_stages=data["num_stages"],
             stage_ranges=[tuple(item) for item in data["stage_ranges"]],
-            bundle_dir=data["bundle_dir"],
+            bundle_dir=data.get("bundle_dir"),
             stages=[StageSpec.from_dict(item) for item in data["stages"]],
             boundaries=[BoundaryStats.from_dict(item) for item in data["boundaries"]],
             num_frames=data["num_frames"],
@@ -102,7 +110,7 @@ class HybridLayout:
 
 @dataclass(slots=True)
 class TextHybridManifest:
-    """Serializable manifest for a hybrid PP+TP text runtime."""
+    """Serializable manifest for a hybrid PP+TP runtime."""
 
     runtime: str
     tp_degrees: list[int]
@@ -115,13 +123,17 @@ class TextHybridManifest:
     send_empty_list: list[list[bool]]
     recv_empty_list: list[list[bool]]
     stage_ranges: list[tuple[int, int]]
-    bundle_dir: str
+    bundle_dir: str | None
     stages: list[StageSpec]
     boundaries: list[BoundaryStats]
     num_frames: int
     save_dtype: str
     pipeline_type: str = "text"
     runtime_config: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def is_direct(self) -> bool:
+        return all(stage.is_direct for stage in self.stages)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -188,7 +200,7 @@ class TextHybridManifest:
             recv_empty_list=data["recv_empty_list"],
             pipeline_type=data.get("pipeline_type", "text"),
             stage_ranges=[tuple(item) for item in data["stage_ranges"]],
-            bundle_dir=data["bundle_dir"],
+            bundle_dir=data.get("bundle_dir"),
             stages=[StageSpec.from_dict(item) for item in data["stages"]],
             boundaries=[BoundaryStats.from_dict(item) for item in data["boundaries"]],
             num_frames=data["num_frames"],

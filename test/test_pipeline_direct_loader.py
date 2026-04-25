@@ -25,7 +25,7 @@ def _build_manifest(*, stage_ranges: list[tuple[int, int]], modality: str) -> Te
         pipeline_type="text_generate",
         num_stages=len(stages),
         stage_ranges=stage_ranges,
-        bundle_dir="<direct>",
+        bundle_dir=None,
         stages=stages,
         boundaries=[],
         num_frames=0,
@@ -40,6 +40,46 @@ def _build_manifest(*, stage_ranges: list[tuple[int, int]], modality: str) -> Te
 
 
 class PipelineDirectLoaderTest(unittest.TestCase):
+    def test_multimodal_direct_stage_build_skips_text_prompt_metadata(self) -> None:
+        manifest = _build_manifest(stage_ranges=[(0, 17), (18, 35)], modality="multimodal")
+        direct_bundle = {
+            "save_dtype": "float32",
+            "stage_idx": 1,
+            "start_idx": 18,
+            "end_idx": 35,
+            "layers": [],
+        }
+
+        with patch(
+            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.prepare_text_prompt_meta",
+        ) as prepare_meta_mock, patch(
+            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.broadcast_object_cpu",
+        ) as bcast_mock, patch(
+            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.build_direct_stage_bundle",
+            return_value=direct_bundle,
+        ) as build_mock, patch(
+            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.dist.is_available",
+            return_value=True,
+        ), patch(
+            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.dist.is_initialized",
+            return_value=True,
+        ), patch(
+            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.dist.barrier",
+        ) as barrier_mock:
+            bundle, compute_dtype = load_stage_bundle_for_rank(
+                manifest,
+                rank=1,
+                device=torch.device("cpu"),
+                compute_dtype_arg="float32",
+            )
+
+        prepare_meta_mock.assert_not_called()
+        bcast_mock.assert_not_called()
+        build_mock.assert_called_once()
+        barrier_mock.assert_called_once()
+        self.assertEqual(compute_dtype, torch.float32)
+        self.assertEqual(bundle["start_idx"], 18)
+
     def test_rank_zero_seeds_runtime_only_prompt_metadata_before_local_build(self) -> None:
         manifest = _build_manifest(stage_ranges=[(0, 17), (18, 35)], modality="text")
         manifest.runtime_config["include_runtime_reference"] = False

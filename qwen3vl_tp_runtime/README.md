@@ -16,6 +16,11 @@ These paths are kept for replay, capture, and regression work only:
 
 They require `--allow-debug-paths`.
 
+## Roadmap
+
+- Ordered next steps are tracked in `ROADMAP.md`.
+- Unless we explicitly realign, continue work in that document's order.
+
 ## Directory Layout
 
 - `hexgen_core/`

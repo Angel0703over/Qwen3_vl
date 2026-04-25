@@ -39,7 +39,7 @@ class RuntimeSummaryTest(unittest.TestCase):
             pipeline_type="text_generate",
             num_stages=1,
             stage_ranges=[(0, 0)],
-            bundle_dir="<direct>",
+            bundle_dir=None,
             stages=[
                 StageSpec(
                     stage_idx=0,
@@ -99,7 +99,7 @@ class RuntimeSummaryTest(unittest.TestCase):
             send_empty_list=[[]],
             recv_empty_list=[[]],
             stage_ranges=[(0, 0)],
-            bundle_dir="<direct>",
+            bundle_dir=None,
             stages=[
                 StageSpec(
                     stage_idx=0,

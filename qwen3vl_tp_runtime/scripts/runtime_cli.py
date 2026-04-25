@@ -127,10 +127,28 @@ def _build_direct_manifest_kwargs(args: argparse.Namespace) -> dict:
     return kwargs
 
 
+def _load_pipeline_manifest_for_args(args: argparse.Namespace):
+    if args.manifest_path is None:
+        return _runtime_dep("build_direct_pipeline_manifest")(**_build_direct_manifest_kwargs(args))
+    return _runtime_dep("load_pipeline_manifest")(args.manifest_path)
+
+
+def _load_hybrid_manifest_for_args(args: argparse.Namespace, *, backend: str):
+    if args.manifest_path is None:
+        return _runtime_dep("build_direct_hybrid_manifest")(
+            **_build_direct_manifest_kwargs(args),
+            tp_degrees=args.tp_degrees,
+            backend=backend,
+        )
+    return _runtime_dep("load_hybrid_manifest")(args.manifest_path)
+
+
 __all__ = [
     "_build_direct_manifest_kwargs",
     "_debug_path_warnings",
     "_emit_debug_path_warnings",
+    "_load_hybrid_manifest_for_args",
+    "_load_pipeline_manifest_for_args",
     "_require_debug_path_opt_in",
     "_resolve_defaults",
     "_validate_args",
