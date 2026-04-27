@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import torch
 
+from qwen3vl_tp_runtime.hexgen_core.modules import pipeline_parallel as pipeline_parallel_module
 from qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel import load_stage_bundle_for_rank
 from qwen3vl_tp_runtime.hexgen_core.schema import StageSpec, TextPipelineManifest
 from qwen3vl_tp_runtime.models.qwen3vl.runtime_mm_stage import (
@@ -86,6 +87,45 @@ def _build_mm_startup_contract(*, num_stages: int) -> dict[str, object]:
 
 
 class PipelineDirectLoaderTest(unittest.TestCase):
+    def test_runtime_only_decode_phase_drops_prefill_handoff_reference(self) -> None:
+        stage_bundle = {
+            "modality": "multimodal",
+            "prefill_seq_len": 3,
+            "prefill_attention_mask_2d": torch.ones(1, 3, dtype=torch.long),
+            "batch_size": 1,
+            "hidden_size": 4,
+            "token_id_dtype": "int64",
+            "stage_input": torch.ones(1, 3, 4),
+            "layer_input": torch.ones(1, 3, 4),
+            "stage_output": torch.ones(1, 3, 4),
+            "layer_output": torch.ones(1, 3, 4),
+            "layers": [{"q_weight": torch.zeros(1, 1)}],
+            "rope_deltas": torch.zeros(1, 1, dtype=torch.long),
+        }
+
+        with patch(
+            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.build_mm_decode_state_from_weights",
+            return_value=SimpleNamespace(
+                attention_mask=torch.zeros(1, 1, 1, 4),
+                position_ids=torch.zeros(4, 1, 1, dtype=torch.long),
+                cos=torch.zeros(1, 1, 4),
+                sin=torch.zeros(1, 1, 4),
+            ),
+        ):
+            decode_bundle = pipeline_parallel_module._build_runtime_only_text_generate_phase_bundle(
+                stage_bundle,
+                phase_kind="decode",
+                attention_mask_2d=torch.ones(1, 4, dtype=torch.long),
+                config_spec=SimpleNamespace(hidden_size=4),
+                rotary_emb=None,
+            )
+
+        self.assertNotIn("stage_input", decode_bundle)
+        self.assertNotIn("layer_input", decode_bundle)
+        self.assertNotIn("stage_output", decode_bundle)
+        self.assertNotIn("layer_output", decode_bundle)
+        self.assertEqual(tuple(decode_bundle["decode_input_ids"].shape), (1, 1))
+
     def test_direct_detection_falls_back_without_manifest_property(self) -> None:
         from qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel import _all_stages_are_direct
 
@@ -104,6 +144,61 @@ class PipelineDirectLoaderTest(unittest.TestCase):
 
         self.assertTrue(_all_stages_are_direct(legacy_manifest))
         self.assertFalse(_all_stages_are_direct(captured_manifest))
+
+    def test_multimodal_startup_transport_is_stage_local_and_thin(self) -> None:
+        startup_contract = _build_mm_startup_contract(num_stages=2)
+
+        local_contract = select_mm_startup_contract(startup_contract, local_stage_indices=[1])
+        meta, tensors = pack_mm_startup_transport(local_contract)
+        restored = restore_mm_startup_transport(meta, tensors)
+
+        self.assertEqual(sorted(restored["stage_handoffs"]), [1])
+        self.assertEqual(sorted(restored["stage_visuals"]), [1])
+        self.assertNotIn("root_input", restored)
+        self.assertNotIn("boundaries", restored)
+        self.assertFalse(any(name == "root_input" or name.startswith("boundaries") for name in tensors))
+
+    def test_multimodal_startup_contract_rejects_full_or_root_payloads(self) -> None:
+        startup_contract = _build_mm_startup_contract(num_stages=1)
+
+        with self.assertRaisesRegex(RuntimeError, "必须保持 thin"):
+            select_mm_startup_contract(
+                {
+                    **startup_contract,
+                    "root_input": torch.zeros(1, 3, 4),
+                },
+                local_stage_indices=[0],
+            )
+        with self.assertRaisesRegex(RuntimeError, "必须保持 thin"):
+            pack_mm_startup_transport(
+                {
+                    **startup_contract,
+                    "boundaries": [torch.zeros(1, 3, 4), torch.zeros(1, 3, 4)],
+                },
+            )
+        with self.assertRaisesRegex(RuntimeError, "stage_handoffs 只能携带"):
+            pack_mm_startup_transport(
+                {
+                    **startup_contract,
+                    "stage_handoffs": {
+                        0: {
+                            "stage_input": torch.zeros(1, 3, 4),
+                            "stage_output": torch.zeros(1, 3, 4),
+                            "hidden_states": torch.zeros(1, 3, 4),
+                        },
+                    },
+                },
+            )
+        with self.assertRaisesRegex(RuntimeError, "stage_handoffs 只能携带"):
+            restore_mm_startup_transport(
+                {"num_frames": 2, "frame_paths": []},
+                {
+                    "shared.input_ids": torch.tensor([[1, 2, 3]], dtype=torch.long),
+                    "stage_handoffs.0.stage_input": torch.zeros(1, 3, 4),
+                    "stage_handoffs.0.stage_output": torch.zeros(1, 3, 4),
+                    "stage_handoffs.0.hidden_states": torch.zeros(1, 3, 4),
+                },
+            )
 
     def test_multimodal_direct_stage_build_skips_text_prompt_metadata(self) -> None:
         manifest = _build_manifest(stage_ranges=[(0, 17), (18, 35)], modality="multimodal")
@@ -169,13 +264,7 @@ class PipelineDirectLoaderTest(unittest.TestCase):
         )
         self.assertIn("_mm_startup_stage_handoffs", build_runtime_config)
         self.assertEqual(sorted(build_runtime_config["_mm_startup_stage_handoffs"]), [1])
-        self.assertIn("_mm_startup_root_input", build_runtime_config)
-        self.assertTrue(
-            torch.equal(
-                build_runtime_config["_mm_startup_root_input"],
-                torch.zeros(1, 3, 4),
-            )
-        )
+        self.assertNotIn("_mm_startup_root_input", build_runtime_config)
         self.assertIn("_mm_startup_stage_visuals", build_runtime_config)
         self.assertEqual(sorted(build_runtime_config["_mm_startup_stage_visuals"]), [1])
         self.assertNotIn("_mm_startup_boundaries", build_runtime_config)
@@ -271,8 +360,7 @@ class PipelineDirectLoaderTest(unittest.TestCase):
         self.assertIn("_mm_startup_shared", manifest.runtime_config)
         self.assertIn("_mm_startup_stage_handoffs", manifest.runtime_config)
         self.assertEqual(sorted(manifest.runtime_config["_mm_startup_stage_handoffs"]), [0])
-        self.assertIn("_mm_startup_root_input", manifest.runtime_config)
-        self.assertTrue(torch.equal(manifest.runtime_config["_mm_startup_root_input"], torch.zeros(1, 3, 4)))
+        self.assertNotIn("_mm_startup_root_input", manifest.runtime_config)
         self.assertIn("_mm_startup_stage_visuals", manifest.runtime_config)
         self.assertEqual(sorted(manifest.runtime_config["_mm_startup_stage_visuals"]), [0])
         self.assertNotIn("_mm_startup_boundaries", manifest.runtime_config)

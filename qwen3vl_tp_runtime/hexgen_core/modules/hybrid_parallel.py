@@ -46,6 +46,7 @@ from qwen3vl_tp_runtime.models.qwen3vl.execution import (
     trace_text_decode_stage_tp_with_runtime_cache,
 )
 from qwen3vl_tp_runtime.models.qwen3vl.functional import dtype_from_name, resolve_comm_dtype
+from qwen3vl_tp_runtime.models.qwen3vl.runtime_mm_stage import build_mm_decode_state_from_weights
 from qwen3vl_tp_runtime.models.qwen3vl.runtime_builder import (
     DirectStageBundleBuilder,
     build_direct_stage_bundle,
@@ -56,7 +57,10 @@ from qwen3vl_tp_runtime.models.qwen3vl.runtime_builder import (
     restore_mm_startup_transport,
     seed_mm_startup_runtime_config,
 )
-from qwen3vl_tp_runtime.models.qwen3vl.runtime_text_stage import summarize_text_weight_load
+from qwen3vl_tp_runtime.models.qwen3vl.runtime_text_stage import (
+    assert_text_tp_shard_shapes,
+    summarize_text_weight_load,
+)
 from qwen3vl_tp_runtime.models.qwen3vl.capture import load_bundle, move_bundle
 from qwen3vl_tp_runtime.models.qwen3vl.weights import (
     build_text_rotary_embedding,
@@ -139,6 +143,39 @@ def _validate_rank_local_sharded_bundle(bundle: dict, rank_stage: HybridRankCont
             f"stage_idx={rank_stage.stage_idx} expected={rank_stage.local_rank}/{rank_stage.tp_degree} "
             f"actual={bundle_rank}/{bundle_world_size}。"
         )
+    assert_text_tp_shard_shapes(bundle)
+
+
+def _record_tp_stage_weight_load_consistency(bundle: dict, rank_stage: HybridRankContext) -> None:
+    if rank_stage.tp_degree <= 1:
+        return
+
+    weight_load = summarize_text_weight_load(bundle)
+    local_bytes = int(weight_load["loaded_weight_tensor_bytes"])
+    checked = bool(dist.is_available() and dist.is_initialized())
+    if checked:
+        gathered: list[int | None] = [None for _ in range(rank_stage.tp_degree)]
+        dist.all_gather_object(gathered, local_bytes, group=rank_stage.stage_group)
+        if any(value is None for value in gathered):
+            raise RuntimeError(
+                "direct TP stage 权重字节数聚合结果不完整，"
+                f"stage_idx={rank_stage.stage_idx} rank_local={rank_stage.local_rank}/{rank_stage.tp_degree} "
+                f"bytes={gathered}"
+            )
+        stage_bytes = [int(value) for value in gathered]
+        bytes_equal = len(set(stage_bytes)) == 1
+        if not bytes_equal:
+            raise RuntimeError(
+                "direct TP stage 各 rank 加载的本地权重字节数不一致，"
+                f"stage_idx={rank_stage.stage_idx} bytes={stage_bytes}"
+            )
+    else:
+        stage_bytes = [local_bytes]
+        bytes_equal = None
+
+    bundle["_tp_stage_loaded_weight_tensor_bytes"] = stage_bytes
+    bundle["_tp_stage_loaded_weight_tensor_bytes_equal"] = bytes_equal
+    bundle["_tp_stage_loaded_weight_tensor_bytes_checked"] = checked
 
 
 def _need_text_prompt_meta(manifest: TextHybridManifest) -> bool:
@@ -276,7 +313,7 @@ def load_stage_bundle_for_hybrid_rank(
     rank_stage: HybridRankContext,
     device: torch.device,
     compute_dtype_arg: str,
-    ) -> tuple[dict, torch.dtype]:
+) -> tuple[dict, torch.dtype]:
     stage_meta = manifest.stages[rank_stage.stage_idx]
     all_direct = _all_hybrid_stages_are_direct(manifest)
     runtime_modality = str(manifest.runtime_config.get("modality", "multimodal"))
@@ -384,6 +421,7 @@ def load_stage_bundle_for_hybrid_rank(
             tp_shard_world_size=rank_stage.tp_degree,
         )
         _validate_rank_local_sharded_bundle(bundle, rank_stage)
+        _record_tp_stage_weight_load_consistency(bundle, rank_stage)
         startup_log("hybrid-direct-loader", f"rank={rank} entering post-load barrier")
         dist.barrier()
         startup_log(
@@ -963,6 +1001,21 @@ def _build_runtime_only_text_generate_phase_bundle(
 ) -> dict:
     query_len = int(stage_bundle["prefill_seq_len"]) if phase_kind == "prefill" else 1
     runtime_bundle = dict(stage_bundle)
+    if phase_kind == "decode":
+        # The runtime-only stage bundle keeps the prefill handoff as the local
+        # startup seed. Decode must receive/build a fresh one-token input;
+        # otherwise TP followers allocate a prefill-sized broadcast buffer.
+        for key in (
+            "stage_input",
+            "layer_input",
+            "stage_output",
+            "layer_output",
+            "hidden_stage_output",
+            "norm_output",
+            "output_token_id",
+        ):
+            runtime_bundle.pop(key, None)
+    is_multimodal = str(stage_bundle.get("modality", "text")) == "multimodal"
     runtime_bundle["stage_type"] = (
         "text_prefill_last"
         if phase_kind == "prefill" and "final_norm_weight" in stage_bundle
@@ -973,20 +1026,56 @@ def _build_runtime_only_text_generate_phase_bundle(
         else "text_decode"
     )
     runtime_bundle["attention_mask_2d"] = attention_mask_2d
-    runtime_aux = build_text_runtime_aux_tensors(
-        attention_mask_2d=attention_mask_2d,
-        batch_size=int(stage_bundle["batch_size"]),
-        seq_len=query_len,
-        past_length=int(attention_mask_2d.shape[-1]) - query_len,
-        config_spec=config_spec,
-        device=_infer_runtime_tensor_device(stage_bundle),
-        compute_dtype=_infer_runtime_tensor_dtype(stage_bundle),
-        rotary_emb=rotary_emb,
-    )
-    runtime_bundle["attention_mask"] = runtime_aux["attention_mask"]
-    runtime_bundle["position_ids"] = runtime_aux["position_ids"]
-    runtime_bundle["cos"] = runtime_aux["cos"]
-    runtime_bundle["sin"] = runtime_aux["sin"]
+
+    if is_multimodal and phase_kind == "prefill":
+        runtime_bundle["attention_mask"] = stage_bundle["prefill_attention_mask"]
+        runtime_bundle["position_ids"] = stage_bundle.get("prefill_position_ids")
+        runtime_bundle["cos"] = stage_bundle["prefill_cos"]
+        runtime_bundle["sin"] = stage_bundle["prefill_sin"]
+    elif is_multimodal and phase_kind == "decode":
+        decode_input_ids = torch.zeros(
+            (int(stage_bundle["batch_size"]), 1),
+            device=_infer_runtime_tensor_device(stage_bundle),
+            dtype=_infer_runtime_token_dtype(stage_bundle),
+        )
+        dummy_embed_tokens_weight = torch.zeros(
+            (1, int(config_spec.hidden_size)),
+            device=_infer_runtime_tensor_device(stage_bundle),
+            dtype=_infer_runtime_tensor_dtype(stage_bundle),
+        )
+        decode_state = build_mm_decode_state_from_weights(
+            decode_input_ids=decode_input_ids,
+            attention_mask_2d=attention_mask_2d,
+            past_length=int(attention_mask_2d.shape[-1]) - query_len,
+            rope_deltas=stage_bundle["rope_deltas"],
+            embed_tokens_weight=dummy_embed_tokens_weight,
+            config_spec=config_spec,
+            device=_infer_runtime_tensor_device(stage_bundle),
+            compute_dtype=_infer_runtime_tensor_dtype(stage_bundle),
+            rotary_emb=rotary_emb,
+        )
+        runtime_bundle["attention_mask"] = decode_state.attention_mask
+        runtime_bundle["position_ids"] = decode_state.position_ids
+        runtime_bundle["cos"] = decode_state.cos
+        runtime_bundle["sin"] = decode_state.sin
+        runtime_bundle["visual_pos_masks"] = None
+        runtime_bundle["deepstack_by_layer"] = {}
+        runtime_bundle["deepstack_layer_indices"] = []
+    else:
+        runtime_aux = build_text_runtime_aux_tensors(
+            attention_mask_2d=attention_mask_2d,
+            batch_size=int(stage_bundle["batch_size"]),
+            seq_len=query_len,
+            past_length=int(attention_mask_2d.shape[-1]) - query_len,
+            config_spec=config_spec,
+            device=_infer_runtime_tensor_device(stage_bundle),
+            compute_dtype=_infer_runtime_tensor_dtype(stage_bundle),
+            rotary_emb=rotary_emb,
+        )
+        runtime_bundle["attention_mask"] = runtime_aux["attention_mask"]
+        runtime_bundle["position_ids"] = runtime_aux["position_ids"]
+        runtime_bundle["cos"] = runtime_aux["cos"]
+        runtime_bundle["sin"] = runtime_aux["sin"]
     if phase_kind == "prefill" and stage_bundle.get("input_ids") is not None:
         runtime_bundle["input_ids"] = stage_bundle["input_ids"]
     if phase_kind == "decode":

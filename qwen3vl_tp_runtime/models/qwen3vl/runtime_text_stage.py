@@ -76,19 +76,108 @@ def _weight_tensor_bytes(tensor: torch.Tensor) -> int:
     return int(tensor.numel() * tensor.element_size())
 
 
-def summarize_text_weight_load(bundle: dict[str, Any]) -> dict[str, Any]:
-    """Return compact, JSON-safe evidence for rank-local text weight materialization."""
+_TP_SHARDED_PROJECTION_SPECS = (
+    ("q_weight", "local_attention_hidden_size", "hidden_size"),
+    ("k_weight", "local_kv_hidden_size", "hidden_size"),
+    ("v_weight", "local_kv_hidden_size", "hidden_size"),
+    ("o_weight", "hidden_size", "local_attention_hidden_size"),
+    ("gate_weight", "local_intermediate_size", "hidden_size"),
+    ("up_weight", "local_intermediate_size", "hidden_size"),
+    ("down_weight", "hidden_size", "local_intermediate_size"),
+)
 
-    named_tensors: list[tuple[str, torch.Tensor]] = []
-    for key in _TEXT_TOP_LEVEL_WEIGHT_KEYS:
-        value = bundle.get(key)
-        if torch.is_tensor(value):
-            named_tensors.append((key, value))
 
+def _tp_shard_projection_shape_checks(bundle: dict[str, Any]) -> tuple[
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    dict[str, int | None],
+]:
+    """Return shape proof/mismatches for tensors that must be rank-local TP shards."""
+
+    if not bool(bundle.get("tp_weight_sharded", False)):
+        return [], [], {
+            "local_attention_hidden_size": None,
+            "local_kv_hidden_size": None,
+            "local_intermediate_size": None,
+        }
+
+    checks: list[dict[str, Any]] = []
+    mismatches: list[dict[str, Any]] = []
+    local_dims: dict[str, int | None] = {
+        "local_attention_hidden_size": None,
+        "local_kv_hidden_size": None,
+        "local_intermediate_size": None,
+    }
     for layer_pos, layer_bundle in enumerate(bundle.get("layers", [])):
         if not isinstance(layer_bundle, dict):
             continue
         layer_idx = layer_bundle.get("layer_idx", layer_pos)
+        head_dim = layer_bundle.get("head_dim")
+        local_num_attention_heads = layer_bundle.get("tp_local_num_attention_heads")
+        local_num_key_value_heads = layer_bundle.get("tp_local_num_key_value_heads")
+        local_intermediate_size = layer_bundle.get("tp_local_intermediate_size")
+        hidden_size = None
+        input_ln_weight = layer_bundle.get("input_ln_weight")
+        if torch.is_tensor(input_ln_weight):
+            hidden_size = int(input_ln_weight.numel())
+        if not all(
+            value is not None
+            for value in (
+                head_dim,
+                local_num_attention_heads,
+                local_num_key_value_heads,
+                local_intermediate_size,
+                hidden_size,
+            )
+        ):
+            continue
+        current_dims = {
+            "hidden_size": int(hidden_size),
+            "local_attention_hidden_size": int(local_num_attention_heads) * int(head_dim),
+            "local_kv_hidden_size": int(local_num_key_value_heads) * int(head_dim),
+            "local_intermediate_size": int(local_intermediate_size),
+        }
+        local_dims["local_attention_hidden_size"] = current_dims["local_attention_hidden_size"]
+        local_dims["local_kv_hidden_size"] = current_dims["local_kv_hidden_size"]
+        local_dims["local_intermediate_size"] = current_dims["local_intermediate_size"]
+        for tensor_name, dim0_key, dim1_key in _TP_SHARDED_PROJECTION_SPECS:
+            tensor = layer_bundle.get(tensor_name)
+            if not torch.is_tensor(tensor):
+                continue
+            expected_shape = [current_dims[dim0_key], current_dims[dim1_key]]
+            actual_shape = list(tensor.shape)
+            check = {
+                "name": f"layers.{layer_idx}.{tensor_name}",
+                "actual_shape": actual_shape,
+                "expected_shape": expected_shape,
+                "ok": actual_shape == expected_shape,
+            }
+            checks.append(check)
+            if not check["ok"]:
+                mismatches.append(check)
+    return checks, mismatches, local_dims
+
+
+def summarize_text_weight_load(bundle: dict[str, Any]) -> dict[str, Any]:
+    """Return compact, JSON-safe evidence for rank-local text weight materialization."""
+
+    named_tensors: list[tuple[str, torch.Tensor]] = []
+    loaded_top_level_weight_names: list[str] = []
+    for key in _TEXT_TOP_LEVEL_WEIGHT_KEYS:
+        value = bundle.get(key)
+        if torch.is_tensor(value):
+            loaded_top_level_weight_names.append(key)
+            named_tensors.append((key, value))
+
+    loaded_layer_indices: list[int] = []
+    for layer_pos, layer_bundle in enumerate(bundle.get("layers", [])):
+        if not isinstance(layer_bundle, dict):
+            continue
+        layer_idx = layer_bundle.get("layer_idx", layer_pos)
+        try:
+            loaded_layer_indices.append(int(layer_idx))
+        except (TypeError, ValueError):
+            pass
         for key in _TEXT_LAYER_WEIGHT_KEYS:
             value = layer_bundle.get(key)
             if torch.is_tensor(value):
@@ -110,10 +199,55 @@ def summarize_text_weight_load(bundle: dict[str, Any]) -> dict[str, Any]:
     sharded_parameter_names = tuple(bundle.get("tp_sharded_parameter_names") or ())
     replicated_parameter_names = tuple(bundle.get("tp_replicated_parameter_names") or ())
     loaded_weight_tensor_bytes = sum(_weight_tensor_bytes(tensor) for _name, tensor in unique_tensors.values())
+    stage_start_idx = bundle.get("start_idx")
+    stage_end_idx = bundle.get("end_idx")
+    try:
+        stage_start_idx = None if stage_start_idx is None else int(stage_start_idx)
+        stage_end_idx = None if stage_end_idx is None else int(stage_end_idx)
+    except (TypeError, ValueError):
+        stage_start_idx = None
+        stage_end_idx = None
+    loaded_layer_indices = sorted(set(loaded_layer_indices))
+    unexpected_layer_indices: list[int] = []
+    if stage_start_idx is not None and stage_end_idx is not None:
+        unexpected_layer_indices = [
+            layer_idx
+            for layer_idx in loaded_layer_indices
+            if layer_idx < stage_start_idx or layer_idx > stage_end_idx
+        ]
+    tp_shape_checks, tp_shape_mismatches, tp_local_dims = _tp_shard_projection_shape_checks(bundle)
+    tp_weight_sharded = bool(bundle.get("tp_weight_sharded", False))
+    tp_shard_shape_ok = (not tp_weight_sharded or bool(tp_shape_checks)) and not tp_shape_mismatches
+    tp_stage_loaded_weight_tensor_bytes = bundle.get("_tp_stage_loaded_weight_tensor_bytes")
+    if tp_stage_loaded_weight_tensor_bytes is None:
+        tp_stage_loaded_weight_tensor_bytes = bundle.get("tp_stage_loaded_weight_tensor_bytes")
+    if tp_stage_loaded_weight_tensor_bytes is not None:
+        tp_stage_loaded_weight_tensor_bytes = [int(value) for value in tp_stage_loaded_weight_tensor_bytes]
+    tp_stage_loaded_weight_tensor_bytes_equal = bundle.get("_tp_stage_loaded_weight_tensor_bytes_equal")
+    if tp_stage_loaded_weight_tensor_bytes_equal is None:
+        tp_stage_loaded_weight_tensor_bytes_equal = bundle.get("tp_stage_loaded_weight_tensor_bytes_equal")
+    tp_stage_loaded_weight_tensor_bytes_checked = bundle.get("_tp_stage_loaded_weight_tensor_bytes_checked")
+    if tp_stage_loaded_weight_tensor_bytes_checked is None:
+        tp_stage_loaded_weight_tensor_bytes_checked = bundle.get("tp_stage_loaded_weight_tensor_bytes_checked")
     return {
-        "tp_weight_sharded": bool(bundle.get("tp_weight_sharded", False)),
+        "tp_weight_sharded": tp_weight_sharded,
         "tp_shard_rank": bundle.get("tp_shard_rank"),
         "tp_shard_world_size": bundle.get("tp_shard_world_size"),
+        "tp_local_dims": tp_local_dims,
+        "tp_shard_shape_ok": tp_shard_shape_ok,
+        "tp_sharded_projection_check_count": len(tp_shape_checks),
+        "tp_shard_shape_mismatches": tp_shape_mismatches,
+        "tp_sharded_projection_examples": tp_shape_checks[:8],
+        "tp_stage_loaded_weight_tensor_bytes": tp_stage_loaded_weight_tensor_bytes,
+        "tp_stage_loaded_weight_tensor_bytes_equal": tp_stage_loaded_weight_tensor_bytes_equal,
+        "tp_stage_loaded_weight_tensor_bytes_checked": tp_stage_loaded_weight_tensor_bytes_checked,
+        "stage_start_idx": stage_start_idx,
+        "stage_end_idx": stage_end_idx,
+        "loaded_layer_indices": loaded_layer_indices,
+        "loaded_layer_count": len(loaded_layer_indices),
+        "loaded_top_level_weight_names": loaded_top_level_weight_names,
+        "unexpected_layer_indices": unexpected_layer_indices,
+        "stage_weight_scope_ok": not unexpected_layer_indices,
         "loaded_weight_tensor_count": len(unique_tensors),
         "loaded_weight_tensor_bytes": loaded_weight_tensor_bytes,
         "loaded_weight_tensor_mib": round(loaded_weight_tensor_bytes / (1024 * 1024), 3),
@@ -123,6 +257,31 @@ def summarize_text_weight_load(bundle: dict[str, Any]) -> dict[str, Any]:
         "tp_sharded_parameter_examples": list(sharded_parameter_names[:8]),
         "tp_replicated_parameter_examples": list(replicated_parameter_names[:8]),
     }
+
+
+def assert_text_weight_scope(bundle: dict[str, Any]) -> None:
+    """Fail fast if a stage bundle contains decoder layer weights outside its own range."""
+
+    weight_load = summarize_text_weight_load(bundle)
+    if not weight_load["stage_weight_scope_ok"]:
+        raise RuntimeError(
+            "stage bundle 加载了非本 stage 的 decoder layer 权重: "
+            f"stage_range={weight_load['stage_start_idx']}:{weight_load['stage_end_idx']} "
+            f"unexpected_layer_indices={weight_load['unexpected_layer_indices']}"
+        )
+
+
+def assert_text_tp_shard_shapes(bundle: dict[str, Any]) -> None:
+    """Fail fast if TP-sharded projection tensors are not shard-sized."""
+
+    weight_load = summarize_text_weight_load(bundle)
+    if not weight_load["tp_shard_shape_ok"]:
+        raise RuntimeError(
+            "TP shard-only bundle 的投影权重形状不是本 rank shard 大小: "
+            f"rank={weight_load['tp_shard_rank']}/{weight_load['tp_shard_world_size']} "
+            f"check_count={weight_load['tp_sharded_projection_check_count']} "
+            f"mismatches={weight_load['tp_shard_shape_mismatches']}"
+        )
 
 
 def _strip_text_phase(phase_payload: dict[str, Any]) -> dict[str, Any]:
@@ -449,6 +608,8 @@ def materialize_text_stage_bundle(
         if stage_weights.lm_head_weight is not None:
             bundle["lm_head_weight"] = stage_weights.lm_head_weight
         bundle["lm_head_bias"] = stage_weights.lm_head_bias
+    assert_text_weight_scope(bundle)
+    assert_text_tp_shard_shapes(bundle)
     return restore_text_stage_inputs(
         bundle,
         config_spec=config_spec,

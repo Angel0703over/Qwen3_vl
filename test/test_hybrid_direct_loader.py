@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import torch
 
+from qwen3vl_tp_runtime.hexgen_core.modules import hybrid_parallel as hybrid_parallel_module
 from qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel import load_stage_bundle_for_hybrid_rank
 from qwen3vl_tp_runtime.hexgen_core.schema import HybridRankContext, StageSpec, TextHybridManifest
 from qwen3vl_tp_runtime.models.qwen3vl.runtime_mm_stage import (
@@ -96,7 +97,89 @@ def _build_mm_startup_contract(*, num_stages: int) -> dict[str, object]:
     }
 
 
+def _fake_tp_projection_layer(layer_idx: int = 0) -> dict[str, object]:
+    return {
+        "layer_idx": layer_idx,
+        "head_dim": 2,
+        "tp_weight_sharded": True,
+        "tp_shard_rank": 1,
+        "tp_shard_world_size": 2,
+        "tp_local_num_attention_heads": 2,
+        "tp_local_num_key_value_heads": 1,
+        "tp_local_intermediate_size": 8,
+        "input_ln_weight": torch.ones(8),
+        "q_weight": torch.zeros(4, 8),
+        "k_weight": torch.zeros(2, 8),
+        "v_weight": torch.zeros(2, 8),
+        "o_weight": torch.zeros(8, 4),
+        "gate_weight": torch.zeros(8, 8),
+        "up_weight": torch.zeros(8, 8),
+        "down_weight": torch.zeros(8, 8),
+    }
+
+
+def _fake_tp_sharded_bundle(
+    *,
+    stage_idx: int,
+    start_idx: int,
+    end_idx: int,
+    tp_shard_rank: int,
+    save_dtype: str = "float32",
+) -> dict[str, object]:
+    layer = _fake_tp_projection_layer(start_idx)
+    layer["tp_shard_rank"] = tp_shard_rank
+    return {
+        "save_dtype": save_dtype,
+        "stage_idx": stage_idx,
+        "start_idx": start_idx,
+        "end_idx": end_idx,
+        "layers": [layer],
+        "tp_weight_sharded": True,
+        "tp_shard_rank": tp_shard_rank,
+        "tp_shard_world_size": 2,
+    }
+
+
 class HybridDirectLoaderTest(unittest.TestCase):
+    def test_runtime_only_decode_phase_drops_prefill_handoff_reference(self) -> None:
+        stage_bundle = {
+            "modality": "multimodal",
+            "prefill_seq_len": 3,
+            "prefill_attention_mask_2d": torch.ones(1, 3, dtype=torch.long),
+            "batch_size": 1,
+            "hidden_size": 4,
+            "token_id_dtype": "int64",
+            "stage_input": torch.ones(1, 3, 4),
+            "layer_input": torch.ones(1, 3, 4),
+            "stage_output": torch.ones(1, 3, 4),
+            "layer_output": torch.ones(1, 3, 4),
+            "layers": [{"q_weight": torch.zeros(1, 1)}],
+            "rope_deltas": torch.zeros(1, 1, dtype=torch.long),
+        }
+
+        with patch(
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.build_mm_decode_state_from_weights",
+            return_value=SimpleNamespace(
+                attention_mask=torch.zeros(1, 1, 1, 4),
+                position_ids=torch.zeros(4, 1, 1, dtype=torch.long),
+                cos=torch.zeros(1, 1, 4),
+                sin=torch.zeros(1, 1, 4),
+            ),
+        ):
+            decode_bundle = hybrid_parallel_module._build_runtime_only_text_generate_phase_bundle(
+                stage_bundle,
+                phase_kind="decode",
+                attention_mask_2d=torch.ones(1, 4, dtype=torch.long),
+                config_spec=SimpleNamespace(hidden_size=4),
+                rotary_emb=None,
+            )
+
+        self.assertNotIn("stage_input", decode_bundle)
+        self.assertNotIn("layer_input", decode_bundle)
+        self.assertNotIn("stage_output", decode_bundle)
+        self.assertNotIn("layer_output", decode_bundle)
+        self.assertEqual(tuple(decode_bundle["decode_input_ids"].shape), (1, 1))
+
     def test_direct_detection_falls_back_without_manifest_property(self) -> None:
         from qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel import _all_hybrid_stages_are_direct
 
@@ -187,8 +270,7 @@ class HybridDirectLoaderTest(unittest.TestCase):
         self.assertIn("_mm_startup_shared", manifest.runtime_config)
         self.assertIn("_mm_startup_stage_handoffs", manifest.runtime_config)
         self.assertEqual(sorted(manifest.runtime_config["_mm_startup_stage_handoffs"]), [0])
-        self.assertIn("_mm_startup_root_input", manifest.runtime_config)
-        self.assertTrue(torch.equal(manifest.runtime_config["_mm_startup_root_input"], torch.zeros(1, 3, 4)))
+        self.assertNotIn("_mm_startup_root_input", manifest.runtime_config)
         self.assertIn("_mm_startup_stage_visuals", manifest.runtime_config)
         self.assertEqual(sorted(manifest.runtime_config["_mm_startup_stage_visuals"]), [0])
         self.assertNotIn("_mm_startup_boundaries", manifest.runtime_config)
@@ -278,8 +360,7 @@ class HybridDirectLoaderTest(unittest.TestCase):
         self.assertIn("_mm_startup_shared", manifest.runtime_config)
         self.assertIn("_mm_startup_stage_handoffs", manifest.runtime_config)
         self.assertEqual(sorted(manifest.runtime_config["_mm_startup_stage_handoffs"]), [0])
-        self.assertIn("_mm_startup_root_input", manifest.runtime_config)
-        self.assertTrue(torch.equal(manifest.runtime_config["_mm_startup_root_input"], torch.zeros(1, 3, 4)))
+        self.assertNotIn("_mm_startup_root_input", manifest.runtime_config)
         self.assertIn("_mm_startup_stage_visuals", manifest.runtime_config)
         self.assertEqual(sorted(manifest.runtime_config["_mm_startup_stage_visuals"]), [0])
         self.assertNotIn("_mm_startup_boundaries", manifest.runtime_config)
@@ -320,16 +401,12 @@ class HybridDirectLoaderTest(unittest.TestCase):
             "layers": [],
         }
         bundle_meta, bundle_tensors = pack_text_scaffold_transport(leader_scaffold)
-        local_bundle = {
-            "save_dtype": "float32",
-            "stage_idx": 0,
-            "start_idx": 0,
-            "end_idx": 17,
-            "layers": [{"layer_idx": 0}],
-            "tp_weight_sharded": True,
-            "tp_shard_rank": 1,
-            "tp_shard_world_size": 2,
-        }
+        local_bundle = _fake_tp_sharded_bundle(
+            stage_idx=0,
+            start_idx=0,
+            end_idx=17,
+            tp_shard_rank=1,
+        )
 
         with patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.prepare_text_prompt_meta",
@@ -474,16 +551,13 @@ class HybridDirectLoaderTest(unittest.TestCase):
             ],
         }
         scaffold_meta, scaffold_tensors = pack_text_scaffold_transport(scaffold)
-        local_bundle = {
-            "save_dtype": "bfloat16",
-            "stage_idx": 0,
-            "start_idx": 0,
-            "end_idx": 17,
-            "layers": [{"layer_idx": 0}],
-            "tp_weight_sharded": True,
-            "tp_shard_rank": 1,
-            "tp_shard_world_size": 2,
-        }
+        local_bundle = _fake_tp_sharded_bundle(
+            stage_idx=0,
+            start_idx=0,
+            end_idx=17,
+            tp_shard_rank=1,
+            save_dtype="bfloat16",
+        )
 
         with patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.build_direct_stage_bundle",
@@ -556,16 +630,12 @@ class HybridDirectLoaderTest(unittest.TestCase):
             "end_idx": 35,
             "layers": [],
         }
-        local_bundle = {
-            "save_dtype": "float32",
-            "stage_idx": 0,
-            "start_idx": 0,
-            "end_idx": 35,
-            "layers": [{"layer_idx": 0}],
-            "tp_weight_sharded": True,
-            "tp_shard_rank": 0,
-            "tp_shard_world_size": 2,
-        }
+        local_bundle = _fake_tp_sharded_bundle(
+            stage_idx=0,
+            start_idx=0,
+            end_idx=35,
+            tp_shard_rank=0,
+        )
 
         def _echo_object(payload, **_kwargs):
             return payload
@@ -669,6 +739,83 @@ class HybridDirectLoaderTest(unittest.TestCase):
                 )
 
         barrier_mock.assert_not_called()
+
+    def test_direct_tp_stage_records_equal_weight_bytes(self) -> None:
+        rank_stage = HybridRankContext(
+            stage_idx=0,
+            stage_ranks=[0, 1],
+            tp_degree=2,
+            local_rank=0,
+            leader_rank=0,
+            prev_leader_rank=None,
+            next_leader_rank=None,
+            stage_group="fake-group",
+            pp_group_idx=0,
+            current_pp_group=[0],
+            send_list=[],
+            recv_list=[],
+            send_empty_list=[],
+            recv_empty_list=[],
+        )
+        bundle = _fake_tp_sharded_bundle(
+            stage_idx=0,
+            start_idx=0,
+            end_idx=35,
+            tp_shard_rank=0,
+        )
+
+        def _equal_gather(output, local_bytes, **_kwargs):
+            output[:] = [int(local_bytes), int(local_bytes)]
+
+        with patch.object(hybrid_parallel_module.dist, "is_initialized", return_value=True), patch.object(
+            hybrid_parallel_module.dist,
+            "all_gather_object",
+            side_effect=_equal_gather,
+        ) as gather_mock:
+            hybrid_parallel_module._record_tp_stage_weight_load_consistency(bundle, rank_stage)
+
+        gather_mock.assert_called_once()
+        self.assertEqual(
+            bundle["_tp_stage_loaded_weight_tensor_bytes"],
+            [bundle["_tp_stage_loaded_weight_tensor_bytes"][0]] * 2,
+        )
+        self.assertTrue(bundle["_tp_stage_loaded_weight_tensor_bytes_equal"])
+        self.assertTrue(bundle["_tp_stage_loaded_weight_tensor_bytes_checked"])
+
+    def test_direct_tp_stage_rejects_unequal_weight_bytes(self) -> None:
+        rank_stage = HybridRankContext(
+            stage_idx=0,
+            stage_ranks=[0, 1],
+            tp_degree=2,
+            local_rank=0,
+            leader_rank=0,
+            prev_leader_rank=None,
+            next_leader_rank=None,
+            stage_group="fake-group",
+            pp_group_idx=0,
+            current_pp_group=[0],
+            send_list=[],
+            recv_list=[],
+            send_empty_list=[],
+            recv_empty_list=[],
+        )
+        bundle = _fake_tp_sharded_bundle(
+            stage_idx=0,
+            start_idx=0,
+            end_idx=35,
+            tp_shard_rank=0,
+        )
+
+        def _unequal_gather(output, local_bytes, **_kwargs):
+            output[:] = [int(local_bytes), int(local_bytes) + 4]
+
+        with patch.object(hybrid_parallel_module.dist, "is_initialized", return_value=True), patch.object(
+            hybrid_parallel_module.dist,
+            "all_gather_object",
+            side_effect=_unequal_gather,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "权重字节数不一致"):
+                hybrid_parallel_module._record_tp_stage_weight_load_consistency(bundle, rank_stage)
 
     def test_single_rank_direct_stage_seeds_runtime_only_prompt_metadata_before_build(self) -> None:
         manifest = _build_manifest(stage_ranges=[(0, 17), (18, 35)], tp_degrees=[2, 1], modality="text")

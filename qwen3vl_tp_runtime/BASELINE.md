@@ -6,7 +6,7 @@
 
 - 固定一组 `hf / live / pp / tp / hybrid` 的 generate 回归命令。
 - 后续改动统一拿这组命令做回归。
-- 当前先固定 `generated_token_ids`、`generated_text`，以及 `tp / hybrid` text case 的 `weight_load` shard 证据。
+- 当前先固定 `generated_token_ids`、`generated_text`，以及 `tp / hybrid` 的 `weight_load` shard/stage scope 证据。
 - 启动时间和峰值显存先不强制纳入这份基线，留到最终性能验收再统一收。
 
 ## 基线规则
@@ -16,7 +16,7 @@
 - text 和 multimodal 都用同一条中文提示词，除非后面专门讨论要拆。
 - distributed case 建议保留 `HEXGEN_STARTUP_LOG=1`，方便看启动耗时拆分。
 - distributed case 目前要求所有 rank 的 `generated_token_ids` / `generated_text` 一致。
-- `tp-text-generate` 和 `hybrid-text-generate` 额外要求 JSON summary 中的 `weight_load` 能证明 rank-local materialize。
+- `tp-text-generate`、`hybrid-text-generate` 和 `hybrid-mm-generate` 额外要求 JSON summary 中的 `weight_load` 能证明 rank-local materialize / stage-local scope。
 
 ## 当前支持矩阵
 
@@ -63,6 +63,7 @@ export MAX_NEW_TOKENS=4
 2. distributed case 的 `HEXGEN_STARTUP_LOG=1` 启动日志
 
 如果方便，建议额外保存 `stderr` 或终端里的 `/usr/bin/time -p` 结果；这部分当前只作为参考，不作为是否过线的硬门槛。
+如果某台 Jetson 没有 `/usr/bin/time`，直接去掉 `/usr/bin/time -p` 即可，不影响当前基线验收。
 
 建议统一输出目录：
 
@@ -94,14 +95,27 @@ distributed case 因为通常分多个终端/节点执行，建议按 `rank` 分
 - rank0 和 rank1 都是 `weight_load.tp_weight_sharded=true`
 - rank0 是 `weight_load.tp_shard_rank=0`，rank1 是 `weight_load.tp_shard_rank=1`
 - 两个 rank 的 `weight_load.tp_shard_world_size=2`
-- 两个 rank 的 `weight_load.loaded_weight_tensor_bytes` 一致或非常接近
+- 两个 rank 的 `weight_load.tp_shard_shape_ok=true`，`tp_sharded_projection_examples` 中 q/k/v/o 和 MLP projection 是 shard 后形状
+- 两个 rank 的 `weight_load.loaded_weight_tensor_bytes` 完全一致
+- 两个 rank 的 `weight_load.tp_stage_loaded_weight_tensor_bytes_equal=true`
 
 `hybrid-text-generate` 额外看：
 
 - stage0 的两个 TP rank 都是 `weight_load.tp_weight_sharded=true`
 - stage0 的两个 TP rank 分别是 `tp_shard_rank=0/2` 和 `1/2`
+- stage0 的两个 TP rank 都是 `weight_load.tp_shard_shape_ok=true` 且 `tp_stage_loaded_weight_tensor_bytes_equal=true`
 - stage1 单卡是 `weight_load.tp_weight_sharded=false`
 - stage1 只加载 `18:35 + final_norm/lm_head` 对应权重
+
+`pp / hybrid multimodal` 额外看：
+
+- startup contract transport 只包含本地 stage 的 `stage_handoffs` 和 `stage_visuals`
+- runtime config 不能出现 `_mm_startup_root_input` 或 `_mm_startup_boundaries`
+- transport payload 不能包含 `root_input / boundaries / hidden_states / replay_bundle / stage_bundle`
+- 各 rank 的 `generated_token_ids` / `generated_text` 一致
+- `pp-mm-generate` 中 stage0 是 frontend active，stage1 是 `multimodal_frontend_mode=consume-only`
+- `hybrid-mm-generate` 中 stage0 的 TP rank 是 `tp_shard_rank=0/2` 和 `1/2`，且 `tp_stage_loaded_weight_tensor_bytes_equal=true`
+- `hybrid-mm-generate` 中 stage1 是 `multimodal_frontend_mode=consume-only`，且只加载 `18:35 + final_norm/lm_head`
 
 distributed case 额外建议保留但暂不强制比较：
 
@@ -125,6 +139,28 @@ distributed case 额外建议保留但暂不强制比较：
 - stage1 rank2: `tp_weight_sharded=false`, `loaded_weight_tensor_bytes=4411426816`
 - `generated_token_ids`: `[104455, 9909, 9286, 16488]`
 - `generated_text`: `人工智能（Artificial`
+
+## 已确认的 multimodal direct smoke
+
+### `pp-mm-generate`
+
+- baseline logs: `baseline_runs/20260427/pp-mm-generate-rank0.log`, `baseline_runs/20260427/pp-mm-generate-rank1.log`
+- rank0 / stage0: `multimodal_frontend_mode=active`, loaded layers `0..17`, `loaded_top_level_weight_names=["embed_tokens_weight"]`, `stage_weight_scope_ok=true`
+- rank1 / stage1: `multimodal_frontend_mode=consume-only`, loaded layers `18..35`, `loaded_top_level_weight_names=["final_norm_weight", "lm_head_weight"]`, `stage_weight_scope_ok=true`
+- all ranks `generated_token_ids`: `[87140, 15946, 3837, 101177]`
+- all ranks `generated_text`: `视频中，一名`
+
+### `hybrid-mm-generate`
+
+- baseline logs: `baseline_runs/20260427/hybrid-mm-generate-rank0.log`, `baseline_runs/20260427/hybrid-mm-generate-rank1.log`, `baseline_runs/20260427/hybrid-mm-generate-rank2.log`
+- stage0 rank0: `tp_weight_sharded=true`, `tp_shard_rank=0`, `tp_shard_world_size=2`, `loaded_weight_tensor_bytes=2594763776`
+- stage0 rank1: `tp_weight_sharded=true`, `tp_shard_rank=1`, `tp_shard_world_size=2`, `loaded_weight_tensor_bytes=2594763776`
+- stage0 TP bytes equality: `tp_stage_loaded_weight_tensor_bytes_equal=true`, `tp_stage_loaded_weight_tensor_bytes=[2594763776, 2594763776]`
+- stage0 scope: loaded layers `0..17`, `loaded_top_level_weight_names=["embed_tokens_weight"]`, `stage_weight_scope_ok=true`
+- stage1 rank2: `multimodal_frontend_mode=consume-only`, `tp_weight_sharded=false`, loaded layers `18..35`, `loaded_top_level_weight_names=["final_norm_weight", "lm_head_weight"]`, `loaded_weight_tensor_bytes=4411426816`, `stage_weight_scope_ok=true`
+- all ranks `generated_token_ids`: `[87140, 15946, 3837, 101177]`
+- all ranks `generated_text`: `视频中，一名`
+- runtime-only main path uses `include_runtime_reference=false`, so this smoke does not require `reference_generated_token_ids` / `token_match` in summary.
 
 ## 固定 case
 
@@ -371,7 +407,8 @@ HEXGEN_STARTUP_LOG=1 /usr/bin/time -p "${TORCHRUN}" \
 - 同一个 case，在改动前后，`generated_token_ids` 一致。
 - 同一个 case，在改动前后，`generated_text` 一致。
 - distributed case 中，不同 rank 打印出的 `generated_token_ids` / `generated_text` 一致。
-- `tp / hybrid` text case 的 `weight_load` shard 证据不回退。
+- `tp / hybrid` case 的 `weight_load` shard shape、stage scope 与 TP stage bytes equality 证据不回退。
+- `pp / hybrid multimodal` case 的 startup contract 不回退到 root/full/replay payload，且 non-stage0 不重新激活 frontend。
 
 当前还不在这份基线里强制比较：
 
@@ -384,8 +421,7 @@ HEXGEN_STARTUP_LOG=1 /usr/bin/time -p "${TORCHRUN}" \
 
 ## 下一步
 
-这份文档当前已经记录了 `tp-text-generate` 和 `hybrid-text-generate` 的 shard-only smoke 结果。后续动作是：
+这份文档当前已经记录了 `tp-text-generate`、`hybrid-text-generate`、`pp-mm-generate` 和 `hybrid-mm-generate` 的通过结果。后续动作是：
 
-- 继续把还没有固化输出的 case 补齐到 `baseline_runs/`
 - 后续改动统一拿这份结果做对比
 - 启动时间和峰值显存留到性能验收阶段再收

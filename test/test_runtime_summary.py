@@ -63,6 +63,20 @@ class RuntimeSummaryTest(unittest.TestCase):
             "start_idx": 0,
             "end_idx": 0,
             "num_layers": 1,
+            "weight_load": {
+                "tp_weight_sharded": False,
+                "tp_shard_rank": None,
+                "tp_shard_world_size": None,
+                "stage_start_idx": 0,
+                "stage_end_idx": 0,
+                "loaded_layer_indices": [0],
+                "loaded_layer_count": 1,
+                "loaded_top_level_weight_names": ["embed_tokens_weight", "final_norm_weight", "lm_head_weight"],
+                "unexpected_layer_indices": [],
+                "stage_weight_scope_ok": True,
+                "loaded_weight_tensor_count": 3,
+                "loaded_weight_tensor_bytes": 128,
+            },
             "device": "cpu",
             "comm_dtype": "torch.float32",
             "prefill_seq_len": 4,
@@ -86,6 +100,8 @@ class RuntimeSummaryTest(unittest.TestCase):
         self.assertNotIn("token_match", summary)
         self.assertEqual(len(summary["step_topks"]), 2)
         self.assertNotIn("reference_topk", summary["step_topks"][0])
+        self.assertTrue(summary["weight_load"]["stage_weight_scope_ok"])
+        self.assertEqual(summary["weight_load"]["loaded_layer_indices"], [0])
 
     def test_hybrid_generate_summary_skips_missing_reference_tensors(self) -> None:
         manifest = TextHybridManifest(

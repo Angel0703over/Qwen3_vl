@@ -54,6 +54,8 @@ from qwen3vl_tp_runtime.models.qwen3vl.runtime_text import (
     restore_text_prompt_meta,
 )
 from qwen3vl_tp_runtime.models.qwen3vl.runtime_text_stage import (
+    assert_text_tp_shard_shapes,
+    assert_text_weight_scope,
     build_rt_text_bundle,
     compact_rt_text_scaffold,
     compact_text_scaffold,
@@ -228,23 +230,115 @@ def _merge_mm_stage_visuals(
     return visual_pos_masks, merged_deepstack
 
 
+_MM_STARTUP_FORBIDDEN_KEYS = (
+    "root_input",
+    "boundaries",
+    "hidden_states",
+    "stage_bundle",
+    "bundle",
+    "replay_bundle",
+    "replay_bundle_path",
+)
+_MM_STARTUP_ALLOWED_TOP_LEVEL_KEYS = frozenset(
+    (
+        "shared",
+        "stage_handoffs",
+        "stage_visuals",
+        "visual_pos_masks",
+        "deepstack_by_layer",
+        "num_frames",
+        "frame_paths",
+    )
+)
+_MM_STARTUP_ALLOWED_SHARED_KEYS = frozenset(
+    (
+        "input_ids",
+        "attention_mask_2d",
+        "position_ids",
+        "attention_mask",
+        "cos",
+        "sin",
+        "rope_deltas",
+        "mm_token_type_ids",
+        "image_grid_thw",
+        "video_grid_thw",
+    )
+)
+_MM_STARTUP_ALLOWED_STAGE_HANDOFF_KEYS = frozenset(("stage_input", "stage_output"))
+_MM_STARTUP_ALLOWED_STAGE_VISUAL_KEYS = frozenset(("visual_pos_masks", "deepstack_by_layer"))
+
+
+def _assert_thin_mm_startup_payload(payload: dict[str, Any], *, context: str) -> None:
+    forbidden = [key for key in _MM_STARTUP_FORBIDDEN_KEYS if key in payload]
+    if forbidden:
+        raise RuntimeError(
+            "multimodal startup contract 必须保持 thin，不能携带 full/root/replay payload，"
+            f"context={context} forbidden_keys={forbidden}"
+        )
+    unknown_top_level = [
+        key for key in payload if key not in _MM_STARTUP_ALLOWED_TOP_LEVEL_KEYS
+    ]
+    if unknown_top_level:
+        raise RuntimeError(
+            "multimodal startup contract 只能携带 thin startup 字段，"
+            f"context={context} unknown_keys={unknown_top_level}"
+        )
+
+    shared = payload.get("shared")
+    if isinstance(shared, dict):
+        invalid_shared = [
+            key for key in shared if key not in _MM_STARTUP_ALLOWED_SHARED_KEYS
+        ]
+        if invalid_shared:
+            raise RuntimeError(
+                "multimodal startup shared 只能携带 decoder runtime metadata/tensor，"
+                f"context={context} invalid_shared_keys={invalid_shared}"
+            )
+
+    stage_handoffs = payload.get("stage_handoffs")
+    if isinstance(stage_handoffs, dict):
+        for stage_idx, stage_payload in stage_handoffs.items():
+            if not isinstance(stage_payload, dict):
+                continue
+            invalid_stage_keys = [
+                key
+                for key in stage_payload
+                if key not in _MM_STARTUP_ALLOWED_STAGE_HANDOFF_KEYS
+            ]
+            if invalid_stage_keys:
+                raise RuntimeError(
+                    "multimodal startup stage_handoffs 只能携带 stage_input/stage_output，"
+                    f"context={context} stage_idx={stage_idx} invalid_keys={invalid_stage_keys}"
+                )
+
+    stage_visuals = payload.get("stage_visuals")
+    if isinstance(stage_visuals, dict):
+        for stage_idx, stage_payload in stage_visuals.items():
+            if isinstance(stage_payload, tuple):
+                continue
+            if not isinstance(stage_payload, dict):
+                continue
+            invalid_visual_keys = [
+                key
+                for key in stage_payload
+                if key not in _MM_STARTUP_ALLOWED_STAGE_VISUAL_KEYS
+            ]
+            if invalid_visual_keys:
+                raise RuntimeError(
+                    "multimodal startup stage_visuals 只能携带 local visual/deepstack payload，"
+                    f"context={context} stage_idx={stage_idx} invalid_keys={invalid_visual_keys}"
+                )
+
+
 def _normalize_mm_startup_contract(payload: dict[str, Any]) -> dict[str, Any]:
+    _assert_thin_mm_startup_payload(payload, context="normalize")
     shared = payload.get("shared")
     if not isinstance(shared, dict):
         raise RuntimeError("multimodal startup contract payload 缺少 shared。")
 
     stage_handoffs = payload.get("stage_handoffs")
     if not isinstance(stage_handoffs, dict):
-        boundaries = payload.get("boundaries")
-        if not isinstance(boundaries, list):
-            raise RuntimeError("multimodal startup contract payload 缺少 stage_handoffs/boundaries。")
-        stage_handoffs = {
-            int(stage_idx): {
-                "stage_input": boundaries[stage_idx],
-                "stage_output": boundaries[stage_idx + 1],
-            }
-            for stage_idx in range(len(boundaries) - 1)
-        }
+        raise RuntimeError("multimodal startup contract payload 缺少 stage_handoffs。")
 
     stage_visuals_payload = payload.get("stage_visuals")
     stage_visuals = {}
@@ -263,12 +357,6 @@ def _normalize_mm_startup_contract(payload: dict[str, Any]) -> dict[str, Any]:
     if deepstack_by_layer is None and stage_visuals:
         visual_pos_masks, deepstack_by_layer = _merge_mm_stage_visuals(stage_visuals)
 
-    root_input = payload.get("root_input")
-    if root_input is None:
-        stage_zero_payload = stage_handoffs.get(0)
-        if isinstance(stage_zero_payload, dict):
-            root_input = stage_zero_payload.get("stage_input")
-
     return {
         "shared": shared,
         "stage_handoffs": {
@@ -276,7 +364,6 @@ def _normalize_mm_startup_contract(payload: dict[str, Any]) -> dict[str, Any]:
             for stage_idx, stage_payload in stage_handoffs.items()
         },
         "stage_visuals": stage_visuals,
-        "root_input": root_input,
         "visual_pos_masks": visual_pos_masks,
         "deepstack_by_layer": {
             int(layer_idx): deepstack
@@ -290,7 +377,6 @@ def _normalize_mm_startup_contract(payload: dict[str, Any]) -> dict[str, Any]:
 def _build_mm_startup_transport_payload(
     *,
     shared: dict[str, Any],
-    root_input: torch.Tensor | None,
     stage_handoffs: dict[int, dict[str, torch.Tensor | None]],
     stage_visuals: dict[int, Any],
     num_frames: int,
@@ -303,10 +389,6 @@ def _build_mm_startup_transport_payload(
             value,
             compute_dtype=compute_dtype,
         )
-    tensor_payload["root_input"] = _clone_tensor_to_cpu(
-        root_input,
-        compute_dtype=compute_dtype,
-    )
     for stage_idx, stage_payload in stage_handoffs.items():
         tensor_payload[f"stage_handoffs.{int(stage_idx)}.stage_input"] = _clone_tensor_to_cpu(
             stage_payload.get("stage_input"),
@@ -349,7 +431,6 @@ def pack_mm_startup_transport(
     normalized = _normalize_mm_startup_contract(payload)
     return _build_mm_startup_transport_payload(
         shared=normalized["shared"],
-        root_input=normalized["root_input"],
         stage_handoffs=normalized["stage_handoffs"],
         stage_visuals=normalized["stage_visuals"],
         num_frames=normalized["num_frames"],
@@ -364,6 +445,7 @@ def restore_mm_startup_transport(
 ) -> dict[str, Any]:
     if not isinstance(meta, dict):
         raise RuntimeError("multimodal startup transport meta 缺少 metadata。")
+    _assert_thin_mm_startup_payload(meta, context="restore_meta")
     if tensor_payload is None:
         raise RuntimeError("multimodal startup transport 缺少 tensor payload。")
 
@@ -371,7 +453,6 @@ def restore_mm_startup_transport(
         "shared": {},
         "stage_handoffs": {},
         "stage_visuals": {},
-        "root_input": None,
         "num_frames": int(meta.get("num_frames", 0)),
         "frame_paths": list(meta.get("frame_paths") or []),
     }
@@ -379,13 +460,25 @@ def restore_mm_startup_transport(
         parts = name.split(".")
         if not parts:
             continue
-        if parts[0] == "root_input" and len(parts) == 1:
-            restored["root_input"] = _clone_tensor_to_cpu(tensor)
-            continue
+        if parts[0] in _MM_STARTUP_FORBIDDEN_KEYS:
+            raise RuntimeError(
+                "multimodal startup transport 不能携带 full/root/replay tensor，"
+                f"forbidden_key={parts[0]}"
+            )
         if parts[0] == "shared" and len(parts) == 2:
+            if parts[1] not in _MM_STARTUP_ALLOWED_SHARED_KEYS:
+                raise RuntimeError(
+                    "multimodal startup transport shared tensor 字段不在 thin schema 内，"
+                    f"key={parts[1]}"
+                )
             restored["shared"][parts[1]] = _clone_tensor_to_cpu(tensor)
             continue
-        if parts[0] == "stage_handoffs" and len(parts) == 3:
+        if parts[0] == "stage_handoffs":
+            if len(parts) != 3 or parts[2] not in _MM_STARTUP_ALLOWED_STAGE_HANDOFF_KEYS:
+                raise RuntimeError(
+                    "multimodal startup transport stage_handoffs 只能携带 stage_input/stage_output，"
+                    f"tensor_name={name}"
+                )
             stage_idx = int(parts[1])
             restored["stage_handoffs"].setdefault(stage_idx, {})[parts[2]] = _clone_tensor_to_cpu(
                 tensor,
@@ -406,6 +499,14 @@ def restore_mm_startup_transport(
             if parts[2] == "deepstack_by_layer" and len(parts) == 4:
                 stage_visuals["deepstack_by_layer"][int(parts[3])] = _clone_tensor_to_cpu(tensor)
                 continue
+            raise RuntimeError(
+                "multimodal startup transport stage_visuals tensor 字段不在 thin schema 内，"
+                f"tensor_name={name}"
+            )
+        raise RuntimeError(
+            "multimodal startup transport tensor 字段不在 thin schema 内，"
+            f"tensor_name={name}"
+        )
 
     if not restored["shared"]:
         raise RuntimeError("multimodal startup transport 缺少 shared tensor payload。")
@@ -635,6 +736,12 @@ class DirectStageBundleBuilder:
                         runtime_config.get("save_dtype", "auto"),
                     )
                 else:
+                    if not self.mm_activate_frontend:
+                        raise RuntimeError(
+                            "multimodal non-frontend direct stage 必须消费 startup contract，"
+                            "不能本地解析/构建视觉 frontend。请先由 stage0 广播 "
+                            "multimodal startup contract，再构建 non-stage0。"
+                        )
                     resolved_frontend = resolve_mm_frontend(
                         self.runtime_config,
                         activate_frontend=self.mm_activate_frontend,
@@ -839,7 +946,6 @@ class DirectStageBundleBuilder:
         local_stage_indices: list[int] | None = None,
     ) -> tuple[
         dict[str, Any],
-        torch.Tensor | None,
         dict[int, dict[str, torch.Tensor | None]],
         dict[int, tuple[torch.Tensor | None, dict[int, torch.Tensor]]],
     ]:
@@ -874,29 +980,20 @@ class DirectStageBundleBuilder:
             for stage_idx in selected_stage_indices
             if stage_idx in self._mm_prefill_visuals_by_stage
         }
-        root_input = self._mm_prefill_root_input
-        if root_input is None:
-            stage_zero_payload = self._prefill_stage_inputs_by_stage.get(0)
-            if stage_zero_payload is not None:
-                root_input = stage_zero_payload
-        return self._mm_prefill_shared, root_input, selected_stage_handoffs, selected_stage_visuals
+        return self._mm_prefill_shared, selected_stage_handoffs, selected_stage_visuals
 
     def export_mm_startup_payload(
         self,
         *,
         local_stage_indices: list[int] | None = None,
     ) -> dict[str, Any]:
-        shared, root_input, selected_stage_handoffs, selected_stage_visuals = self._collect_mm_startup_payload_parts(
+        shared, selected_stage_handoffs, selected_stage_visuals = self._collect_mm_startup_payload_parts(
             local_stage_indices=local_stage_indices,
         )
 
         payload: dict[str, Any] = {
             "shared": _clone_mm_shared_to_cpu(
                 shared,
-                compute_dtype=self.compute_dtype,
-            ),
-            "root_input": _clone_tensor_to_cpu(
-                root_input,
                 compute_dtype=self.compute_dtype,
             ),
             "stage_handoffs": _clone_mm_stage_handoffs_to_cpu(
@@ -918,12 +1015,11 @@ class DirectStageBundleBuilder:
         *,
         local_stage_indices: list[int] | None = None,
     ) -> tuple[dict[str, Any], dict[str, torch.Tensor | None]]:
-        shared, root_input, selected_stage_handoffs, selected_stage_visuals = self._collect_mm_startup_payload_parts(
+        shared, selected_stage_handoffs, selected_stage_visuals = self._collect_mm_startup_payload_parts(
             local_stage_indices=local_stage_indices,
         )
         return _build_mm_startup_transport_payload(
             shared=shared,
-            root_input=root_input,
             stage_handoffs=selected_stage_handoffs,
             stage_visuals=selected_stage_visuals,
             num_frames=int(self.extra["num_frames"]),
@@ -956,9 +1052,7 @@ class DirectStageBundleBuilder:
             raise RuntimeError("multimodal startup contract 缺少 shared/stage_handoffs。")
 
         self._mm_prefill_shared = _clone_mm_shared_to_cpu(shared)
-        self._mm_prefill_root_input = _clone_tensor_to_cpu(
-            self.runtime_config.get("_mm_startup_root_input"),
-        )
+        self._mm_prefill_root_input = None
         self._mm_prefill_visuals_by_stage = {}
         if isinstance(stage_visuals, dict):
             self._mm_prefill_visuals_by_stage.update(
@@ -997,8 +1091,6 @@ class DirectStageBundleBuilder:
                 self._mm_prefill_visuals_by_stage[spec.stage_idx] = (
                     self._build_mm_stage_visual_payload_from_full(spec)
                 )
-        if self._mm_prefill_root_input is None and 0 in self._prefill_stage_inputs_by_stage:
-            self._mm_prefill_root_input = self._prefill_stage_inputs_by_stage[0].detach().clone()
         self._mm_prefill_full_runtime = None
 
     def _merge_mm_prefill_visuals(
@@ -1039,12 +1131,15 @@ class DirectStageBundleBuilder:
             return self._mm_prefill_full_runtime
         if self._mm_prefill_shared is None:
             raise RuntimeError("multimodal shared prefill state 尚未初始化。")
-        if self._mm_prefill_root_input is None:
+        stage0_input = self._prefill_stage_inputs_by_stage.get(0)
+        if stage0_input is None:
+            stage0_input = self._mm_prefill_root_input
+        if stage0_input is None:
             raise RuntimeError("multimodal startup contract 缺少 stage0 handoff activation。")
         visual_pos_masks, deepstack_by_layer = self._merge_mm_prefill_visuals(device=self.device)
         self._mm_prefill_full_runtime = build_mm_stage_state(
             self._mm_prefill_shared,
-            stage_input=self._mm_prefill_root_input,
+            stage_input=stage0_input,
             start_idx=0,
             end_idx=self.num_layers - 1,
             device=self.device,
@@ -1432,7 +1527,7 @@ class DirectStageBundleBuilder:
         if stage_input is None:
             stage_input = self._mm_prefill_root_input
         if stage_input is None:
-            raise RuntimeError("local full-stage prefill reference 缺少 stage0/root handoff activation。")
+            raise RuntimeError("local full-stage prefill reference 缺少本地 stage0/root handoff activation。")
         prefill_runtime_state = self._build_mm_stage_state(
             spec,
             self._mm_prefill_shared if self._mm_prefill_shared is not None else self._prefill_mm_inputs(),
@@ -2871,8 +2966,8 @@ class DirectStageBundleBuilder:
         return bundle
 
     def _build_generate_bundle_runtime_only(self, spec: StageSpec) -> dict[str, Any]:
-        if self.modality != "text":
-            raise RuntimeError("runtime-only generate bundle 当前只支持 text modality。")
+        if self.modality not in {"text", "multimodal"}:
+            raise RuntimeError(f"runtime-only generate bundle 不支持 modality={self.modality!r}。")
 
         text_stage_weights = (
             self._get_text_stage_static_weights(spec)
@@ -2892,11 +2987,82 @@ class DirectStageBundleBuilder:
             layers=layer_bundles,
             text_stage_weights=text_stage_weights,
         )
+        bundle["module_name"] = f"{self.modality}_generate_stage"
+        bundle["stage_type"] = f"{self.modality}_generate_runtime_only"
+        bundle["modality"] = self.modality
         bundle["max_new_tokens"] = int(self.runtime_config.get("max_new_tokens", 4))
 
-        if spec.start_idx == 0:
+        if self.modality == "multimodal":
+            stage_input = self._prefill_stage_inputs_by_stage.get(spec.stage_idx)
+            if stage_input is None:
+                raise RuntimeError(
+                    f"multimodal runtime-only generate 缺少 stage_idx={spec.stage_idx} 的 startup handoff。"
+                )
+            prefill_runtime_state = self._build_mm_stage_state(
+                spec,
+                self._mm_prefill_shared if self._mm_prefill_shared is not None else self._prefill_mm_inputs(),
+                stage_input=stage_input,
+            )
+            visual_pos_masks = _runtime_tensor(
+                getattr(prefill_runtime_state, "visual_pos_masks", None),
+                device=self.bundle_device,
+            )
+            deepstack_by_layer = {
+                int(layer_idx): _runtime_tensor(
+                    deepstack,
+                    device=self.bundle_device,
+                    compute_dtype=self.compute_dtype,
+                )
+                for layer_idx, deepstack in getattr(prefill_runtime_state, "deepstack_by_layer", {}).items()
+            }
+            bundle.update(
+                {
+                    "num_frames": self.extra["num_frames"],
+                    "frame_paths": self.extra["frame_paths"],
+                    "stage_input": _runtime_tensor(
+                        stage_input,
+                        device=self.bundle_device,
+                        compute_dtype=self.compute_dtype,
+                    ),
+                    "layer_input": _runtime_tensor(
+                        stage_input,
+                        device=self.bundle_device,
+                        compute_dtype=self.compute_dtype,
+                    ),
+                    "prefill_attention_mask": _runtime_tensor(
+                        prefill_runtime_state.attention_mask,
+                        device=self.bundle_device,
+                    ),
+                    "prefill_position_ids": _runtime_tensor(
+                        prefill_runtime_state.position_ids,
+                        device=self.bundle_device,
+                    ),
+                    "prefill_cos": _runtime_tensor(
+                        prefill_runtime_state.cos,
+                        device=self.bundle_device,
+                        compute_dtype=self.compute_dtype,
+                    ),
+                    "prefill_sin": _runtime_tensor(
+                        prefill_runtime_state.sin,
+                        device=self.bundle_device,
+                        compute_dtype=self.compute_dtype,
+                    ),
+                    "rope_deltas": _runtime_tensor(
+                        getattr(prefill_runtime_state, "rope_deltas", None),
+                        device=self.bundle_device,
+                    ),
+                    "visual_pos_masks": visual_pos_masks,
+                    "deepstack_by_layer": deepstack_by_layer,
+                    "deepstack_layer_indices": sorted(deepstack_by_layer),
+                }
+            )
+
+        if self.modality == "text" and spec.start_idx == 0:
             bundle["input_ids"] = _runtime_tensor(self.prefill_input_ids, device=self.bundle_device)
             if text_stage_weights is not None and text_stage_weights.embed_tokens_weight is not None:
+                bundle["embed_tokens_weight"] = text_stage_weights.embed_tokens_weight
+        elif self.modality == "multimodal" and spec.start_idx == 0 and text_stage_weights is not None:
+            if text_stage_weights.embed_tokens_weight is not None:
                 bundle["embed_tokens_weight"] = text_stage_weights.embed_tokens_weight
 
         if spec.end_idx == self.num_layers - 1 and text_stage_weights is not None:
@@ -2921,7 +3087,7 @@ class DirectStageBundleBuilder:
             elif self.mode == "decode":
                 bundle = self._build_decode_bundle(spec)
             elif self.mode == "generate":
-                if self.modality == "text" and not self.include_runtime_reference:
+                if not self.include_runtime_reference:
                     bundle = self._build_generate_bundle_runtime_only(spec)
                 else:
                     bundle = self._build_generate_bundle(spec)
@@ -2940,8 +3106,10 @@ class DirectStageBundleBuilder:
                     # generate bundles when we want local TP ranks to load
                     # weights themselves instead of broadcasting them.
                     return compact_text_scaffold(bundle)
-                if bundle.get("runtime_only_generate"):
+                if bundle.get("runtime_only_generate") and self.modality == "text":
                     return compact_rt_text_scaffold(bundle)
+            assert_text_weight_scope(bundle)
+            assert_text_tp_shard_shapes(bundle)
             return bundle
 
 
@@ -2997,6 +3165,7 @@ def select_mm_startup_contract(
     *,
     local_stage_indices: list[int] | None = None,
 ) -> dict[str, Any]:
+    _assert_thin_mm_startup_payload(payload, context="select")
     normalized = _normalize_mm_startup_contract(payload)
     stage_handoffs = normalized["stage_handoffs"]
     if local_stage_indices is None:
@@ -3015,7 +3184,6 @@ def select_mm_startup_contract(
 
     local_payload: dict[str, Any] = {
         "shared": _clone_mm_shared_to_cpu(normalized["shared"]),
-        "root_input": _clone_tensor_to_cpu(normalized["root_input"]),
         "stage_handoffs": _clone_mm_stage_handoffs_to_cpu(
             {
                 stage_idx: stage_handoffs[stage_idx]
@@ -3062,7 +3230,7 @@ def seed_mm_startup_runtime_config(
 
     runtime_config["_mm_startup_shared"] = selected_payload["shared"]
     runtime_config["_mm_startup_stage_handoffs"] = selected_payload["stage_handoffs"]
-    runtime_config["_mm_startup_root_input"] = selected_payload.get("root_input")
+    runtime_config.pop("_mm_startup_root_input", None)
     selected_stage_visuals = selected_payload.get("stage_visuals")
     if selected_stage_visuals:
         runtime_config["_mm_startup_stage_visuals"] = selected_stage_visuals

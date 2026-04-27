@@ -19,14 +19,14 @@ Current state:
 
 - The main `pp / tp / hybrid` path is direct-first and builds runtime state from `model_path`.
 - The main text `TP` path no longer loads full decoder projection weights on every GPU and slices only during compute. Direct `tp_degree > 1` stages first broadcast a no-weight scaffold, then each rank materializes its local shard from `model_path`.
-- `backend=tp` text generate has passed real Jetson smoke with `weight_load.tp_weight_sharded=true` on both ranks, `tp_shard_rank=0/2` and `1/2`, and identical `loaded_weight_tensor_bytes`.
+- `backend=tp` text generate has passed real Jetson smoke with `weight_load.tp_weight_sharded=true` on both ranks, `tp_shard_rank=0/2` and `1/2`, shard-sized projection shapes, and identical `loaded_weight_tensor_bytes`.
 - `backend=hybrid` text generate has passed real Jetson smoke with stage0 running rank-local TP shards and stage1 loading only its own PP stage weights.
-- Multimodal direct runtime for `pp / hybrid` has passed real Jetson smoke runs, including `token_match=true` on `multimodal generate`.
-- The current milestone is considered complete for the direct-from-`model_path`, rank-local text decoder shard path.
+- Multimodal direct runtime for `pp / hybrid` has passed real Jetson smoke runs on the runtime-only main path. All ranks produced matching `generated_token_ids=[87140, 15946, 3837, 101177]`, and summaries prove stage-local frontend/weight scope plus hybrid TP shard-local materialization.
+- Multimodal startup transport is now stage-local and thin: it carries only runtime shared metadata/tensors, local stage handoffs, local stage visuals, and frame metadata; root/full/replay payloads are rejected.
+- The current milestone is considered complete for direct-from-`model_path` PP/TP/hybrid startup, rank-local text decoder shards, and `pp / hybrid` multimodal stage-only/shard-only smoke. Runtime summary now includes PP stage weight scope, TP projection shape proof, and same-stage TP weight-byte equality evidence.
 
 Remaining tail work:
 
-- Multimodal is not yet in its final `stage-only / shard-only` end state.
 - Embedding and `lm_head` are still replicated where the current execution semantics require them. Vocab/embedding parallelism is a later optimization, not part of the completed milestone.
 - Startup time and peak-memory baselines are intentionally deferred; current acceptance is based on output tokens and `weight_load` shard evidence.
 - Some schema, legacy compatibility, and debug-only transport cleanup may still continue, but replay/capture paths are no longer considered the main runtime surface.

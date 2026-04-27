@@ -54,6 +54,8 @@ from qwen3vl_tp_runtime.models.qwen3vl.execution import (
     trace_text_decode_stage_with_runtime_cache,
 )
 from qwen3vl_tp_runtime.models.qwen3vl.functional import dtype_from_name, resolve_comm_dtype
+from qwen3vl_tp_runtime.models.qwen3vl.runtime_mm_stage import build_mm_decode_state_from_weights
+from qwen3vl_tp_runtime.models.qwen3vl.runtime_text_stage import summarize_text_weight_load
 from qwen3vl_tp_runtime.models.qwen3vl.weights import (
     build_text_rotary_embedding,
     build_text_runtime_aux_tensors,
@@ -933,6 +935,21 @@ def _build_runtime_only_text_generate_phase_bundle(
 ) -> dict:
     query_len = int(stage_bundle["prefill_seq_len"]) if phase_kind == "prefill" else 1
     runtime_bundle = dict(stage_bundle)
+    if phase_kind == "decode":
+        # The runtime-only stage bundle keeps the prefill handoff as the local
+        # startup seed. Decode must receive/build a fresh one-token input;
+        # otherwise TP followers allocate a prefill-sized broadcast buffer.
+        for key in (
+            "stage_input",
+            "layer_input",
+            "stage_output",
+            "layer_output",
+            "hidden_stage_output",
+            "norm_output",
+            "output_token_id",
+        ):
+            runtime_bundle.pop(key, None)
+    is_multimodal = str(stage_bundle.get("modality", "text")) == "multimodal"
     runtime_bundle["stage_type"] = (
         "text_prefill_last"
         if phase_kind == "prefill" and "final_norm_weight" in stage_bundle
@@ -943,20 +960,56 @@ def _build_runtime_only_text_generate_phase_bundle(
         else "text_decode"
     )
     runtime_bundle["attention_mask_2d"] = attention_mask_2d
-    runtime_aux = build_text_runtime_aux_tensors(
-        attention_mask_2d=attention_mask_2d,
-        batch_size=int(stage_bundle["batch_size"]),
-        seq_len=query_len,
-        past_length=int(attention_mask_2d.shape[-1]) - query_len,
-        config_spec=config_spec,
-        device=_infer_runtime_tensor_device(stage_bundle),
-        compute_dtype=_infer_runtime_tensor_dtype(stage_bundle),
-        rotary_emb=rotary_emb,
-    )
-    runtime_bundle["attention_mask"] = runtime_aux["attention_mask"]
-    runtime_bundle["position_ids"] = runtime_aux["position_ids"]
-    runtime_bundle["cos"] = runtime_aux["cos"]
-    runtime_bundle["sin"] = runtime_aux["sin"]
+
+    if is_multimodal and phase_kind == "prefill":
+        runtime_bundle["attention_mask"] = stage_bundle["prefill_attention_mask"]
+        runtime_bundle["position_ids"] = stage_bundle.get("prefill_position_ids")
+        runtime_bundle["cos"] = stage_bundle["prefill_cos"]
+        runtime_bundle["sin"] = stage_bundle["prefill_sin"]
+    elif is_multimodal and phase_kind == "decode":
+        decode_input_ids = torch.zeros(
+            (int(stage_bundle["batch_size"]), 1),
+            device=_infer_runtime_tensor_device(stage_bundle),
+            dtype=_infer_runtime_token_dtype(stage_bundle),
+        )
+        dummy_embed_tokens_weight = torch.zeros(
+            (1, int(config_spec.hidden_size)),
+            device=_infer_runtime_tensor_device(stage_bundle),
+            dtype=_infer_runtime_tensor_dtype(stage_bundle),
+        )
+        decode_state = build_mm_decode_state_from_weights(
+            decode_input_ids=decode_input_ids,
+            attention_mask_2d=attention_mask_2d,
+            past_length=int(attention_mask_2d.shape[-1]) - query_len,
+            rope_deltas=stage_bundle["rope_deltas"],
+            embed_tokens_weight=dummy_embed_tokens_weight,
+            config_spec=config_spec,
+            device=_infer_runtime_tensor_device(stage_bundle),
+            compute_dtype=_infer_runtime_tensor_dtype(stage_bundle),
+            rotary_emb=rotary_emb,
+        )
+        runtime_bundle["attention_mask"] = decode_state.attention_mask
+        runtime_bundle["position_ids"] = decode_state.position_ids
+        runtime_bundle["cos"] = decode_state.cos
+        runtime_bundle["sin"] = decode_state.sin
+        runtime_bundle["visual_pos_masks"] = None
+        runtime_bundle["deepstack_by_layer"] = {}
+        runtime_bundle["deepstack_layer_indices"] = []
+    else:
+        runtime_aux = build_text_runtime_aux_tensors(
+            attention_mask_2d=attention_mask_2d,
+            batch_size=int(stage_bundle["batch_size"]),
+            seq_len=query_len,
+            past_length=int(attention_mask_2d.shape[-1]) - query_len,
+            config_spec=config_spec,
+            device=_infer_runtime_tensor_device(stage_bundle),
+            compute_dtype=_infer_runtime_tensor_dtype(stage_bundle),
+            rotary_emb=rotary_emb,
+        )
+        runtime_bundle["attention_mask"] = runtime_aux["attention_mask"]
+        runtime_bundle["position_ids"] = runtime_aux["position_ids"]
+        runtime_bundle["cos"] = runtime_aux["cos"]
+        runtime_bundle["sin"] = runtime_aux["sin"]
     if phase_kind == "prefill" and stage_bundle.get("input_ids") is not None:
         runtime_bundle["input_ids"] = stage_bundle["input_ids"]
     if phase_kind == "decode":
@@ -1291,6 +1344,7 @@ class TextGeneratePipelineRunner:
             "start_idx": stage_bundle["start_idx"],
             "end_idx": stage_bundle["end_idx"],
             "num_layers": len(stage_bundle["layers"]),
+            "weight_load": summarize_text_weight_load(stage_bundle),
             "device": str(self.device),
             "comm_dtype": str(comm_dtype),
             "max_new_tokens": int(stage_bundle["max_new_tokens"]),
@@ -1405,6 +1459,7 @@ class TextPipelineRunner:
             "start_idx": bundle["start_idx"],
             "end_idx": bundle["end_idx"],
             "num_layers": len(bundle["layers"]),
+            "weight_load": summarize_text_weight_load(bundle),
             "device": str(self.device),
             "comm_dtype": str(comm_dtype),
             "input_shape": tuple(stage_input.shape),

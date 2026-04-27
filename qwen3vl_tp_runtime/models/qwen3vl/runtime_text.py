@@ -200,6 +200,13 @@ def _restore_text_prompt_bundle(
     if not bundle.get("runtime_only_generate"):
         return bundle
 
+    if bundle.get("modality") == "multimodal":
+        restored = dict(bundle)
+        restored.pop("runtime_only_prompt_local_rebuild", None)
+        if restored.get("prefill_attention_mask_2d") is None:
+            raise RuntimeError("multimodal runtime-only generate scaffold 缺少 prefill_attention_mask_2d。")
+        return restored
+
     needs_restore = bool(bundle.pop("runtime_only_prompt_local_rebuild", False))
     is_first_stage = int(bundle["start_idx"]) == 0
     if (

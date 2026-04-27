@@ -17,7 +17,11 @@ from qwen3vl_tp_runtime.models.qwen3vl.runtime_builder import (
     restore_text_scaffold_transport,
     seed_mm_startup_runtime_config,
 )
-from qwen3vl_tp_runtime.models.qwen3vl.runtime_text_stage import summarize_text_weight_load
+from qwen3vl_tp_runtime.models.qwen3vl.runtime_text_stage import (
+    assert_text_tp_shard_shapes,
+    assert_text_weight_scope,
+    summarize_text_weight_load,
+)
 from qwen3vl_tp_runtime.models.qwen3vl.runtime_mm_stage import (
     MmRuntimeState,
     MmVisualState,
@@ -144,6 +148,100 @@ class ModelWeightLoaderTest(unittest.TestCase):
             rope_deltas=torch.zeros(1, 1, dtype=torch.long),
         )
         return config, embed_tokens_weight, frontend_state
+
+    def _seed_small_mm_startup_contract(
+        self,
+        runtime_config: dict[str, object],
+        frontend_state: MmRuntimeState,
+        *,
+        stage_idx: int = 1,
+        stage_input: torch.Tensor | None = None,
+        stage_output: torch.Tensor | None = None,
+        num_frames: int = 2,
+        frame_paths: list[str] | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if stage_input is None:
+            stage_input = torch.full_like(frontend_state.inputs_embeds, 3.0 + float(stage_idx))
+        if stage_output is None:
+            stage_output = torch.full_like(frontend_state.inputs_embeds, 7.0 + float(stage_idx))
+        seed_mm_startup_runtime_config(
+            runtime_config,
+            {
+                "shared": compact_mm_runtime_shared(frontend_state),
+                "stage_handoffs": {
+                    stage_idx: {
+                        "stage_input": stage_input.detach().clone(),
+                        "stage_output": stage_output.detach().clone(),
+                    },
+                },
+                "stage_visuals": {
+                    stage_idx: {
+                        "visual_pos_masks": None,
+                        "deepstack_by_layer": {},
+                    },
+                },
+                "num_frames": num_frames,
+                "frame_paths": list(frame_paths or ["/tmp/f0.png", "/tmp/f1.png"]),
+            },
+            local_stage_indices=[stage_idx],
+        )
+        return stage_input, stage_output
+
+    def test_assert_text_weight_scope_rejects_unrelated_decoder_layer(self) -> None:
+        bundle = {
+            "start_idx": 18,
+            "end_idx": 35,
+            "layers": [
+                {
+                    "layer_idx": 17,
+                    "q_weight": torch.ones(4, 4),
+                },
+                {
+                    "layer_idx": 18,
+                    "q_weight": torch.ones(4, 4),
+                },
+            ],
+        }
+
+        weight_load = summarize_text_weight_load(bundle)
+
+        self.assertFalse(weight_load["stage_weight_scope_ok"])
+        self.assertEqual(weight_load["unexpected_layer_indices"], [17])
+        with self.assertRaisesRegex(RuntimeError, "非本 stage"):
+            assert_text_weight_scope(bundle)
+
+    def test_assert_text_tp_shard_shapes_rejects_full_projection_tensor(self) -> None:
+        bundle = {
+            "tp_weight_sharded": True,
+            "tp_shard_rank": 0,
+            "tp_shard_world_size": 2,
+            "layers": [
+                {
+                    "layer_idx": 0,
+                    "head_dim": 2,
+                    "tp_local_num_attention_heads": 2,
+                    "tp_local_num_key_value_heads": 1,
+                    "tp_local_intermediate_size": 8,
+                    "input_ln_weight": torch.ones(8),
+                    "q_weight": torch.zeros(8, 8),
+                },
+            ],
+        }
+
+        weight_load = summarize_text_weight_load(bundle)
+
+        self.assertFalse(weight_load["tp_shard_shape_ok"])
+        self.assertEqual(weight_load["tp_sharded_projection_check_count"], 1)
+        self.assertEqual(
+            weight_load["tp_shard_shape_mismatches"][0]["expected_shape"],
+            [4, 8],
+        )
+        self.assertEqual(
+            weight_load["tp_shard_shape_mismatches"][0]["actual_shape"],
+            [8, 8],
+        )
+        with self.assertRaisesRegex(RuntimeError, "投影权重形状"):
+            assert_text_tp_shard_shapes(bundle)
 
     def test_load_tensors_from_torch_index(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -990,6 +1088,25 @@ class ModelWeightLoaderTest(unittest.TestCase):
             self.assertTrue(weight_load["tp_weight_sharded"])
             self.assertEqual(weight_load["tp_shard_rank"], 1)
             self.assertEqual(weight_load["tp_shard_world_size"], 2)
+            self.assertTrue(weight_load["tp_shard_shape_ok"])
+            self.assertEqual(weight_load["tp_shard_shape_mismatches"], [])
+            self.assertEqual(weight_load["tp_sharded_projection_check_count"], 7)
+            projection_shapes = {
+                example["name"]: example["actual_shape"]
+                for example in weight_load["tp_sharded_projection_examples"]
+            }
+            self.assertEqual(projection_shapes["layers.0.q_weight"], [4, 8])
+            self.assertEqual(projection_shapes["layers.0.k_weight"], [2, 8])
+            self.assertEqual(projection_shapes["layers.0.v_weight"], [2, 8])
+            self.assertEqual(projection_shapes["layers.0.o_weight"], [8, 4])
+            self.assertEqual(projection_shapes["layers.0.gate_weight"], [8, 8])
+            self.assertEqual(projection_shapes["layers.0.up_weight"], [8, 8])
+            self.assertEqual(projection_shapes["layers.0.down_weight"], [8, 8])
+            self.assertEqual(weight_load["stage_start_idx"], 0)
+            self.assertEqual(weight_load["stage_end_idx"], 0)
+            self.assertEqual(weight_load["loaded_layer_indices"], [0])
+            self.assertTrue(weight_load["stage_weight_scope_ok"])
+            self.assertEqual(weight_load["unexpected_layer_indices"], [])
             self.assertGreater(weight_load["loaded_weight_tensor_count"], 0)
             self.assertGreater(weight_load["loaded_weight_tensor_bytes"], 0)
             self.assertEqual(
@@ -1574,9 +1691,7 @@ class ModelWeightLoaderTest(unittest.TestCase):
                 )
             )
 
-    def test_direct_stage_bundle_builder_multimodal_non_stage0_generate_uses_seeded_frontend_state(self) -> None:
-        import qwen3vl_tp_runtime.models.qwen3vl.runtime_builder as runtime_builder
-
+    def test_direct_stage_bundle_builder_multimodal_non_stage0_generate_rejects_seeded_frontend_without_startup_contract(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             model_dir = Path(tmpdir)
             self._write_text_config(
@@ -1668,30 +1783,17 @@ class ModelWeightLoaderTest(unittest.TestCase):
                 bundle_path=None,
             )
 
-            with DirectStageBundleBuilder(
-                stage_specs=[stage_spec],
-                runtime_config=runtime_config,
-            ) as builder:
-                self.assertTrue(builder.weight_backed_multimodal)
-                self.assertFalse(hasattr(builder, "model"))
-                self.assertIsNone(builder._mm_prefill_state)
-                self.assertIsNone(builder.prefill_runtime_inputs)
-                self.assertIsInstance(builder._mm_prefill_shared, dict)
-                bundle = builder.build_stage_bundle(1)
+            with patch(
+                "qwen3vl_tp_runtime.models.qwen3vl.runtime_builder.resolve_mm_frontend",
+                side_effect=AssertionError("non-stage0 不应消费 legacy frontend state"),
+            ) as resolve_frontend_mock:
+                with self.assertRaisesRegex(RuntimeError, "startup contract"):
+                    DirectStageBundleBuilder(
+                        stage_specs=[stage_spec],
+                        runtime_config=runtime_config,
+                    )
 
-            self.assertFalse(hasattr(runtime_builder, "load_model"))
-            self.assertFalse(hasattr(runtime_builder, "prepare_mm_session"))
-            self.assertEqual(bundle["module_name"], "multimodal_generate_stage")
-            self.assertEqual(bundle["stage_type"], "multimodal_generate_last")
-            self.assertEqual(bundle["num_frames"], 2)
-            self.assertEqual(bundle["frame_paths"], ["/tmp/f0.png", "/tmp/f1.png"])
-            self.assertEqual(tuple(bundle["prefill"]["stage_input"].shape), (1, 3, 4))
-            self.assertEqual(tuple(bundle["prefill"]["stage_output"].shape), (1, 3, 6))
-            self.assertEqual(len(bundle["decode_steps"]), 1)
-            self.assertIn("final_norm_weight", bundle)
-            self.assertIn("lm_head_weight", bundle)
-            self.assertEqual(tuple(bundle["final_norm_weight"].shape), (4,))
-            self.assertEqual(tuple(bundle["lm_head_weight"].shape), (6, 4))
+            resolve_frontend_mock.assert_not_called()
 
     def test_direct_stage_bundle_builder_multimodal_non_stage0_decode_prefers_stage_handoffs(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1772,10 +1874,8 @@ class ModelWeightLoaderTest(unittest.TestCase):
                 "model_path": str(model_dir),
                 "save_dtype": "float32",
                 "decode_token_id": 4,
-                "_mm_frontend_state": frontend_state,
-                "_mm_num_frames": 2,
-                "_mm_frame_paths": ["/tmp/f0.png", "/tmp/f1.png"],
             }
+            self._seed_small_mm_startup_contract(runtime_config, frontend_state)
             stage_spec = StageSpec(
                 stage_idx=1,
                 start_idx=1,
@@ -1785,46 +1885,50 @@ class ModelWeightLoaderTest(unittest.TestCase):
                 bundle_path=None,
             )
 
-            with DirectStageBundleBuilder(
-                stage_specs=[stage_spec],
-                runtime_config=runtime_config,
-            ) as builder:
-                decode_runtime_state = build_mm_decode_state_from_weights(
-                    decode_input_ids=torch.tensor([[4]], dtype=torch.long),
-                    attention_mask_2d=torch.tensor([[1, 1, 1, 1]], dtype=torch.long),
-                    past_length=3,
-                    rope_deltas=frontend_state.rope_deltas,
-                    embed_tokens_weight=embed_tokens_weight,
-                    config_spec=config,
-                    device=torch.device("cpu"),
-                    compute_dtype=torch.float32,
-                )
-                stage_input = torch.full((1, 1, 4), 9.0, dtype=torch.float32)
-                hidden_stage_output = torch.full((1, 1, 4), 11.0, dtype=torch.float32)
-                norm_output = torch.full((1, 1, 4), 13.0, dtype=torch.float32)
-                logits = torch.full((1, 1, 6), 17.0, dtype=torch.float32)
-                builder._decode_state = {
-                    "decode_source": "provided",
-                    "decode_token_id": 4,
-                    "decode_input_ids": decode_runtime_state.input_ids,
-                    "attention_mask_2d": decode_runtime_state.attention_mask_2d,
-                    "attention_mask": decode_runtime_state.attention_mask,
-                    "cos": decode_runtime_state.cos,
-                    "sin": decode_runtime_state.sin,
-                    "position_ids": decode_runtime_state.position_ids,
-                    "mm_runtime_state": decode_runtime_state,
-                    "stage_handoffs": {
-                        1: {
-                            "stage_input": stage_input,
-                            "stage_output": hidden_stage_output,
-                        }
-                    },
-                    "hidden_stage_output": hidden_stage_output,
-                    "norm_output": norm_output,
-                    "logits": logits,
-                    "cache_by_layer": {},
-                }
-                bundle = builder.build_stage_bundle(1)
+            with patch(
+                "qwen3vl_tp_runtime.models.qwen3vl.runtime_builder.resolve_mm_frontend",
+                side_effect=AssertionError("startup contract 就绪后不应再回退到 resolve_mm_frontend"),
+            ):
+                with DirectStageBundleBuilder(
+                    stage_specs=[stage_spec],
+                    runtime_config=runtime_config,
+                ) as builder:
+                    decode_runtime_state = build_mm_decode_state_from_weights(
+                        decode_input_ids=torch.tensor([[4]], dtype=torch.long),
+                        attention_mask_2d=torch.tensor([[1, 1, 1, 1]], dtype=torch.long),
+                        past_length=3,
+                        rope_deltas=frontend_state.rope_deltas,
+                        embed_tokens_weight=embed_tokens_weight,
+                        config_spec=config,
+                        device=torch.device("cpu"),
+                        compute_dtype=torch.float32,
+                    )
+                    stage_input = torch.full((1, 1, 4), 9.0, dtype=torch.float32)
+                    hidden_stage_output = torch.full((1, 1, 4), 11.0, dtype=torch.float32)
+                    norm_output = torch.full((1, 1, 4), 13.0, dtype=torch.float32)
+                    logits = torch.full((1, 1, 6), 17.0, dtype=torch.float32)
+                    builder._decode_state = {
+                        "decode_source": "provided",
+                        "decode_token_id": 4,
+                        "decode_input_ids": decode_runtime_state.input_ids,
+                        "attention_mask_2d": decode_runtime_state.attention_mask_2d,
+                        "attention_mask": decode_runtime_state.attention_mask,
+                        "cos": decode_runtime_state.cos,
+                        "sin": decode_runtime_state.sin,
+                        "position_ids": decode_runtime_state.position_ids,
+                        "mm_runtime_state": decode_runtime_state,
+                        "stage_handoffs": {
+                            1: {
+                                "stage_input": stage_input,
+                                "stage_output": hidden_stage_output,
+                            }
+                        },
+                        "hidden_stage_output": hidden_stage_output,
+                        "norm_output": norm_output,
+                        "logits": logits,
+                        "cache_by_layer": {},
+                    }
+                    bundle = builder.build_stage_bundle(1)
 
             self.assertTrue(torch.equal(bundle["stage_input"], stage_input))
             self.assertTrue(torch.equal(bundle["hidden_stage_output"], hidden_stage_output))
@@ -1910,10 +2014,8 @@ class ModelWeightLoaderTest(unittest.TestCase):
                 "model_path": str(model_dir),
                 "save_dtype": "float32",
                 "max_new_tokens": 2,
-                "_mm_frontend_state": frontend_state,
-                "_mm_num_frames": 2,
-                "_mm_frame_paths": ["/tmp/f0.png", "/tmp/f1.png"],
             }
+            self._seed_small_mm_startup_contract(runtime_config, frontend_state)
             stage_spec = StageSpec(
                 stage_idx=1,
                 start_idx=1,
@@ -1923,60 +2025,134 @@ class ModelWeightLoaderTest(unittest.TestCase):
                 bundle_path=None,
             )
 
-            with DirectStageBundleBuilder(
-                stage_specs=[stage_spec],
-                runtime_config=runtime_config,
-            ) as builder:
-                decode_runtime_state = build_mm_decode_state_from_weights(
-                    decode_input_ids=torch.tensor([[4]], dtype=torch.long),
-                    attention_mask_2d=torch.tensor([[1, 1, 1, 1]], dtype=torch.long),
-                    past_length=3,
-                    rope_deltas=frontend_state.rope_deltas,
-                    embed_tokens_weight=embed_tokens_weight,
-                    config_spec=config,
-                    device=torch.device("cpu"),
-                    compute_dtype=torch.float32,
-                )
-                step_stage_input = torch.full((1, 1, 4), 19.0, dtype=torch.float32)
-                step_hidden_stage_output = torch.full((1, 1, 4), 23.0, dtype=torch.float32)
-                step_norm_output = torch.full((1, 1, 4), 29.0, dtype=torch.float32)
-                step_logits = torch.full((1, 1, 6), 31.0, dtype=torch.float32)
-                builder._generate_state = {
-                    "max_new_tokens": 2,
-                    "generated_token_ids": [4, 5],
-                    "prefill_norm_output": torch.zeros((1, 3, 4), dtype=torch.float32),
-                    "prefill_logits": torch.zeros((1, 3, 6), dtype=torch.float32),
-                    "cache_by_layer": {},
-                    "step_results": [
-                        {
-                            "step_idx": 0,
-                            "decode_input_ids": decode_runtime_state.input_ids,
-                            "attention_mask_2d": decode_runtime_state.attention_mask_2d,
-                            "attention_mask": decode_runtime_state.attention_mask,
-                            "cos": decode_runtime_state.cos,
-                            "sin": decode_runtime_state.sin,
-                            "position_ids": decode_runtime_state.position_ids,
-                            "mm_runtime_state": decode_runtime_state,
-                            "stage_handoffs": {
-                                1: {
-                                    "stage_input": step_stage_input,
-                                    "stage_output": step_hidden_stage_output,
-                                }
-                            },
-                            "hidden_stage_output": step_hidden_stage_output,
-                            "norm_output": step_norm_output,
-                            "logits": step_logits,
-                            "output_token_id": 5,
-                        }
-                    ],
-                }
-                bundle = builder.build_stage_bundle(1)
+            with patch(
+                "qwen3vl_tp_runtime.models.qwen3vl.runtime_builder.resolve_mm_frontend",
+                side_effect=AssertionError("startup contract 就绪后不应再回退到 resolve_mm_frontend"),
+            ):
+                with DirectStageBundleBuilder(
+                    stage_specs=[stage_spec],
+                    runtime_config=runtime_config,
+                ) as builder:
+                    decode_runtime_state = build_mm_decode_state_from_weights(
+                        decode_input_ids=torch.tensor([[4]], dtype=torch.long),
+                        attention_mask_2d=torch.tensor([[1, 1, 1, 1]], dtype=torch.long),
+                        past_length=3,
+                        rope_deltas=frontend_state.rope_deltas,
+                        embed_tokens_weight=embed_tokens_weight,
+                        config_spec=config,
+                        device=torch.device("cpu"),
+                        compute_dtype=torch.float32,
+                    )
+                    step_stage_input = torch.full((1, 1, 4), 19.0, dtype=torch.float32)
+                    step_hidden_stage_output = torch.full((1, 1, 4), 23.0, dtype=torch.float32)
+                    step_norm_output = torch.full((1, 1, 4), 29.0, dtype=torch.float32)
+                    step_logits = torch.full((1, 1, 6), 31.0, dtype=torch.float32)
+                    builder._generate_state = {
+                        "max_new_tokens": 2,
+                        "generated_token_ids": [4, 5],
+                        "prefill_norm_output": torch.zeros((1, 3, 4), dtype=torch.float32),
+                        "prefill_logits": torch.zeros((1, 3, 6), dtype=torch.float32),
+                        "cache_by_layer": {},
+                        "step_results": [
+                            {
+                                "step_idx": 0,
+                                "decode_input_ids": decode_runtime_state.input_ids,
+                                "attention_mask_2d": decode_runtime_state.attention_mask_2d,
+                                "attention_mask": decode_runtime_state.attention_mask,
+                                "cos": decode_runtime_state.cos,
+                                "sin": decode_runtime_state.sin,
+                                "position_ids": decode_runtime_state.position_ids,
+                                "mm_runtime_state": decode_runtime_state,
+                                "stage_handoffs": {
+                                    1: {
+                                        "stage_input": step_stage_input,
+                                        "stage_output": step_hidden_stage_output,
+                                    }
+                                },
+                                "hidden_stage_output": step_hidden_stage_output,
+                                "norm_output": step_norm_output,
+                                "logits": step_logits,
+                                "output_token_id": 5,
+                            }
+                        ],
+                    }
+                    bundle = builder.build_stage_bundle(1)
 
             self.assertEqual(len(bundle["decode_steps"]), 1)
             self.assertTrue(torch.equal(bundle["decode_steps"][0]["stage_input"], step_stage_input))
             self.assertTrue(torch.equal(bundle["decode_steps"][0]["hidden_stage_output"], step_hidden_stage_output))
             self.assertTrue(torch.equal(bundle["decode_steps"][0]["norm_output"], step_norm_output))
             self.assertTrue(torch.equal(bundle["decode_steps"][0]["logits"], step_logits))
+
+    def test_direct_stage_bundle_builder_multimodal_runtime_only_generate_uses_local_startup_handoff(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            model_dir = Path(tmpdir)
+            self._write_text_config(
+                model_dir,
+                hidden_size=4,
+                intermediate_size=8,
+                num_hidden_layers=2,
+                num_attention_heads=2,
+                num_key_value_heads=1,
+                head_dim=2,
+                vocab_size=6,
+                rope_scaling={"rope_type": "default", "mrope_interleaved": True, "mrope_section": [1, 0, 0]},
+            )
+            self._write_two_layer_text_checkpoint(model_dir)
+            _config, _embed_tokens_weight, frontend_state = self._build_small_mm_frontend_state(model_dir)
+
+            runtime_config = {
+                "modality": "multimodal",
+                "mode": "generate",
+                "model_path": str(model_dir),
+                "save_dtype": "float32",
+                "max_new_tokens": 2,
+                "include_runtime_reference": False,
+            }
+            expected_stage_input, _expected_stage_output = self._seed_small_mm_startup_contract(
+                runtime_config,
+                frontend_state,
+            )
+            stage_spec = StageSpec(
+                stage_idx=1,
+                start_idx=1,
+                end_idx=1,
+                num_layers=1,
+                save_dtype="float32",
+                bundle_path=None,
+            )
+
+            with patch.object(
+                DirectStageBundleBuilder,
+                "_ensure_generate_state",
+                side_effect=AssertionError("runtime-only multimodal generate 不应构建 full generate reference"),
+            ), patch.object(
+                DirectStageBundleBuilder,
+                "_ensure_prefill_full_state",
+                side_effect=AssertionError("runtime-only multimodal generate 不应回退到 full prefill reference"),
+            ), patch(
+                "qwen3vl_tp_runtime.models.qwen3vl.runtime_builder.resolve_mm_frontend",
+                side_effect=AssertionError("startup contract 就绪后不应再回退到 resolve_mm_frontend"),
+            ):
+                with DirectStageBundleBuilder(
+                    stage_specs=[stage_spec],
+                    runtime_config=runtime_config,
+                ) as builder:
+                    bundle = builder.build_stage_bundle(1)
+
+            self.assertTrue(bundle["runtime_only_generate"])
+            self.assertEqual(bundle["modality"], "multimodal")
+            self.assertEqual(bundle["max_new_tokens"], 2)
+            self.assertTrue(torch.equal(bundle["stage_input"], expected_stage_input))
+            self.assertIn("prefill_attention_mask", bundle)
+            self.assertIn("prefill_cos", bundle)
+            self.assertIn("prefill_sin", bundle)
+            self.assertIn("rope_deltas", bundle)
+            self.assertNotIn("prefill", bundle)
+            self.assertNotIn("decode_steps", bundle)
+            self.assertNotIn("generated_token_ids", bundle)
 
     def test_mm_state_from_decode_state_accepts_stage_handoffs_without_hidden_states(self) -> None:
         stage_input = torch.full((1, 1, 4), 5.0, dtype=torch.float32)
@@ -2021,10 +2197,11 @@ class ModelWeightLoaderTest(unittest.TestCase):
                 "mode": "prefill",
                 "model_path": str(model_dir),
                 "save_dtype": "float32",
-                "_mm_frontend_state": frontend_state,
-                "_mm_num_frames": 2,
-                "_mm_frame_paths": ["/tmp/f0.png", "/tmp/f1.png"],
             }
+            expected_stage_input, _expected_stage_output = self._seed_small_mm_startup_contract(
+                runtime_config,
+                frontend_state,
+            )
             stage_spec = StageSpec(
                 stage_idx=1,
                 start_idx=1,
@@ -2034,17 +2211,24 @@ class ModelWeightLoaderTest(unittest.TestCase):
                 bundle_path=None,
             )
 
-            with DirectStageBundleBuilder(
-                stage_specs=[stage_spec],
-                runtime_config=runtime_config,
-            ) as builder:
-                self.assertFalse(hasattr(builder, "model"))
-                self.assertIn(1, builder._prefill_stage_inputs_by_stage)
-                self.assertIn("stage_handoffs", builder._prefill_full_state)
-                self.assertNotIn("hidden_states", builder._prefill_full_state)
-                self.assertIn("mm_runtime_shared", builder._prefill_full_state)
-                expected_stage_input = builder._prefill_full_state["stage_handoffs"][1]["stage_input"]
-                bundle = builder.build_stage_bundle(1)
+            with patch(
+                "qwen3vl_tp_runtime.models.qwen3vl.runtime_builder.resolve_mm_frontend",
+                side_effect=AssertionError("startup contract 就绪后不应再回退到 resolve_mm_frontend"),
+            ):
+                with DirectStageBundleBuilder(
+                    stage_specs=[stage_spec],
+                    runtime_config=runtime_config,
+                ) as builder:
+                    self.assertFalse(hasattr(builder, "model"))
+                    self.assertIsNone(builder._prefill_full_state)
+                    self.assertIn(1, builder._prefill_stage_inputs_by_stage)
+                    self.assertTrue(
+                        torch.equal(
+                            builder._prefill_stage_inputs_by_stage[1],
+                            expected_stage_input,
+                        )
+                    )
+                    bundle = builder.build_stage_bundle(1)
 
             self.assertTrue(torch.equal(bundle["stage_input"], expected_stage_input))
 
@@ -2063,7 +2247,7 @@ class ModelWeightLoaderTest(unittest.TestCase):
                 rope_scaling={"rope_type": "default", "mrope_interleaved": True, "mrope_section": [1, 0, 0]},
             )
             self._write_two_layer_text_checkpoint(model_dir)
-            _config, _embed_tokens_weight, frontend_state = self._build_small_mm_frontend_state(model_dir)
+            config, embed_tokens_weight, frontend_state = self._build_small_mm_frontend_state(model_dir)
 
             runtime_config = {
                 "modality": "multimodal",
@@ -2071,10 +2255,8 @@ class ModelWeightLoaderTest(unittest.TestCase):
                 "model_path": str(model_dir),
                 "save_dtype": "float32",
                 "decode_token_id": 4,
-                "_mm_frontend_state": frontend_state,
-                "_mm_num_frames": 2,
-                "_mm_frame_paths": ["/tmp/f0.png", "/tmp/f1.png"],
             }
+            self._seed_small_mm_startup_contract(runtime_config, frontend_state)
             stage_spec = StageSpec(
                 stage_idx=1,
                 start_idx=1,
@@ -2084,19 +2266,49 @@ class ModelWeightLoaderTest(unittest.TestCase):
                 bundle_path=None,
             )
 
-            with DirectStageBundleBuilder(
-                stage_specs=[stage_spec],
-                runtime_config=runtime_config,
-            ) as builder:
-                prefill_state = builder._ensure_prefill_full_state()
-                self.assertIn("mm_runtime_shared", prefill_state)
-                prefill_mm_shared = builder._mm_prefill_shared
-                builder._mm_prefill_shared = None
-                state = builder._ensure_decode_state()
-                builder._mm_prefill_shared = prefill_mm_shared
-                self.assertIn("stage_handoffs", state)
-                self.assertNotIn("hidden_states", state)
-                bundle = builder.build_stage_bundle(1)
+            with patch(
+                "qwen3vl_tp_runtime.models.qwen3vl.runtime_builder.resolve_mm_frontend",
+                side_effect=AssertionError("startup contract 就绪后不应再回退到 resolve_mm_frontend"),
+            ):
+                with DirectStageBundleBuilder(
+                    stage_specs=[stage_spec],
+                    runtime_config=runtime_config,
+                ) as builder:
+                    decode_runtime_state = build_mm_decode_state_from_weights(
+                        decode_input_ids=torch.tensor([[4]], dtype=torch.long),
+                        attention_mask_2d=torch.tensor([[1, 1, 1, 1]], dtype=torch.long),
+                        past_length=3,
+                        rope_deltas=frontend_state.rope_deltas,
+                        embed_tokens_weight=embed_tokens_weight,
+                        config_spec=config,
+                        device=torch.device("cpu"),
+                        compute_dtype=torch.float32,
+                    )
+                    stage_input = torch.full((1, 1, 4), 9.0, dtype=torch.float32)
+                    hidden_stage_output = torch.full((1, 1, 4), 11.0, dtype=torch.float32)
+                    state = {
+                        "decode_source": "provided",
+                        "decode_token_id": 4,
+                        "decode_input_ids": decode_runtime_state.input_ids,
+                        "attention_mask_2d": decode_runtime_state.attention_mask_2d,
+                        "attention_mask": decode_runtime_state.attention_mask,
+                        "cos": decode_runtime_state.cos,
+                        "sin": decode_runtime_state.sin,
+                        "position_ids": decode_runtime_state.position_ids,
+                        "mm_runtime_state": decode_runtime_state,
+                        "stage_handoffs": {
+                            1: {
+                                "stage_input": stage_input,
+                                "stage_output": hidden_stage_output,
+                            }
+                        },
+                        "hidden_stage_output": hidden_stage_output,
+                        "norm_output": torch.full((1, 1, 4), 13.0, dtype=torch.float32),
+                        "logits": torch.full((1, 1, 6), 17.0, dtype=torch.float32),
+                        "cache_by_layer": {},
+                    }
+                    builder._decode_state = state
+                    bundle = builder.build_stage_bundle(1)
 
             self.assertTrue(
                 torch.equal(
@@ -2120,7 +2332,7 @@ class ModelWeightLoaderTest(unittest.TestCase):
                 rope_scaling={"rope_type": "default", "mrope_interleaved": True, "mrope_section": [1, 0, 0]},
             )
             self._write_two_layer_text_checkpoint(model_dir)
-            _config, _embed_tokens_weight, frontend_state = self._build_small_mm_frontend_state(model_dir)
+            config, embed_tokens_weight, frontend_state = self._build_small_mm_frontend_state(model_dir)
 
             runtime_config = {
                 "modality": "multimodal",
@@ -2128,10 +2340,8 @@ class ModelWeightLoaderTest(unittest.TestCase):
                 "model_path": str(model_dir),
                 "save_dtype": "float32",
                 "max_new_tokens": 2,
-                "_mm_frontend_state": frontend_state,
-                "_mm_num_frames": 2,
-                "_mm_frame_paths": ["/tmp/f0.png", "/tmp/f1.png"],
             }
+            self._seed_small_mm_startup_contract(runtime_config, frontend_state)
             stage_spec = StageSpec(
                 stage_idx=1,
                 start_idx=1,
@@ -2141,21 +2351,57 @@ class ModelWeightLoaderTest(unittest.TestCase):
                 bundle_path=None,
             )
 
-            with DirectStageBundleBuilder(
-                stage_specs=[stage_spec],
-                runtime_config=runtime_config,
-            ) as builder:
-                prefill_state = builder._ensure_prefill_full_state()
-                self.assertIn("mm_runtime_shared", prefill_state)
-                prefill_mm_shared = builder._mm_prefill_shared
-                builder._mm_prefill_shared = None
-                state = builder._ensure_generate_state()
-                builder._mm_prefill_shared = prefill_mm_shared
-                self.assertEqual(len(state["step_results"]), 1)
-                self.assertIn("mm_runtime_shared", state)
-                self.assertIn("stage_handoffs", state["step_results"][0])
-                self.assertNotIn("hidden_states", state["step_results"][0])
-                bundle = builder.build_stage_bundle(1)
+            with patch(
+                "qwen3vl_tp_runtime.models.qwen3vl.runtime_builder.resolve_mm_frontend",
+                side_effect=AssertionError("startup contract 就绪后不应再回退到 resolve_mm_frontend"),
+            ):
+                with DirectStageBundleBuilder(
+                    stage_specs=[stage_spec],
+                    runtime_config=runtime_config,
+                ) as builder:
+                    decode_runtime_state = build_mm_decode_state_from_weights(
+                        decode_input_ids=torch.tensor([[4]], dtype=torch.long),
+                        attention_mask_2d=torch.tensor([[1, 1, 1, 1]], dtype=torch.long),
+                        past_length=3,
+                        rope_deltas=frontend_state.rope_deltas,
+                        embed_tokens_weight=embed_tokens_weight,
+                        config_spec=config,
+                        device=torch.device("cpu"),
+                        compute_dtype=torch.float32,
+                    )
+                    step_stage_input = torch.full((1, 1, 4), 19.0, dtype=torch.float32)
+                    step_hidden_stage_output = torch.full((1, 1, 4), 23.0, dtype=torch.float32)
+                    state = {
+                        "max_new_tokens": 2,
+                        "generated_token_ids": [4, 5],
+                        "prefill_norm_output": torch.zeros((1, 3, 4), dtype=torch.float32),
+                        "prefill_logits": torch.zeros((1, 3, 6), dtype=torch.float32),
+                        "cache_by_layer": {},
+                        "step_results": [
+                            {
+                                "step_idx": 0,
+                                "decode_input_ids": decode_runtime_state.input_ids,
+                                "attention_mask_2d": decode_runtime_state.attention_mask_2d,
+                                "attention_mask": decode_runtime_state.attention_mask,
+                                "cos": decode_runtime_state.cos,
+                                "sin": decode_runtime_state.sin,
+                                "position_ids": decode_runtime_state.position_ids,
+                                "mm_runtime_state": decode_runtime_state,
+                                "stage_handoffs": {
+                                    1: {
+                                        "stage_input": step_stage_input,
+                                        "stage_output": step_hidden_stage_output,
+                                    }
+                                },
+                                "hidden_stage_output": step_hidden_stage_output,
+                                "norm_output": torch.full((1, 1, 4), 29.0, dtype=torch.float32),
+                                "logits": torch.full((1, 1, 6), 31.0, dtype=torch.float32),
+                                "output_token_id": 5,
+                            }
+                        ],
+                    }
+                    builder._generate_state = state
+                    bundle = builder.build_stage_bundle(1)
 
             self.assertTrue(
                 torch.equal(
@@ -2393,7 +2639,6 @@ class ModelWeightLoaderTest(unittest.TestCase):
                             "stage_output": torch.full_like(frontend_state.inputs_embeds, 7.0),
                         },
                     },
-                    "root_input": frontend_state.inputs_embeds.detach().clone(),
                     "stage_visuals": {
                         0: {
                             "visual_pos_masks": None,
@@ -2445,6 +2690,54 @@ class ModelWeightLoaderTest(unittest.TestCase):
             self.assertNotIn("_mm_frontend_seed", runtime_config)
             self.assertTrue(runtime_config["_mm_startup_contract_ready"])
             self.assertTrue(runtime_config["_mm_frontend_state_ready"])
+
+    def test_direct_stage_bundle_builder_multimodal_non_frontend_requires_startup_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            model_dir = Path(tmpdir)
+            self._write_text_config(
+                model_dir,
+                hidden_size=4,
+                intermediate_size=8,
+                num_hidden_layers=2,
+                num_attention_heads=2,
+                num_key_value_heads=1,
+                head_dim=2,
+                vocab_size=6,
+                rope_scaling={"rope_type": "default", "mrope_interleaved": True, "mrope_section": [1, 0, 0]},
+            )
+            torch.save(
+                {
+                    "model.language_model.layers.1.input_layernorm.weight": torch.ones(4),
+                },
+                model_dir / "pytorch_model.bin",
+            )
+
+            runtime_config = {
+                "modality": "multimodal",
+                "mode": "prefill",
+                "model_path": str(model_dir),
+                "save_dtype": "float32",
+            }
+            stage_spec = StageSpec(
+                stage_idx=1,
+                start_idx=1,
+                end_idx=1,
+                num_layers=1,
+                save_dtype="float32",
+                bundle_path=None,
+            )
+
+            with patch(
+                "qwen3vl_tp_runtime.models.qwen3vl.runtime_builder.resolve_mm_frontend",
+                side_effect=AssertionError("non-stage0 不应本地解析/构建 multimodal frontend"),
+            ) as resolve_frontend_mock:
+                with self.assertRaisesRegex(RuntimeError, "startup contract"):
+                    DirectStageBundleBuilder(
+                        stage_specs=[stage_spec],
+                        runtime_config=runtime_config,
+                    )
+
+            resolve_frontend_mock.assert_not_called()
 
     def test_direct_stage_bundle_builder_multimodal_last_stage_prefill_uses_local_handoff_without_root_input(
         self,
@@ -2527,7 +2820,6 @@ class ModelWeightLoaderTest(unittest.TestCase):
                             "stage_output": stage_output.detach().clone(),
                         },
                     },
-                    "root_input": None,
                     "stage_visuals": {
                         1: {
                             "visual_pos_masks": None,
@@ -2570,6 +2862,15 @@ class ModelWeightLoaderTest(unittest.TestCase):
             self.assertEqual(tuple(bundle["logits"].shape), (1, 3, 6))
             self.assertIn("final_norm_weight", bundle)
             self.assertIn("lm_head_weight", bundle)
+            weight_load = summarize_text_weight_load(bundle)
+            self.assertEqual(weight_load["stage_start_idx"], 1)
+            self.assertEqual(weight_load["stage_end_idx"], 1)
+            self.assertEqual(weight_load["loaded_layer_indices"], [1])
+            self.assertTrue(weight_load["stage_weight_scope_ok"])
+            self.assertEqual(weight_load["unexpected_layer_indices"], [])
+            self.assertIn("final_norm_weight", weight_load["loaded_top_level_weight_names"])
+            self.assertIn("lm_head_weight", weight_load["loaded_top_level_weight_names"])
+            self.assertNotIn("embed_tokens_weight", weight_load["loaded_top_level_weight_names"])
             self.assertTrue(runtime_config["_mm_startup_contract_ready"])
             self.assertTrue(runtime_config["_mm_frontend_state_ready"])
 
