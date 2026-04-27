@@ -24,10 +24,12 @@ from qwen3vl_tp_runtime.hexgen_core import (
     run_text_pipeline_rank,
 )
 from qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel import TextHybridRunner
+from qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel import run_tensor_parallel_rank
 from qwen3vl_tp_runtime.hexgen_core.modules.tp_debug import TpDebugConfig
 from qwen3vl_tp_runtime.models.qwen3vl import (
     build_direct_hybrid_manifest,
     build_direct_pipeline_manifest,
+    build_direct_tp_manifest,
 )
 from qwen3vl_tp_runtime.models.qwen3vl.processing import (
     build_inputs,
@@ -40,6 +42,7 @@ from qwen3vl_tp_runtime.scripts.runtime_cli import (
     _emit_debug_path_warnings,
     _load_hybrid_manifest_for_args,
     _load_pipeline_manifest_for_args,
+    _load_tp_manifest_for_args,
     _reject_unsupported_debug_transport_backend,
     _reject_unsupported_generate_debug_flags,
     _require_debug_path_opt_in,
@@ -245,7 +248,37 @@ def _run_hybrid(args: argparse.Namespace) -> None:
 
 
 def _run_tp(args: argparse.Namespace) -> None:
-    _run_hybrid_family(args, backend="tp")
+    manifest = _load_tp_manifest_for_args(args)
+    rank, world_size = init_dist()
+    device = get_device(args.device)
+    debug_config = TpDebugConfig(
+        compare_direct=args.compare_direct,
+        trace_layers=args.trace_layers,
+        dump_layer=args.dump_layer,
+        dump_topk=args.dump_topk,
+    )
+    stats = run_tensor_parallel_rank(
+        rank=rank,
+        world_size=world_size,
+        manifest=manifest,
+        device=device,
+        compute_dtype_arg=args.compute_dtype,
+        comm_dtype_arg=args.comm_dtype,
+        tp_attn_math_mode=args.tp_attn_math,
+        tp_mlp_math_mode=args.tp_mlp_math,
+        debug_config=debug_config,
+        return_tensors=True,
+    )
+    summary = _summarize_hybrid_run(
+        stats,
+        manifest,
+        backend="tp",
+        topk=args.dump_topk,
+        debug_config=debug_config,
+    )
+    summary = _attach_generated_texts(summary, args)
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    dist.barrier()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -296,8 +329,45 @@ def build_parser() -> argparse.ArgumentParser:
             "main run path to build runtime state directly from model_path."
         ),
     )
-    parser.add_argument("--stage-ranges", nargs="+", default=DEFAULT_STAGE_RANGES.copy())
-    parser.add_argument("--tp-degrees", type=int, nargs="+", default=DEFAULT_TP_DEGREES.copy())
+    parser.add_argument(
+        "--pp",
+        type=int,
+        default=None,
+        help=(
+            "Pipeline parallel stage count. If set, stage ranges are split "
+            "evenly from the model text layer count. Mutually exclusive with "
+            "--stage-ranges."
+        ),
+    )
+    parser.add_argument(
+        "--tp",
+        type=int,
+        default=None,
+        help=(
+            "Tensor parallel degree shortcut. For backend=tp this becomes one "
+            "TP degree; for backend=hybrid it is applied to every PP stage. "
+            "Use --tp-degrees for heterogeneous stages such as '2 1'."
+        ),
+    )
+    parser.add_argument(
+        "--stage-ranges",
+        nargs="+",
+        default=None,
+        help=(
+            "Explicit stage ranges such as '0:17 18:35'. Usually prefer --pp "
+            "on the main path."
+        ),
+    )
+    parser.add_argument(
+        "--tp-degrees",
+        type=int,
+        nargs="+",
+        default=None,
+        help=(
+            "Explicit per-stage TP degrees such as '2 1'. Usually prefer --tp "
+            "for uniform tensor parallelism."
+        ),
+    )
 
     parser.add_argument("--save-dtype", choices=["auto", "float16", "float32", "bfloat16"], default="auto")
     parser.add_argument("--compute-dtype", choices=["auto", "float16", "float32", "bfloat16"], default="auto")
@@ -351,7 +421,7 @@ def build_parser() -> argparse.ArgumentParser:
 def run_args(args: argparse.Namespace, parser: argparse.ArgumentParser | None = None) -> None:
     if parser is None:
         parser = build_parser()
-    _resolve_defaults(args)
+    _resolve_defaults(args, parser)
     _reject_unsupported_debug_transport_backend(parser, args)
     _reject_unsupported_generate_debug_flags(parser, args)
     _require_debug_path_opt_in(parser, args)

@@ -14,7 +14,9 @@ from importlib import import_module
 from typing import Any
 
 DIRECT_RUNTIME_EXPORTS = [
-    "DirectStageBundleBuilder",
+    "StageState",
+    "DirectStageStateBuilder",
+    "StageStateLoader",
     "extract_decoder_layer_params_live",
     "inspect_model_weights",
     "load_model_weight_index",
@@ -23,12 +25,13 @@ DIRECT_RUNTIME_EXPORTS = [
     "build_text_causal_mask",
     "build_text_decoder_stage_parameter_names",
     "build_text_decoder_stage_weight_plan",
-    "build_direct_stage_bundle",
+    "build_direct_stage_state",
     "build_direct_pipeline_manifest",
+    "build_direct_tp_manifest",
     "build_direct_hybrid_manifest",
+    "materialize_text_stage_state",
     "build_text_hf_config",
     "build_text_rotary_embedding",
-    "build_live_multimodal_stage_bundle",
     "build_text_inputs",
     "list_frames",
     "load_model",
@@ -50,7 +53,7 @@ DIRECT_RUNTIME_EXPORTS = [
     "prepare_text_decode_runtime_inputs_from_weights",
     "prepare_multimodal_prefill_runtime_inputs",
     "prepare_multimodal_decode_runtime_inputs",
-    "compose_layer_bundle",
+    "compose_layer_state",
     "apply_deepstack",
     "apply_rope",
     "attn_eager",
@@ -125,11 +128,18 @@ LEGACY_CAPTURE_EXPORTS = [
     "run_forward_with_runtime_hook",
 ]
 
+LEGACY_STAGE_BUNDLE_EXPORTS = [
+    "DirectStageBundleBuilder",
+    "build_direct_stage_bundle",
+    "build_live_multimodal_stage_bundle",
+    "compose_layer_bundle",
+]
+
 __all__ = [*DIRECT_RUNTIME_EXPORTS]
 
 
 def __getattr__(name: str) -> Any:
-    if name in DIRECT_RUNTIME_EXPORTS or name in LEGACY_CAPTURE_EXPORTS:
+    if name in DIRECT_RUNTIME_EXPORTS or name in LEGACY_CAPTURE_EXPORTS or name in LEGACY_STAGE_BUNDLE_EXPORTS:
         model_mod = import_module("qwen3vl_tp_runtime.models.qwen3vl")
         value = getattr(model_mod, name)
         globals()[name] = value
@@ -138,4 +148,9 @@ def __getattr__(name: str) -> Any:
 
 
 def __dir__() -> list[str]:
-    return sorted(set(globals()) | set(DIRECT_RUNTIME_EXPORTS) | set(LEGACY_CAPTURE_EXPORTS))
+    return sorted(
+        set(globals())
+        | set(DIRECT_RUNTIME_EXPORTS)
+        | set(LEGACY_CAPTURE_EXPORTS)
+        | set(LEGACY_STAGE_BUNDLE_EXPORTS)
+    )

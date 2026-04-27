@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import torch
 
 from qwen3vl_tp_runtime.hexgen_core.modules import hybrid_parallel as hybrid_parallel_module
-from qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel import load_stage_bundle_for_hybrid_rank
+from qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel import load_stage_state_for_hybrid_rank
 from qwen3vl_tp_runtime.hexgen_core.schema import HybridRankContext, StageSpec, TextHybridManifest
 from qwen3vl_tp_runtime.models.qwen3vl.runtime_mm_stage import (
     MmFrontendSeed,
@@ -166,7 +166,7 @@ class HybridDirectLoaderTest(unittest.TestCase):
                 sin=torch.zeros(1, 1, 4),
             ),
         ):
-            decode_bundle = hybrid_parallel_module._build_runtime_only_text_generate_phase_bundle(
+            decode_bundle = hybrid_parallel_module._build_runtime_only_text_generate_phase_state(
                 stage_bundle,
                 phase_kind="decode",
                 attention_mask_2d=torch.ones(1, 4, dtype=torch.long),
@@ -232,9 +232,9 @@ class HybridDirectLoaderTest(unittest.TestCase):
         with patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.prepare_text_prompt_meta",
         ) as prepare_meta_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.DirectStageBundleBuilder",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.DirectStageStateBuilder",
         ) as builder_cls, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.build_direct_stage_bundle",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.build_direct_stage_state",
             return_value=direct_bundle,
         ) as build_mock, patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.recv_object_cpu",
@@ -245,7 +245,7 @@ class HybridDirectLoaderTest(unittest.TestCase):
         ) as recv_mock, patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.dist.barrier",
         ) as barrier_mock:
-            bundle, compute_dtype = load_stage_bundle_for_hybrid_rank(
+            bundle, compute_dtype = load_stage_state_for_hybrid_rank(
                 manifest,
                 rank=2,
                 rank_stage=rank_stage,
@@ -323,10 +323,10 @@ class HybridDirectLoaderTest(unittest.TestCase):
         with patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.prepare_text_prompt_meta",
         ) as prepare_meta_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.DirectStageBundleBuilder",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.DirectStageStateBuilder",
             return_value=builder_instance,
         ) as builder_cls, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.build_direct_stage_bundle",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.build_direct_stage_state",
             return_value=direct_bundle,
         ) as build_mock, patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.send_object_cpu",
@@ -335,7 +335,7 @@ class HybridDirectLoaderTest(unittest.TestCase):
         ) as send_tensor_mock, patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.dist.barrier",
         ) as barrier_mock:
-            bundle, compute_dtype = load_stage_bundle_for_hybrid_rank(
+            bundle, compute_dtype = load_stage_state_for_hybrid_rank(
                 manifest,
                 rank=0,
                 rank_stage=rank_stage,
@@ -411,9 +411,9 @@ class HybridDirectLoaderTest(unittest.TestCase):
         with patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.prepare_text_prompt_meta",
         ) as prepare_meta_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.DirectStageBundleBuilder",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.DirectStageStateBuilder",
         ) as builder_cls, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.build_direct_stage_bundle",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.build_direct_stage_state",
         ) as build_mock, patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.broadcast_object_cpu",
             return_value=bundle_meta,
@@ -425,12 +425,12 @@ class HybridDirectLoaderTest(unittest.TestCase):
         ) as recv_mock, patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.send_object_cpu",
         ) as send_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.materialize_text_stage",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.materialize_text_stage_state",
             return_value=local_bundle,
         ) as materialize_mock, patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.dist.barrier",
         ) as barrier_mock:
-            bundle, compute_dtype = load_stage_bundle_for_hybrid_rank(
+            bundle, compute_dtype = load_stage_state_for_hybrid_rank(
                 manifest,
                 rank=1,
                 rank_stage=rank_stage,
@@ -454,7 +454,7 @@ class HybridDirectLoaderTest(unittest.TestCase):
         self.assertNotIn("_mm_frontend_state", manifest.runtime_config)
         self.assertNotIn("_mm_frontend_seed", manifest.runtime_config)
         materialize_mock.assert_called_once()
-        restored_scaffold = materialize_mock.call_args.kwargs["stage_bundle_scaffold"]
+        restored_scaffold = materialize_mock.call_args.kwargs["stage_state_scaffold"]
         self.assertEqual(restored_scaffold["save_dtype"], leader_scaffold["save_dtype"])
         self.assertEqual(materialize_mock.call_args.kwargs["runtime_config"], manifest.runtime_config)
         self.assertEqual(materialize_mock.call_args.kwargs["compute_dtype"], torch.float32)
@@ -492,14 +492,14 @@ class HybridDirectLoaderTest(unittest.TestCase):
         }
 
         with patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.build_direct_stage_bundle",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.build_direct_stage_state",
             return_value=direct_bundle,
         ) as build_mock, patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.broadcast_object_cpu",
         ) as bcast_mock, patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.dist.barrier",
         ) as barrier_mock:
-            bundle, compute_dtype = load_stage_bundle_for_hybrid_rank(
+            bundle, compute_dtype = load_stage_state_for_hybrid_rank(
                 manifest,
                 rank=2,
                 rank_stage=rank_stage,
@@ -560,7 +560,7 @@ class HybridDirectLoaderTest(unittest.TestCase):
         )
 
         with patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.build_direct_stage_bundle",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.build_direct_stage_state",
         ) as build_mock, patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.broadcast_object_cpu",
             return_value=scaffold_meta,
@@ -568,12 +568,12 @@ class HybridDirectLoaderTest(unittest.TestCase):
             "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.broadcast_tensor_payload_cpu",
             return_value=scaffold_tensors,
         ) as tensor_bcast_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.materialize_text_stage",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.materialize_text_stage_state",
             return_value=local_bundle,
         ) as materialize_mock, patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.dist.barrier",
         ) as barrier_mock:
-            bundle, compute_dtype = load_stage_bundle_for_hybrid_rank(
+            bundle, compute_dtype = load_stage_state_for_hybrid_rank(
                 manifest,
                 rank=1,
                 rank_stage=rank_stage,
@@ -587,7 +587,7 @@ class HybridDirectLoaderTest(unittest.TestCase):
         tensor_bcast_mock.assert_called_once()
         self.assertEqual(tensor_bcast_mock.call_args.kwargs["label"], "text_scaffold_tensors stage_idx=0")
         materialize_mock.assert_called_once()
-        restored_scaffold = materialize_mock.call_args.kwargs["stage_bundle_scaffold"]
+        restored_scaffold = materialize_mock.call_args.kwargs["stage_state_scaffold"]
         self.assertEqual(restored_scaffold["save_dtype"], scaffold["save_dtype"])
         self.assertTrue(torch.equal(restored_scaffold["prefill"]["stage_input"], scaffold["prefill"]["stage_input"]))
         self.assertTrue(
@@ -644,7 +644,7 @@ class HybridDirectLoaderTest(unittest.TestCase):
             return payload
 
         with patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.build_direct_stage_bundle",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.build_direct_stage_state",
             return_value=scaffold,
         ) as build_mock, patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.broadcast_object_cpu",
@@ -653,12 +653,12 @@ class HybridDirectLoaderTest(unittest.TestCase):
             "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.broadcast_tensor_payload_cpu",
             side_effect=_echo_tensors,
         ) as tensor_bcast_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.materialize_text_stage",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.materialize_text_stage_state",
             return_value=local_bundle,
         ) as materialize_mock, patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.dist.barrier",
         ) as barrier_mock:
-            bundle, compute_dtype = load_stage_bundle_for_hybrid_rank(
+            bundle, compute_dtype = load_stage_state_for_hybrid_rank(
                 manifest,
                 rank=0,
                 rank_stage=rank_stage,
@@ -724,13 +724,13 @@ class HybridDirectLoaderTest(unittest.TestCase):
             "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.broadcast_tensor_payload_cpu",
             return_value=scaffold_tensors,
         ), patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.materialize_text_stage",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.materialize_text_stage_state",
             return_value=full_weight_bundle,
         ), patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.dist.barrier",
         ) as barrier_mock:
-            with self.assertRaisesRegex(RuntimeError, "rank-local shard bundle"):
-                load_stage_bundle_for_hybrid_rank(
+            with self.assertRaisesRegex(RuntimeError, "rank-local shard StageState"):
+                load_stage_state_for_hybrid_rank(
                     manifest,
                     rank=1,
                     rank_stage=rank_stage,
@@ -855,12 +855,12 @@ class HybridDirectLoaderTest(unittest.TestCase):
             "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.broadcast_tensor_payload_cpu",
             return_value=prompt_metadata,
         ) as bcast_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.build_direct_stage_bundle",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.build_direct_stage_state",
             return_value=direct_bundle,
         ) as build_mock, patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.dist.barrier",
         ) as barrier_mock:
-            bundle, compute_dtype = load_stage_bundle_for_hybrid_rank(
+            bundle, compute_dtype = load_stage_state_for_hybrid_rank(
                 manifest,
                 rank=2,
                 rank_stage=rank_stage,
@@ -916,12 +916,12 @@ class HybridDirectLoaderTest(unittest.TestCase):
             "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.broadcast_tensor_payload_cpu",
             return_value={"input_ids": torch.tensor([[7, 8, 9]], dtype=torch.int64)},
         ) as bcast_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.build_direct_stage_bundle",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.build_direct_stage_state",
             return_value=direct_bundle,
         ) as build_mock, patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.dist.barrier",
         ) as barrier_mock:
-            bundle, compute_dtype = load_stage_bundle_for_hybrid_rank(
+            bundle, compute_dtype = load_stage_state_for_hybrid_rank(
                 manifest,
                 rank=2,
                 rank_stage=rank_stage,

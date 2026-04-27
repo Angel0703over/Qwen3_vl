@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import unittest
 
-from qwen3vl_tp_runtime.hexgen_core.schema import TextHybridManifest, TextPipelineManifest
+from qwen3vl_tp_runtime.hexgen_core.schema import (
+    TensorParallelManifest,
+    TextHybridManifest,
+    TextPipelineManifest,
+)
 from qwen3vl_tp_runtime.models.qwen3vl.runtime_builder import (
     build_direct_hybrid_manifest,
     build_direct_pipeline_manifest,
+    build_direct_tp_manifest,
 )
 
 
@@ -47,6 +52,30 @@ class SchemaDirectManifestTest(unittest.TestCase):
         self.assertIsNone(manifest.bundle_dir)
         self.assertTrue(manifest.is_direct)
         self.assertTrue(all(stage.is_direct for stage in manifest.stages))
+        payload = manifest.to_dict()
+        self.assertNotIn("bundle_dir", payload)
+        self.assertNotIn("replay", payload)
+        self.assertNotIn("bundle_path", payload["stages"][0])
+        self.assertNotIn("replay", payload["stages"][0])
+
+    def test_build_direct_tp_manifest_keeps_direct_schema(self) -> None:
+        manifest = build_direct_tp_manifest(
+            modality="text",
+            mode="generate",
+            stage_ranges=[(0, 35)],
+            tp_degrees=[2],
+            model_path="/tmp/fake-model",
+            save_dtype="float32",
+            prompt="hello",
+            max_new_tokens=4,
+            include_runtime_reference=False,
+        )
+
+        self.assertIsInstance(manifest, TensorParallelManifest)
+        self.assertIsNone(manifest.bundle_dir)
+        self.assertTrue(manifest.is_direct)
+        self.assertEqual(manifest.tp_degree, 2)
+        self.assertEqual(manifest.stage_rank_groups, [[0, 1]])
         payload = manifest.to_dict()
         self.assertNotIn("bundle_dir", payload)
         self.assertNotIn("replay", payload)

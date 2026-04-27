@@ -1,4 +1,4 @@
-"""Direct runtime builders that construct stage bundles from a live model_path session."""
+"""Direct runtime builders that construct StageState objects from a live model_path session."""
 
 from __future__ import annotations
 
@@ -8,29 +8,35 @@ from typing import Any
 import torch
 import torch.nn.functional as F
 
-from qwen3vl_tp_runtime.hexgen_core.distributed import startup_log, startup_timer
-from qwen3vl_tp_runtime.hexgen_core.gen_hetero_groups import build_hybrid_layout, parse_tp_degrees
-from qwen3vl_tp_runtime.hexgen_core.schema import StageSpec, TextHybridManifest, TextPipelineManifest
-from qwen3vl_tp_runtime.models.qwen3vl.execution import (
+from ...hexgen_core.distributed import startup_log, startup_timer
+from ...hexgen_core.gen_hetero_groups import build_hybrid_layout, parse_tp_degrees
+from ...hexgen_core.schema import (
+    StageSpec,
+    StageState,
+    TextHybridManifest,
+    TextPipelineManifest,
+    TensorParallelManifest,
+)
+from .execution import (
     apply_deepstack,
     trace_text_decode_stage_with_runtime_cache,
     trace_text_prefill_stage_logits,
 )
-from qwen3vl_tp_runtime.models.qwen3vl.functional import rms_norm
-from qwen3vl_tp_runtime.models.qwen3vl.live import (
+from .functional import rms_norm
+from .live import (
     build_cache_by_layer_from_past_key_values,
     extract_decoder_layer_params_live,
     prepare_multimodal_decode_runtime_state,
     prepare_text_decode_runtime_inputs,
 )
-from qwen3vl_tp_runtime.models.qwen3vl.live.common import _resolve_compute_dtype, _runtime_tensor
-from qwen3vl_tp_runtime.models.qwen3vl.processing import (
+from .live.common import _resolve_compute_dtype, _runtime_tensor
+from .processing import (
     build_text_inputs,
     load_processor,
     load_text_tokenizer,
     load_text_tokenizer_backend,
 )
-from qwen3vl_tp_runtime.models.qwen3vl.runtime_mm import (
+from .runtime_mm import (
     build_mm_stage_visuals as _build_stage_deepstack_payload,
     resolve_mm_frontend,
     run_mm_decode as _run_live_decode_full,
@@ -38,7 +44,7 @@ from qwen3vl_tp_runtime.models.qwen3vl.runtime_mm import (
     run_mm_prefill_ref as _run_live_prefill_stage_reference,
     text_pos_ids as _extract_text_position_ids,
 )
-from qwen3vl_tp_runtime.models.qwen3vl.runtime_mm_stage import (
+from .runtime_mm_stage import (
     MmStateLike,
     build_mm_stage_state,
     build_mm_decode_state_from_weights,
@@ -47,23 +53,23 @@ from qwen3vl_tp_runtime.models.qwen3vl.runtime_mm_stage import (
     mm_state_from_decode_state,
     move_mm_state,
 )
-from qwen3vl_tp_runtime.models.qwen3vl.runtime_text import (
+from .runtime_text import (
     _prep_rt_text_session,
     compact_text_prompt_meta,
     prepare_text_prompt_meta,
     restore_text_prompt_meta,
 )
-from qwen3vl_tp_runtime.models.qwen3vl.runtime_text_stage import (
+from .runtime_text_stage import (
     assert_text_tp_shard_shapes,
     assert_text_weight_scope,
-    build_rt_text_bundle,
-    compact_rt_text_scaffold,
+    build_text_stage_state,
+    compact_text_stage_state,
     compact_text_scaffold,
-    materialize_text_stage_bundle,
+    materialize_text_stage_state as _materialize_text_stage_state,
     pack_text_scaffold_transport,
     restore_text_scaffold_transport,
 )
-from qwen3vl_tp_runtime.models.qwen3vl.weights import (
+from .weights import (
     TextModelConfigSpec,
     TextStageWeightBundle,
     build_text_rotary_embedding,
@@ -572,8 +578,8 @@ def _build_stage_layer_bundles(
     return bundles
 
 
-class DirectStageBundleBuilder:
-    """Reuse one builder session to materialize multiple direct stage bundles."""
+class DirectStageStateBuilder:
+    """Reuse one builder session to materialize multiple direct StageState objects."""
 
     def __init__(
         self,
@@ -586,7 +592,7 @@ class DirectStageBundleBuilder:
         mm_activate_frontend: bool | None = None,
     ) -> None:
         if not stage_specs:
-            raise ValueError("DirectStageBundleBuilder 至少需要一个 stage spec。")
+            raise ValueError("DirectStageStateBuilder 至少需要一个 stage spec。")
 
         self.stage_specs = sorted(stage_specs, key=lambda spec: spec.stage_idx)
         self.stage_specs_by_idx = {spec.stage_idx: spec for spec in self.stage_specs}
@@ -621,7 +627,7 @@ class DirectStageBundleBuilder:
             f"{spec.stage_idx}:{spec.start_idx}-{spec.end_idx}" for spec in self.stage_specs
         )
         self.log_component = f"direct-builder:{self.modality}_{self.mode}"
-        self.bundle_device = torch.device("cpu")
+        self.stage_state_device = torch.device("cpu")
         if self.runtime_only_text_generate:
             self.session_kind = "runtime-only-text"
         elif self.modality == "text":
@@ -675,7 +681,7 @@ class DirectStageBundleBuilder:
                     embed_tokens_weight = load_tensors_from_index(
                         self._text_weight_index,
                         ["model.language_model.embed_tokens.weight"],
-                        device=self.bundle_device,
+                        device=self.stage_state_device,
                         compute_dtype=None,
                         strict=True,
                     )["model.language_model.embed_tokens.weight"]
@@ -685,7 +691,7 @@ class DirectStageBundleBuilder:
                     )
                     self._text_embed_tokens_weight = _runtime_tensor(
                         embed_tokens_weight,
-                        device=self.bundle_device,
+                        device=self.stage_state_device,
                         compute_dtype=self.compute_dtype,
                     )
                     self._text_rotary_emb = build_text_rotary_embedding(
@@ -802,7 +808,7 @@ class DirectStageBundleBuilder:
         startup_log(
             self.log_component,
             f"builder session ready session_kind={self.session_kind} "
-            f"device={self.device} bundle_device={self.bundle_device} "
+                f"device={self.device} state_device={self.stage_state_device} "
             f"compute_dtype={self.compute_dtype} num_layers={self.num_layers} "
             f"tp_shard_rank={self.tp_shard_rank} tp_shard_world_size={self.tp_shard_world_size} "
             f"include_text_weights={self.include_text_weights} "
@@ -834,7 +840,7 @@ class DirectStageBundleBuilder:
             if self.modality == "multimodal" and not hasattr(self, "model"):
                 self._compact_mm_prefill_runtime()
 
-    def __enter__(self) -> "DirectStageBundleBuilder":
+    def __enter__(self) -> "DirectStageStateBuilder":
         return self
 
     def __exit__(self, _exc_type, _exc, _tb) -> None:
@@ -1158,7 +1164,7 @@ class DirectStageBundleBuilder:
         visual_payload: tuple[torch.Tensor | None, dict[int, torch.Tensor]] | None = None,
         device: torch.device | None = None,
     ):
-        target_device = self.bundle_device if device is None else device
+        target_device = self.stage_state_device if device is None else device
         if visual_payload is None:
             if runtime_state is self._mm_prefill_shared and spec.stage_idx in self._mm_prefill_visuals_by_stage:
                 visual_payload = self._mm_prefill_visuals_by_stage[spec.stage_idx]
@@ -1257,7 +1263,7 @@ class DirectStageBundleBuilder:
             end_idx=last_layer_idx,
             is_first_stage=False,
             is_last_stage=True,
-            device=self.bundle_device,
+            device=self.stage_state_device,
             compute_dtype=self.compute_dtype,
             weight_index=self._text_weight_index,
             config_spec=self._text_model_config,
@@ -1272,13 +1278,13 @@ class DirectStageBundleBuilder:
         embed_tokens_weight = load_tensors_from_index(
             self._text_weight_index,
             ["model.language_model.embed_tokens.weight"],
-            device=self.bundle_device,
+            device=self.stage_state_device,
             compute_dtype=None,
             strict=True,
         )["model.language_model.embed_tokens.weight"]
         self._text_embed_tokens_weight = _runtime_tensor(
             embed_tokens_weight,
-            device=self.bundle_device,
+            device=self.stage_state_device,
             compute_dtype=self.compute_dtype,
         )
         if self._text_embed_tokens_weight is None:
@@ -1297,7 +1303,7 @@ class DirectStageBundleBuilder:
             end_idx=layer_idx,
             is_first_stage=False,
             is_last_stage=False,
-            device=self.bundle_device,
+            device=self.stage_state_device,
             compute_dtype=self.compute_dtype,
             weight_index=self._text_weight_index,
             config_spec=self._text_model_config,
@@ -1556,14 +1562,14 @@ class DirectStageBundleBuilder:
         hidden_state_list = [
             _runtime_tensor(
                 stage_input,
-                device=self.bundle_device,
+                device=self.stage_state_device,
                 compute_dtype=self.compute_dtype,
             )
         ]
         hidden_state_list.extend(
             _runtime_tensor(
                 layer_trace["post_deepstack"].detach().clone(),
-                device=self.bundle_device,
+                device=self.stage_state_device,
                 compute_dtype=self.compute_dtype,
             )
             for layer_trace in trace["layer_traces"]
@@ -1574,7 +1580,7 @@ class DirectStageBundleBuilder:
         logits = F.linear(norm_output, lm_head_weight, lm_head_bias)
         stage_handoffs = self._build_stage_handoffs_from_hidden_states(
             hidden_state_list,
-            device=self.bundle_device,
+            device=self.stage_state_device,
         )
         return self._build_file_backed_prefill_state(
             runtime_state=prefill_runtime_state,
@@ -1714,23 +1720,23 @@ class DirectStageBundleBuilder:
         hidden_states: list[torch.Tensor] | tuple[torch.Tensor, ...] | None = None,
     ) -> dict[str, Any]:
         payload = {
-            "norm_output": _runtime_tensor(norm_output, device=self.bundle_device, compute_dtype=self.compute_dtype),
-            "logits": _runtime_tensor(logits, device=self.bundle_device, compute_dtype=self.compute_dtype),
-            "prefill_input_ids": _runtime_tensor(self.prefill_input_ids, device=self.bundle_device),
-            "prefill_attention_mask_2d": _runtime_tensor(self.prefill_attention_mask_2d, device=self.bundle_device),
-            "cache_by_layer": self._normalize_cache_by_layer(cache_by_layer, device=self.bundle_device),
+            "norm_output": _runtime_tensor(norm_output, device=self.stage_state_device, compute_dtype=self.compute_dtype),
+            "logits": _runtime_tensor(logits, device=self.stage_state_device, compute_dtype=self.compute_dtype),
+            "prefill_input_ids": _runtime_tensor(self.prefill_input_ids, device=self.stage_state_device),
+            "prefill_attention_mask_2d": _runtime_tensor(self.prefill_attention_mask_2d, device=self.stage_state_device),
+            "cache_by_layer": self._normalize_cache_by_layer(cache_by_layer, device=self.stage_state_device),
             "stage_handoffs": self._move_stage_handoffs(
                 stage_handoffs,
-                device=self.bundle_device,
+                device=self.stage_state_device,
             ),
         }
         if self.modality == "multimodal" and runtime_state is not None:
             payload["mm_runtime_shared"] = compact_mm_runtime_shared(
-                move_mm_state(runtime_state, device=self.bundle_device)
+                move_mm_state(runtime_state, device=self.stage_state_device)
             )
         if hidden_states is not None and self._keep_full_hidden_states_in_state():
             payload["hidden_states"] = tuple(
-                _runtime_tensor(hidden, device=self.bundle_device, compute_dtype=self.compute_dtype)
+                _runtime_tensor(hidden, device=self.stage_state_device, compute_dtype=self.compute_dtype)
                 for hidden in hidden_states
             )
         return payload
@@ -1957,31 +1963,31 @@ class DirectStageBundleBuilder:
         logits = F.linear(norm_output, lm_head_weight, lm_head_bias)
 
         payload = {
-            "decode_input_ids": _runtime_tensor(decode_input_ids, device=self.bundle_device),
-            "attention_mask_2d": _runtime_tensor(attention_mask_2d, device=self.bundle_device),
-            "attention_mask": _runtime_tensor(decode_runtime_inputs.attention_mask, device=self.bundle_device),
-            "cos": _runtime_tensor(decode_runtime_inputs.cos, device=self.bundle_device, compute_dtype=self.compute_dtype),
-            "sin": _runtime_tensor(decode_runtime_inputs.sin, device=self.bundle_device, compute_dtype=self.compute_dtype),
-            "position_ids": _runtime_tensor(decode_runtime_inputs.position_ids, device=self.bundle_device),
+            "decode_input_ids": _runtime_tensor(decode_input_ids, device=self.stage_state_device),
+            "attention_mask_2d": _runtime_tensor(attention_mask_2d, device=self.stage_state_device),
+            "attention_mask": _runtime_tensor(decode_runtime_inputs.attention_mask, device=self.stage_state_device),
+            "cos": _runtime_tensor(decode_runtime_inputs.cos, device=self.stage_state_device, compute_dtype=self.compute_dtype),
+            "sin": _runtime_tensor(decode_runtime_inputs.sin, device=self.stage_state_device, compute_dtype=self.compute_dtype),
+            "position_ids": _runtime_tensor(decode_runtime_inputs.position_ids, device=self.stage_state_device),
             "mm_runtime_state": None
             if self.modality == "text"
             else clone_mm_state(decode_runtime_inputs),
             "stage_handoffs": self._move_stage_handoffs(
                 stage_handoffs,
-                device=self.bundle_device,
+                device=self.stage_state_device,
             ),
             "hidden_stage_output": _runtime_tensor(
                 hidden_states,
-                device=self.bundle_device,
+                device=self.stage_state_device,
                 compute_dtype=self.compute_dtype,
             ),
-            "norm_output": _runtime_tensor(norm_output, device=self.bundle_device, compute_dtype=self.compute_dtype),
-            "logits": _runtime_tensor(logits, device=self.bundle_device, compute_dtype=self.compute_dtype),
-            "cache_by_layer": self._normalize_cache_by_layer(cache_by_layer_runtime, device=self.bundle_device),
+            "norm_output": _runtime_tensor(norm_output, device=self.stage_state_device, compute_dtype=self.compute_dtype),
+            "logits": _runtime_tensor(logits, device=self.stage_state_device, compute_dtype=self.compute_dtype),
+            "cache_by_layer": self._normalize_cache_by_layer(cache_by_layer_runtime, device=self.stage_state_device),
         }
         if hidden_state_list is not None:
             payload["hidden_states"] = tuple(
-                _runtime_tensor(hidden, device=self.bundle_device, compute_dtype=self.compute_dtype)
+                _runtime_tensor(hidden, device=self.stage_state_device, compute_dtype=self.compute_dtype)
                 for hidden in hidden_state_list
             )
         return payload
@@ -2004,7 +2010,7 @@ class DirectStageBundleBuilder:
             logits = _compute_logits(self.model, norm_output).detach().clone()
             prefill_cache_by_layer = build_cache_by_layer_from_past_key_values(
                 outputs.past_key_values,
-                device=self.bundle_device,
+                device=self.stage_state_device,
                 compute_dtype=self.compute_dtype,
             )
             self._prefill_full_state = {
@@ -2036,7 +2042,7 @@ class DirectStageBundleBuilder:
 
                 decode_input_ids = torch.tensor(
                     [[decode_token_id_value]],
-                    device=self.bundle_device,
+                    device=self.stage_state_device,
                     dtype=self.prefill_input_ids.dtype,
                 )
                 decode_attention_mask_2d = torch.cat(
@@ -2044,7 +2050,7 @@ class DirectStageBundleBuilder:
                         prefill_state["prefill_attention_mask_2d"],
                         torch.ones(
                             (prefill_state["prefill_attention_mask_2d"].shape[0], 1),
-                            device=self.bundle_device,
+                            device=self.stage_state_device,
                             dtype=prefill_state["prefill_attention_mask_2d"].dtype,
                         ),
                     ],
@@ -2174,7 +2180,7 @@ class DirectStageBundleBuilder:
                 for step_idx in range(max_new_tokens - 1):
                     decode_input_ids = torch.tensor(
                         [[generated_token_ids[-1]]],
-                        device=self.bundle_device,
+                        device=self.stage_state_device,
                         dtype=self.prefill_input_ids.dtype,
                     )
                     current_attention_mask_2d = torch.cat(
@@ -2182,7 +2188,7 @@ class DirectStageBundleBuilder:
                             current_attention_mask_2d,
                             torch.ones(
                                 (current_attention_mask_2d.shape[0], 1),
-                                device=self.bundle_device,
+                                device=self.stage_state_device,
                                 dtype=current_attention_mask_2d.dtype,
                             ),
                         ],
@@ -2340,12 +2346,12 @@ class DirectStageBundleBuilder:
                     past_key, past_value = cache_by_layer[layer_idx]
                     layer_bundle["past_key"] = _runtime_tensor(
                         past_key,
-                        device=self.bundle_device,
+                        device=self.stage_state_device,
                         compute_dtype=self.compute_dtype,
                     )
                     layer_bundle["past_value"] = _runtime_tensor(
                         past_value,
-                        device=self.bundle_device,
+                        device=self.stage_state_device,
                         compute_dtype=self.compute_dtype,
                     )
             return layer_bundles
@@ -2353,7 +2359,7 @@ class DirectStageBundleBuilder:
             self.model,
             start_idx=spec.start_idx,
             end_idx=spec.end_idx,
-            device=self.bundle_device,
+            device=self.stage_state_device,
             compute_dtype=self.compute_dtype,
             cache_by_layer=cache_by_layer,
         )
@@ -2374,7 +2380,7 @@ class DirectStageBundleBuilder:
                 end_idx=spec.end_idx,
                 is_first_stage=spec.start_idx == 0,
                 is_last_stage=spec.end_idx == self.num_layers - 1,
-                device=self.bundle_device,
+                device=self.stage_state_device,
                 compute_dtype=self.compute_dtype,
                 weight_index=self._text_weight_index,
                 config_spec=self._text_model_config,
@@ -2384,7 +2390,7 @@ class DirectStageBundleBuilder:
         self._text_stage_static_weights[spec.stage_idx] = stage_weights
         return stage_weights
 
-    def _get_bundle_stage_static_weights(self, spec: StageSpec) -> TextStageWeightBundle | None:
+    def _get_stage_state_static_weights(self, spec: StageSpec) -> TextStageWeightBundle | None:
         if self.modality == "text":
             if not self.include_text_weights:
                 return None
@@ -2393,7 +2399,7 @@ class DirectStageBundleBuilder:
             return None
         return self._get_text_stage_static_weights(spec)
 
-    def _get_bundle_embed_tokens_weight(
+    def _get_stage_state_embed_tokens_weight(
         self,
         stage_static_weights: TextStageWeightBundle | None,
     ) -> torch.Tensor:
@@ -2402,16 +2408,16 @@ class DirectStageBundleBuilder:
         if hasattr(self, "model"):
             return _runtime_tensor(
                 self.model.model.language_model.embed_tokens.weight,
-                device=self.bundle_device,
+                device=self.stage_state_device,
                 compute_dtype=self.compute_dtype,
             )
         return _runtime_tensor(
             self._get_text_embed_tokens_weight(),
-            device=self.bundle_device,
+            device=self.stage_state_device,
             compute_dtype=self.compute_dtype,
         )
 
-    def _get_bundle_final_output_weights(
+    def _get_stage_state_final_output_weights(
         self,
         stage_static_weights: TextStageWeightBundle | None,
     ) -> dict[str, Any]:
@@ -2426,18 +2432,18 @@ class DirectStageBundleBuilder:
             return {
                 "final_norm_weight": _runtime_tensor(
                     self.model.model.language_model.norm.weight,
-                    device=self.bundle_device,
+                    device=self.stage_state_device,
                     compute_dtype=self.compute_dtype,
                 ),
                 "final_norm_eps": self.model.model.language_model.norm.variance_epsilon,
                 "lm_head_weight": _runtime_tensor(
                     self.model.lm_head.weight,
-                    device=self.bundle_device,
+                    device=self.stage_state_device,
                     compute_dtype=self.compute_dtype,
                 ),
                 "lm_head_bias": _runtime_tensor(
                     self.model.lm_head.bias,
-                    device=self.bundle_device,
+                    device=self.stage_state_device,
                     compute_dtype=self.compute_dtype,
                 ),
             }
@@ -2445,18 +2451,18 @@ class DirectStageBundleBuilder:
         return {
             "final_norm_weight": _runtime_tensor(
                 final_norm_weight,
-                device=self.bundle_device,
+                device=self.stage_state_device,
                 compute_dtype=self.compute_dtype,
             ),
             "final_norm_eps": final_norm_eps,
             "lm_head_weight": _runtime_tensor(
                 lm_head_weight,
-                device=self.bundle_device,
+                device=self.stage_state_device,
                 compute_dtype=self.compute_dtype,
             ),
             "lm_head_bias": _runtime_tensor(
                 lm_head_bias,
-                device=self.bundle_device,
+                device=self.stage_state_device,
                 compute_dtype=self.compute_dtype,
             ),
         }
@@ -2470,11 +2476,11 @@ class DirectStageBundleBuilder:
             runtime_inputs,
             start_idx=spec.start_idx,
             end_idx=spec.end_idx,
-            device=self.bundle_device,
+            device=self.stage_state_device,
             compute_dtype=self.compute_dtype,
         )
 
-    def _build_prefill_bundle(self, spec: StageSpec) -> dict[str, Any]:
+    def _build_prefill_stage_state(self, spec: StageSpec) -> StageState:
         stage_input = self._prefill_stage_inputs_by_stage[spec.stage_idx]
         hidden_stage_output = self._prefill_stage_outputs_by_stage[spec.stage_idx]
         is_last_stage = spec.end_idx == self.num_layers - 1
@@ -2489,19 +2495,19 @@ class DirectStageBundleBuilder:
             prefill_runtime_state = self._prefill_mm_inputs()
         visual_pos_masks = _runtime_tensor(
             getattr(prefill_runtime_state, "visual_pos_masks", None),
-            device=self.bundle_device,
+            device=self.stage_state_device,
         )
         deepstack_by_layer = {
             int(layer_idx): _runtime_tensor(
                 deepstack,
-                device=self.bundle_device,
+                device=self.stage_state_device,
                 compute_dtype=self.compute_dtype,
             )
             for layer_idx, deepstack in getattr(prefill_runtime_state, "deepstack_by_layer", {}).items()
         }
-        stage_static_weights = self._get_bundle_stage_static_weights(spec)
+        stage_static_weights = self._get_stage_state_static_weights(spec)
 
-        bundle = {
+        stage_state = {
             "module_name": f"{self.modality}_prefill_stage",
             "stage_type": "text_prefill_last" if is_last_stage else "text",
             "start_idx": spec.start_idx,
@@ -2509,18 +2515,18 @@ class DirectStageBundleBuilder:
             "save_dtype": _save_dtype_name(self.compute_dtype),
             "original_input_dtype": str(stage_input.dtype),
             "original_input_device": str(stage_input.device),
-            "attention_mask_2d": _runtime_tensor(self.prefill_attention_mask_2d_raw, device=self.bundle_device),
-            "stage_input": _runtime_tensor(stage_input, device=self.bundle_device, compute_dtype=self.compute_dtype),
-            "layer_input": _runtime_tensor(stage_input, device=self.bundle_device, compute_dtype=self.compute_dtype),
-            "attention_mask": _runtime_tensor(prefill_runtime_state.attention_mask, device=self.bundle_device),
+            "attention_mask_2d": _runtime_tensor(self.prefill_attention_mask_2d_raw, device=self.stage_state_device),
+            "stage_input": _runtime_tensor(stage_input, device=self.stage_state_device, compute_dtype=self.compute_dtype),
+            "layer_input": _runtime_tensor(stage_input, device=self.stage_state_device, compute_dtype=self.compute_dtype),
+            "attention_mask": _runtime_tensor(prefill_runtime_state.attention_mask, device=self.stage_state_device),
             "cos": _runtime_tensor(
                 prefill_runtime_state.cos,
-                device=self.bundle_device,
+                device=self.stage_state_device,
                 compute_dtype=self.compute_dtype,
             ),
             "sin": _runtime_tensor(
                 prefill_runtime_state.sin,
-                device=self.bundle_device,
+                device=self.stage_state_device,
                 compute_dtype=self.compute_dtype,
             ),
             "visual_pos_masks": visual_pos_masks,
@@ -2530,21 +2536,21 @@ class DirectStageBundleBuilder:
         }
 
         if self.modality == "text":
-            bundle["prompt"] = self.extra["prompt"]
-            bundle["input_ids"] = _runtime_tensor(prefill_runtime_state.input_ids, device=self.bundle_device)
-            bundle["tp_weight_sharded"] = (
+            stage_state["prompt"] = self.extra["prompt"]
+            stage_state["input_ids"] = _runtime_tensor(prefill_runtime_state.input_ids, device=self.stage_state_device)
+            stage_state["tp_weight_sharded"] = (
                 False if stage_static_weights is None else stage_static_weights.tp_weight_sharded
             )
-            bundle["tp_shard_rank"] = None if stage_static_weights is None else stage_static_weights.tp_shard_rank
-            bundle["tp_shard_world_size"] = (
+            stage_state["tp_shard_rank"] = None if stage_static_weights is None else stage_static_weights.tp_shard_rank
+            stage_state["tp_shard_world_size"] = (
                 None if stage_static_weights is None else stage_static_weights.tp_shard_world_size
             )
             if spec.start_idx == 0 and stage_static_weights is not None:
-                bundle["embed_tokens_weight"] = stage_static_weights.embed_tokens_weight
+                stage_state["embed_tokens_weight"] = stage_static_weights.embed_tokens_weight
         else:
-            bundle["num_frames"] = self.extra["num_frames"]
-            bundle["frame_paths"] = self.extra["frame_paths"]
-            bundle["input_ids"] = _runtime_tensor(prefill_runtime_state.input_ids, device=self.bundle_device)
+            stage_state["num_frames"] = self.extra["num_frames"]
+            stage_state["frame_paths"] = self.extra["frame_paths"]
+            stage_state["input_ids"] = _runtime_tensor(prefill_runtime_state.input_ids, device=self.stage_state_device)
 
         if is_last_stage:
             if not hasattr(self, "model"):
@@ -2561,44 +2567,44 @@ class DirectStageBundleBuilder:
                 text_model = self.model.model.language_model
                 norm_output = text_model.norm(hidden_stage_output).detach().clone()
                 logits = _compute_logits(self.model, norm_output).detach().clone()
-            bundle.update(
+            stage_state.update(
                 {
                     "original_output_dtype": str(logits.dtype),
                     "original_output_device": str(logits.device),
-                    "stage_output": _runtime_tensor(logits, device=self.bundle_device, compute_dtype=self.compute_dtype),
-                    "layer_output": _runtime_tensor(logits, device=self.bundle_device, compute_dtype=self.compute_dtype),
+                    "stage_output": _runtime_tensor(logits, device=self.stage_state_device, compute_dtype=self.compute_dtype),
+                    "layer_output": _runtime_tensor(logits, device=self.stage_state_device, compute_dtype=self.compute_dtype),
                     "hidden_stage_output": _runtime_tensor(
                         hidden_stage_output,
-                        device=self.bundle_device,
+                        device=self.stage_state_device,
                         compute_dtype=self.compute_dtype,
                     ),
-                    "norm_output": _runtime_tensor(norm_output, device=self.bundle_device, compute_dtype=self.compute_dtype),
-                    "logits": _runtime_tensor(logits, device=self.bundle_device, compute_dtype=self.compute_dtype),
+                    "norm_output": _runtime_tensor(norm_output, device=self.stage_state_device, compute_dtype=self.compute_dtype),
+                    "logits": _runtime_tensor(logits, device=self.stage_state_device, compute_dtype=self.compute_dtype),
                 }
             )
             if self.include_text_weights and (stage_static_weights is not None or self.modality != "text"):
-                bundle.update(self._get_bundle_final_output_weights(stage_static_weights))
+                stage_state.update(self._get_stage_state_final_output_weights(stage_static_weights))
         else:
-            bundle.update(
+            stage_state.update(
                 {
                     "original_output_dtype": str(hidden_stage_output.dtype),
                     "original_output_device": str(hidden_stage_output.device),
                     "stage_output": _runtime_tensor(
                         hidden_stage_output,
-                        device=self.bundle_device,
+                        device=self.stage_state_device,
                         compute_dtype=self.compute_dtype,
                     ),
                     "layer_output": _runtime_tensor(
                         hidden_stage_output,
-                        device=self.bundle_device,
+                        device=self.stage_state_device,
                         compute_dtype=self.compute_dtype,
                     ),
                 }
             )
 
-        return bundle
+        return stage_state
 
-    def _build_decode_bundle(self, spec: StageSpec) -> dict[str, Any]:
+    def _build_decode_stage_state(self, spec: StageSpec) -> StageState:
         state = self._ensure_decode_state()
         stage_input = self._lookup_stage_boundary_tensor(state, spec, key="stage_input")
         if stage_input is None:
@@ -2618,7 +2624,7 @@ class DirectStageBundleBuilder:
             decode_runtime_state = None
         visual_pos_masks = _runtime_tensor(
             None if decode_runtime_state is None else decode_runtime_state.visual_pos_masks,
-            device=self.bundle_device,
+            device=self.stage_state_device,
         )
         deepstack_by_layer = (
             {}
@@ -2626,15 +2632,15 @@ class DirectStageBundleBuilder:
             else {
                 int(layer_idx): _runtime_tensor(
                     deepstack,
-                    device=self.bundle_device,
+                    device=self.stage_state_device,
                     compute_dtype=self.compute_dtype,
                 )
                 for layer_idx, deepstack in decode_runtime_state.deepstack_by_layer.items()
             }
         )
-        stage_static_weights = self._get_bundle_stage_static_weights(spec)
+        stage_static_weights = self._get_stage_state_static_weights(spec)
 
-        bundle = {
+        stage_state = {
             "module_name": f"{self.modality}_decode_stage",
             "stage_type": "text_decode_last" if is_last_stage else "text_decode",
             "start_idx": spec.start_idx,
@@ -2646,40 +2652,40 @@ class DirectStageBundleBuilder:
             "decode_token_id": state["decode_token_id"],
             "prefill_seq_len": int(self.prefill_input_ids.shape[-1]),
             "total_seq_len": int(state["attention_mask_2d"].shape[-1]),
-            "prefill_input_ids": _runtime_tensor(self.prefill_input_ids, device=self.bundle_device),
-            "decode_input_ids": _runtime_tensor(state["decode_input_ids"], device=self.bundle_device),
-            "prefill_attention_mask_2d": _runtime_tensor(self.prefill_attention_mask_2d, device=self.bundle_device),
-            "attention_mask_2d": _runtime_tensor(state["attention_mask_2d"], device=self.bundle_device),
-            "stage_input": _runtime_tensor(stage_input, device=self.bundle_device, compute_dtype=self.compute_dtype),
-            "layer_input": _runtime_tensor(stage_input, device=self.bundle_device, compute_dtype=self.compute_dtype),
-            "attention_mask": _runtime_tensor(state["attention_mask"], device=self.bundle_device),
-            "cos": _runtime_tensor(state["cos"], device=self.bundle_device, compute_dtype=self.compute_dtype),
-            "sin": _runtime_tensor(state["sin"], device=self.bundle_device, compute_dtype=self.compute_dtype),
+            "prefill_input_ids": _runtime_tensor(self.prefill_input_ids, device=self.stage_state_device),
+            "decode_input_ids": _runtime_tensor(state["decode_input_ids"], device=self.stage_state_device),
+            "prefill_attention_mask_2d": _runtime_tensor(self.prefill_attention_mask_2d, device=self.stage_state_device),
+            "attention_mask_2d": _runtime_tensor(state["attention_mask_2d"], device=self.stage_state_device),
+            "stage_input": _runtime_tensor(stage_input, device=self.stage_state_device, compute_dtype=self.compute_dtype),
+            "layer_input": _runtime_tensor(stage_input, device=self.stage_state_device, compute_dtype=self.compute_dtype),
+            "attention_mask": _runtime_tensor(state["attention_mask"], device=self.stage_state_device),
+            "cos": _runtime_tensor(state["cos"], device=self.stage_state_device, compute_dtype=self.compute_dtype),
+            "sin": _runtime_tensor(state["sin"], device=self.stage_state_device, compute_dtype=self.compute_dtype),
             "visual_pos_masks": visual_pos_masks,
             "deepstack_by_layer": deepstack_by_layer,
             "deepstack_layer_indices": sorted(deepstack_by_layer),
             "layers": layer_bundles,
         }
         if self.modality == "text":
-            bundle["cache_by_layer"] = state["cache_by_layer"]
+            stage_state["cache_by_layer"] = state["cache_by_layer"]
 
         if self.modality == "text":
-            bundle["prompt"] = self.extra["prompt"]
-            bundle["tp_weight_sharded"] = (
+            stage_state["prompt"] = self.extra["prompt"]
+            stage_state["tp_weight_sharded"] = (
                 False if stage_static_weights is None else stage_static_weights.tp_weight_sharded
             )
-            bundle["tp_shard_rank"] = None if stage_static_weights is None else stage_static_weights.tp_shard_rank
-            bundle["tp_shard_world_size"] = (
+            stage_state["tp_shard_rank"] = None if stage_static_weights is None else stage_static_weights.tp_shard_rank
+            stage_state["tp_shard_world_size"] = (
                 None if stage_static_weights is None else stage_static_weights.tp_shard_world_size
             )
         else:
-            bundle["num_frames"] = self.extra["num_frames"]
-            bundle["frame_paths"] = self.extra["frame_paths"]
-            bundle["position_ids"] = _runtime_tensor(state["position_ids"], device=self.bundle_device)
+            stage_state["num_frames"] = self.extra["num_frames"]
+            stage_state["frame_paths"] = self.extra["frame_paths"]
+            stage_state["position_ids"] = _runtime_tensor(state["position_ids"], device=self.stage_state_device)
 
         if spec.start_idx == 0:
             if self.include_text_weights and (stage_static_weights is not None or self.modality != "text"):
-                bundle["embed_tokens_weight"] = self._get_bundle_embed_tokens_weight(stage_static_weights)
+                stage_state["embed_tokens_weight"] = self._get_stage_state_embed_tokens_weight(stage_static_weights)
 
         if is_last_stage:
             hidden_stage_output = state["hidden_stage_output"]
@@ -2687,49 +2693,49 @@ class DirectStageBundleBuilder:
                 raise RuntimeError("decode last stage 没有拿到 final norm 前的 hidden_stage_output。")
             logits = state["logits"]
             norm_output = state["norm_output"]
-            bundle.update(
+            stage_state.update(
                 {
                     "original_output_dtype": str(logits.dtype),
                     "original_output_device": str(logits.device),
-                    "stage_output": _runtime_tensor(logits, device=self.bundle_device, compute_dtype=self.compute_dtype),
-                    "layer_output": _runtime_tensor(logits, device=self.bundle_device, compute_dtype=self.compute_dtype),
+                    "stage_output": _runtime_tensor(logits, device=self.stage_state_device, compute_dtype=self.compute_dtype),
+                    "layer_output": _runtime_tensor(logits, device=self.stage_state_device, compute_dtype=self.compute_dtype),
                     "hidden_stage_output": _runtime_tensor(
                         hidden_stage_output,
-                        device=self.bundle_device,
+                        device=self.stage_state_device,
                         compute_dtype=self.compute_dtype,
                     ),
-                    "norm_output": _runtime_tensor(norm_output, device=self.bundle_device, compute_dtype=self.compute_dtype),
-                    "logits": _runtime_tensor(logits, device=self.bundle_device, compute_dtype=self.compute_dtype),
+                    "norm_output": _runtime_tensor(norm_output, device=self.stage_state_device, compute_dtype=self.compute_dtype),
+                    "logits": _runtime_tensor(logits, device=self.stage_state_device, compute_dtype=self.compute_dtype),
                 }
             )
             if stage_static_weights is not None or self.modality != "text":
-                bundle.update(self._get_bundle_final_output_weights(stage_static_weights))
+                stage_state.update(self._get_stage_state_final_output_weights(stage_static_weights))
         else:
             stage_output = self._lookup_stage_boundary_tensor(state, spec, key="stage_output")
             if stage_output is None:
                 raise RuntimeError(
                     f"decode state 缺少 stage_idx={spec.stage_idx} 的 stage_output handoff。"
                 )
-            bundle.update(
+            stage_state.update(
                 {
                     "original_output_dtype": str(stage_output.dtype),
                     "original_output_device": str(stage_output.device),
                     "stage_output": _runtime_tensor(
                         stage_output,
-                        device=self.bundle_device,
+                        device=self.stage_state_device,
                         compute_dtype=self.compute_dtype,
                     ),
                     "layer_output": _runtime_tensor(
                         stage_output,
-                        device=self.bundle_device,
+                        device=self.stage_state_device,
                         compute_dtype=self.compute_dtype,
                     ),
                 }
             )
 
-        return bundle
+        return stage_state
 
-    def _build_generate_bundle(self, spec: StageSpec) -> dict[str, Any]:
+    def _build_generate_stage_state(self, spec: StageSpec) -> StageState:
         state = self._ensure_generate_state()
         is_last_stage = spec.end_idx == self.num_layers - 1
         prefill_stage_input = self._prefill_stage_inputs_by_stage[spec.stage_idx]
@@ -2745,34 +2751,34 @@ class DirectStageBundleBuilder:
             prefill_runtime_state = self._prefill_mm_inputs()
         visual_pos_masks = _runtime_tensor(
             getattr(prefill_runtime_state, "visual_pos_masks", None),
-            device=self.bundle_device,
+            device=self.stage_state_device,
         )
         deepstack_by_layer = {
             int(layer_idx): _runtime_tensor(
                 deepstack,
-                device=self.bundle_device,
+                device=self.stage_state_device,
                 compute_dtype=self.compute_dtype,
             )
             for layer_idx, deepstack in getattr(prefill_runtime_state, "deepstack_by_layer", {}).items()
         }
-        stage_static_weights = self._get_bundle_stage_static_weights(spec)
+        stage_static_weights = self._get_stage_state_static_weights(spec)
 
         prefill_payload = {
-            "attention_mask_2d": _runtime_tensor(self.prefill_attention_mask_2d, device=self.bundle_device),
+            "attention_mask_2d": _runtime_tensor(self.prefill_attention_mask_2d, device=self.stage_state_device),
             "stage_input": _runtime_tensor(
                 prefill_stage_input,
-                device=self.bundle_device,
+                device=self.stage_state_device,
                 compute_dtype=self.compute_dtype,
             ),
-            "attention_mask": _runtime_tensor(prefill_runtime_state.attention_mask, device=self.bundle_device),
+            "attention_mask": _runtime_tensor(prefill_runtime_state.attention_mask, device=self.stage_state_device),
             "cos": _runtime_tensor(
                 prefill_runtime_state.cos,
-                device=self.bundle_device,
+                device=self.stage_state_device,
                 compute_dtype=self.compute_dtype,
             ),
             "sin": _runtime_tensor(
                 prefill_runtime_state.sin,
-                device=self.bundle_device,
+                device=self.stage_state_device,
                 compute_dtype=self.compute_dtype,
             ),
         }
@@ -2781,22 +2787,22 @@ class DirectStageBundleBuilder:
                 {
                     "stage_output": _runtime_tensor(
                         state["prefill_logits"],
-                        device=self.bundle_device,
+                        device=self.stage_state_device,
                         compute_dtype=self.compute_dtype,
                     ),
                     "hidden_stage_output": _runtime_tensor(
                         prefill_hidden_stage_output,
-                        device=self.bundle_device,
+                        device=self.stage_state_device,
                         compute_dtype=self.compute_dtype,
                     ),
                     "norm_output": _runtime_tensor(
                         state["prefill_norm_output"],
-                        device=self.bundle_device,
+                        device=self.stage_state_device,
                         compute_dtype=self.compute_dtype,
                     ),
                     "logits": _runtime_tensor(
                         state["prefill_logits"],
-                        device=self.bundle_device,
+                        device=self.stage_state_device,
                         compute_dtype=self.compute_dtype,
                     ),
                     "output_token_id": state["generated_token_ids"][0],
@@ -2805,7 +2811,7 @@ class DirectStageBundleBuilder:
         else:
             prefill_payload["stage_output"] = _runtime_tensor(
                 prefill_hidden_stage_output,
-                device=self.bundle_device,
+                device=self.stage_state_device,
                 compute_dtype=self.compute_dtype,
             )
 
@@ -2825,23 +2831,23 @@ class DirectStageBundleBuilder:
                 )
             step_payload = {
                 "step_idx": step_result["step_idx"],
-                "decode_input_ids": _runtime_tensor(step_result["decode_input_ids"], device=self.bundle_device),
-                "attention_mask_2d": _runtime_tensor(step_result["attention_mask_2d"], device=self.bundle_device),
+                "decode_input_ids": _runtime_tensor(step_result["decode_input_ids"], device=self.stage_state_device),
+                "attention_mask_2d": _runtime_tensor(step_result["attention_mask_2d"], device=self.stage_state_device),
                 "total_seq_len": int(step_result["attention_mask_2d"].shape[-1]),
                 "stage_input": _runtime_tensor(
                     step_stage_input,
-                    device=self.bundle_device,
+                    device=self.stage_state_device,
                     compute_dtype=self.compute_dtype,
                 ),
-                "attention_mask": _runtime_tensor(step_result["attention_mask"], device=self.bundle_device),
+                "attention_mask": _runtime_tensor(step_result["attention_mask"], device=self.stage_state_device),
                 "cos": _runtime_tensor(
                     step_result["cos"],
-                    device=self.bundle_device,
+                    device=self.stage_state_device,
                     compute_dtype=self.compute_dtype,
                 ),
                 "sin": _runtime_tensor(
                     step_result["sin"],
-                    device=self.bundle_device,
+                    device=self.stage_state_device,
                     compute_dtype=self.compute_dtype,
                 ),
                 "visual_pos_masks": None,
@@ -2849,15 +2855,15 @@ class DirectStageBundleBuilder:
                 "deepstack_layer_indices": [],
             }
             if self.modality == "multimodal":
-                step_payload["position_ids"] = _runtime_tensor(step_result["position_ids"], device=self.bundle_device)
+                step_payload["position_ids"] = _runtime_tensor(step_result["position_ids"], device=self.stage_state_device)
                 step_payload["visual_pos_masks"] = _runtime_tensor(
                     decode_runtime_state.visual_pos_masks,
-                    device=self.bundle_device,
+                    device=self.stage_state_device,
                 )
                 step_payload["deepstack_by_layer"] = {
                     int(layer_idx): _runtime_tensor(
                         deepstack,
-                        device=self.bundle_device,
+                        device=self.stage_state_device,
                         compute_dtype=self.compute_dtype,
                     )
                     for layer_idx, deepstack in decode_runtime_state.deepstack_by_layer.items()
@@ -2872,22 +2878,22 @@ class DirectStageBundleBuilder:
                     {
                         "stage_output": _runtime_tensor(
                             step_result["logits"],
-                            device=self.bundle_device,
+                            device=self.stage_state_device,
                             compute_dtype=self.compute_dtype,
                         ),
                         "hidden_stage_output": _runtime_tensor(
                             hidden_stage_output,
-                            device=self.bundle_device,
+                            device=self.stage_state_device,
                             compute_dtype=self.compute_dtype,
                         ),
                         "norm_output": _runtime_tensor(
                             step_result["norm_output"],
-                            device=self.bundle_device,
+                            device=self.stage_state_device,
                             compute_dtype=self.compute_dtype,
                         ),
                         "logits": _runtime_tensor(
                             step_result["logits"],
-                            device=self.bundle_device,
+                            device=self.stage_state_device,
                             compute_dtype=self.compute_dtype,
                         ),
                         "output_token_id": step_result["output_token_id"],
@@ -2905,12 +2911,12 @@ class DirectStageBundleBuilder:
                     )
                 step_payload["stage_output"] = _runtime_tensor(
                     step_stage_output,
-                    device=self.bundle_device,
+                    device=self.stage_state_device,
                     compute_dtype=self.compute_dtype,
                 )
             decode_steps.append(step_payload)
 
-        bundle = {
+        stage_state = {
             "module_name": f"{self.modality}_generate_stage",
             "stage_type": f"{self.modality}_generate_last" if is_last_stage else f"{self.modality}_generate",
             "start_idx": spec.start_idx,
@@ -2920,14 +2926,14 @@ class DirectStageBundleBuilder:
             "original_input_device": str(prefill_stage_input.device),
             "max_new_tokens": state["max_new_tokens"],
             "prefill_seq_len": int(self.prefill_input_ids.shape[-1]),
-            "prefill_input_ids": _runtime_tensor(self.prefill_input_ids, device=self.bundle_device),
+            "prefill_input_ids": _runtime_tensor(self.prefill_input_ids, device=self.stage_state_device),
             "prefill_attention_mask_2d": _runtime_tensor(
                 self.prefill_attention_mask_2d,
-                device=self.bundle_device,
+                device=self.stage_state_device,
             ),
             "generated_token_ids": torch.tensor(
                 [state["generated_token_ids"]],
-                device=self.bundle_device,
+                device=self.stage_state_device,
                 dtype=self.prefill_input_ids.dtype,
             ),
             "prefill": prefill_payload,
@@ -2938,36 +2944,36 @@ class DirectStageBundleBuilder:
             "decode_steps": decode_steps,
         }
         if self.modality == "text":
-            bundle["cache_by_layer"] = state["cache_by_layer"]
+            stage_state["cache_by_layer"] = state["cache_by_layer"]
 
         if self.modality == "text":
-            bundle["prompt"] = self.extra["prompt"]
-            bundle["tp_weight_sharded"] = (
+            stage_state["prompt"] = self.extra["prompt"]
+            stage_state["tp_weight_sharded"] = (
                 False if stage_static_weights is None else stage_static_weights.tp_weight_sharded
             )
-            bundle["tp_shard_rank"] = None if stage_static_weights is None else stage_static_weights.tp_shard_rank
-            bundle["tp_shard_world_size"] = (
+            stage_state["tp_shard_rank"] = None if stage_static_weights is None else stage_static_weights.tp_shard_rank
+            stage_state["tp_shard_world_size"] = (
                 None if stage_static_weights is None else stage_static_weights.tp_shard_world_size
             )
             if spec.start_idx == 0:
-                bundle["input_ids"] = _runtime_tensor(self.prefill_input_ids, device=self.bundle_device)
+                stage_state["input_ids"] = _runtime_tensor(self.prefill_input_ids, device=self.stage_state_device)
         else:
-            bundle["num_frames"] = self.extra["num_frames"]
-            bundle["frame_paths"] = self.extra["frame_paths"]
+            stage_state["num_frames"] = self.extra["num_frames"]
+            stage_state["frame_paths"] = self.extra["frame_paths"]
 
         if spec.start_idx == 0:
             if self.include_text_weights and (stage_static_weights is not None or self.modality != "text"):
-                bundle["embed_tokens_weight"] = self._get_bundle_embed_tokens_weight(stage_static_weights)
+                stage_state["embed_tokens_weight"] = self._get_stage_state_embed_tokens_weight(stage_static_weights)
 
         if is_last_stage:
             if self.include_text_weights and (stage_static_weights is not None or self.modality != "text"):
-                bundle.update(self._get_bundle_final_output_weights(stage_static_weights))
+                stage_state.update(self._get_stage_state_final_output_weights(stage_static_weights))
 
-        return bundle
+        return stage_state
 
-    def _build_generate_bundle_runtime_only(self, spec: StageSpec) -> dict[str, Any]:
+    def _build_generate_stage_state_runtime_only(self, spec: StageSpec) -> StageState:
         if self.modality not in {"text", "multimodal"}:
-            raise RuntimeError(f"runtime-only generate bundle 不支持 modality={self.modality!r}。")
+            raise RuntimeError(f"runtime-only generate StageState 不支持 modality={self.modality!r}。")
 
         text_stage_weights = (
             self._get_text_stage_static_weights(spec)
@@ -2975,9 +2981,9 @@ class DirectStageBundleBuilder:
             else None
         )
         layer_bundles = self._build_layers_for_stage(spec)
-        bundle = build_rt_text_bundle(
+        stage_state = build_text_stage_state(
             spec=spec,
-            bundle_device=self.bundle_device,
+            stage_state_device=self.stage_state_device,
             compute_dtype=self.compute_dtype,
             prefill_attention_mask_2d=self.prefill_attention_mask_2d,
             prefill_seq_len=int(self.prefill_input_ids.shape[-1]),
@@ -2987,10 +2993,10 @@ class DirectStageBundleBuilder:
             layers=layer_bundles,
             text_stage_weights=text_stage_weights,
         )
-        bundle["module_name"] = f"{self.modality}_generate_stage"
-        bundle["stage_type"] = f"{self.modality}_generate_runtime_only"
-        bundle["modality"] = self.modality
-        bundle["max_new_tokens"] = int(self.runtime_config.get("max_new_tokens", 4))
+        stage_state["module_name"] = f"{self.modality}_generate_stage"
+        stage_state["stage_type"] = f"{self.modality}_generate_runtime_only"
+        stage_state["modality"] = self.modality
+        stage_state["max_new_tokens"] = int(self.runtime_config.get("max_new_tokens", 4))
 
         if self.modality == "multimodal":
             stage_input = self._prefill_stage_inputs_by_stage.get(spec.stage_idx)
@@ -3005,51 +3011,51 @@ class DirectStageBundleBuilder:
             )
             visual_pos_masks = _runtime_tensor(
                 getattr(prefill_runtime_state, "visual_pos_masks", None),
-                device=self.bundle_device,
+                device=self.stage_state_device,
             )
             deepstack_by_layer = {
                 int(layer_idx): _runtime_tensor(
                     deepstack,
-                    device=self.bundle_device,
+                    device=self.stage_state_device,
                     compute_dtype=self.compute_dtype,
                 )
                 for layer_idx, deepstack in getattr(prefill_runtime_state, "deepstack_by_layer", {}).items()
             }
-            bundle.update(
+            stage_state.update(
                 {
                     "num_frames": self.extra["num_frames"],
                     "frame_paths": self.extra["frame_paths"],
                     "stage_input": _runtime_tensor(
                         stage_input,
-                        device=self.bundle_device,
+                        device=self.stage_state_device,
                         compute_dtype=self.compute_dtype,
                     ),
                     "layer_input": _runtime_tensor(
                         stage_input,
-                        device=self.bundle_device,
+                        device=self.stage_state_device,
                         compute_dtype=self.compute_dtype,
                     ),
                     "prefill_attention_mask": _runtime_tensor(
                         prefill_runtime_state.attention_mask,
-                        device=self.bundle_device,
+                        device=self.stage_state_device,
                     ),
                     "prefill_position_ids": _runtime_tensor(
                         prefill_runtime_state.position_ids,
-                        device=self.bundle_device,
+                        device=self.stage_state_device,
                     ),
                     "prefill_cos": _runtime_tensor(
                         prefill_runtime_state.cos,
-                        device=self.bundle_device,
+                        device=self.stage_state_device,
                         compute_dtype=self.compute_dtype,
                     ),
                     "prefill_sin": _runtime_tensor(
                         prefill_runtime_state.sin,
-                        device=self.bundle_device,
+                        device=self.stage_state_device,
                         compute_dtype=self.compute_dtype,
                     ),
                     "rope_deltas": _runtime_tensor(
                         getattr(prefill_runtime_state, "rope_deltas", None),
-                        device=self.bundle_device,
+                        device=self.stage_state_device,
                     ),
                     "visual_pos_masks": visual_pos_masks,
                     "deepstack_by_layer": deepstack_by_layer,
@@ -3058,39 +3064,39 @@ class DirectStageBundleBuilder:
             )
 
         if self.modality == "text" and spec.start_idx == 0:
-            bundle["input_ids"] = _runtime_tensor(self.prefill_input_ids, device=self.bundle_device)
+            stage_state["input_ids"] = _runtime_tensor(self.prefill_input_ids, device=self.stage_state_device)
             if text_stage_weights is not None and text_stage_weights.embed_tokens_weight is not None:
-                bundle["embed_tokens_weight"] = text_stage_weights.embed_tokens_weight
+                stage_state["embed_tokens_weight"] = text_stage_weights.embed_tokens_weight
         elif self.modality == "multimodal" and spec.start_idx == 0 and text_stage_weights is not None:
             if text_stage_weights.embed_tokens_weight is not None:
-                bundle["embed_tokens_weight"] = text_stage_weights.embed_tokens_weight
+                stage_state["embed_tokens_weight"] = text_stage_weights.embed_tokens_weight
 
         if spec.end_idx == self.num_layers - 1 and text_stage_weights is not None:
             if text_stage_weights.final_norm_weight is not None:
-                bundle["final_norm_weight"] = text_stage_weights.final_norm_weight
+                stage_state["final_norm_weight"] = text_stage_weights.final_norm_weight
             if text_stage_weights.final_norm_eps is not None:
-                bundle["final_norm_eps"] = text_stage_weights.final_norm_eps
+                stage_state["final_norm_eps"] = text_stage_weights.final_norm_eps
             if text_stage_weights.lm_head_weight is not None:
-                bundle["lm_head_weight"] = text_stage_weights.lm_head_weight
-            bundle["lm_head_bias"] = text_stage_weights.lm_head_bias
+                stage_state["lm_head_weight"] = text_stage_weights.lm_head_weight
+            stage_state["lm_head_bias"] = text_stage_weights.lm_head_bias
 
-        return bundle
+        return stage_state
 
-    def build_stage_bundle(self, stage_idx: int) -> dict[str, Any]:
+    def build_stage_state(self, stage_idx: int) -> StageState:
         spec = self.stage_specs_by_idx[stage_idx]
         with startup_timer(
             self.log_component,
             f"materialize stage_idx={stage_idx} range={spec.start_idx}:{spec.end_idx}",
         ):
             if self.mode == "prefill":
-                bundle = self._build_prefill_bundle(spec)
+                stage_state = self._build_prefill_stage_state(spec)
             elif self.mode == "decode":
-                bundle = self._build_decode_bundle(spec)
+                stage_state = self._build_decode_stage_state(spec)
             elif self.mode == "generate":
                 if not self.include_runtime_reference:
-                    bundle = self._build_generate_bundle_runtime_only(spec)
+                    stage_state = self._build_generate_stage_state_runtime_only(spec)
                 else:
-                    bundle = self._build_generate_bundle(spec)
+                    stage_state = self._build_generate_stage_state(spec)
             else:
                 raise ValueError(
                     f"不支持的 direct stage 构造组合: modality={self.modality!r} mode={self.mode!r} stage_idx={stage_idx}"
@@ -3103,17 +3109,23 @@ class DirectStageBundleBuilder:
                 if self.include_runtime_reference:
                     # Historical helper name is text_scaffold, but the scaffold
                     # compaction/rebuild path is also valid for multimodal
-                    # generate bundles when we want local TP ranks to load
+                    # generate states when we want local TP ranks to load
                     # weights themselves instead of broadcasting them.
-                    return compact_text_scaffold(bundle)
-                if bundle.get("runtime_only_generate") and self.modality == "text":
-                    return compact_rt_text_scaffold(bundle)
-            assert_text_weight_scope(bundle)
-            assert_text_tp_shard_shapes(bundle)
-            return bundle
+                    return compact_text_scaffold(stage_state)
+                if stage_state.get("runtime_only_generate") and self.modality == "text":
+                    return compact_text_stage_state(stage_state)
+            assert_text_weight_scope(stage_state)
+            assert_text_tp_shard_shapes(stage_state)
+            return stage_state
+
+    def build_stage_bundle(self, stage_idx: int) -> dict[str, Any]:
+        return self.build_stage_state(stage_idx)
 
 
-def build_direct_stage_bundle(
+DirectStageBundleBuilder = DirectStageStateBuilder
+
+
+def build_direct_stage_state(
     *,
     stage_idx: int,
     start_idx: int,
@@ -3123,8 +3135,8 @@ def build_direct_stage_bundle(
     tp_shard_world_size: int | None = None,
     include_text_weights: bool = True,
     mm_activate_frontend: bool | None = None,
-) -> dict:
-    with DirectStageBundleBuilder(
+) -> StageState:
+    with DirectStageStateBuilder(
         stage_specs=[
             StageSpec(
                 stage_idx=stage_idx,
@@ -3141,7 +3153,30 @@ def build_direct_stage_bundle(
         include_text_weights=include_text_weights,
         mm_activate_frontend=mm_activate_frontend,
     ) as builder:
-        return builder.build_stage_bundle(stage_idx)
+        return builder.build_stage_state(stage_idx)
+
+
+def build_direct_stage_bundle(
+    *,
+    stage_idx: int,
+    start_idx: int,
+    end_idx: int,
+    runtime_config: dict[str, Any],
+    tp_shard_rank: int | None = None,
+    tp_shard_world_size: int | None = None,
+    include_text_weights: bool = True,
+    mm_activate_frontend: bool | None = None,
+) -> dict:
+    return build_direct_stage_state(
+        stage_idx=stage_idx,
+        start_idx=start_idx,
+        end_idx=end_idx,
+        runtime_config=runtime_config,
+        tp_shard_rank=tp_shard_rank,
+        tp_shard_world_size=tp_shard_world_size,
+        include_text_weights=include_text_weights,
+        mm_activate_frontend=mm_activate_frontend,
+    )
 
 
 def prepare_mm_startup_contract(
@@ -3151,7 +3186,7 @@ def prepare_mm_startup_contract(
 ) -> dict[str, Any]:
     if str(runtime_config.get("modality", "")) != "multimodal":
         raise ValueError("prepare_mm_startup_contract 只支持 multimodal runtime_config。")
-    with DirectStageBundleBuilder(
+    with DirectStageStateBuilder(
         stage_specs=stage_specs,
         runtime_config=dict(runtime_config),
         include_text_weights=False,
@@ -3253,21 +3288,46 @@ def seed_mm_startup_runtime_config(
     runtime_config.pop("_mm_frontend_state", None)
 
 
-def materialize_text_stage(
+class StageStateLoader:
+    """Loads a rank-local StageState from a lightweight direct-runtime scaffold."""
+
+    def __init__(
+        self,
+        *,
+        runtime_config: dict[str, Any],
+        compute_dtype: torch.dtype,
+        tp_shard_rank: int | None = None,
+        tp_shard_world_size: int | None = None,
+    ) -> None:
+        self.runtime_config = runtime_config
+        self.compute_dtype = compute_dtype
+        self.tp_shard_rank = tp_shard_rank
+        self.tp_shard_world_size = tp_shard_world_size
+
+    def load_from_scaffold(self, stage_state_scaffold: StageState) -> StageState:
+        return _materialize_text_stage_state(
+            stage_state_scaffold=stage_state_scaffold,
+            runtime_config=self.runtime_config,
+            compute_dtype=self.compute_dtype,
+            tp_shard_rank=self.tp_shard_rank,
+            tp_shard_world_size=self.tp_shard_world_size,
+        )
+
+
+def materialize_text_stage_state(
     *,
-    stage_bundle_scaffold: dict[str, Any],
+    stage_state_scaffold: StageState,
     runtime_config: dict[str, Any],
     compute_dtype: torch.dtype,
     tp_shard_rank: int | None = None,
     tp_shard_world_size: int | None = None,
-) -> dict[str, Any]:
-    return materialize_text_stage_bundle(
-        stage_bundle_scaffold=stage_bundle_scaffold,
+) -> StageState:
+    return StageStateLoader(
         runtime_config=runtime_config,
         compute_dtype=compute_dtype,
         tp_shard_rank=tp_shard_rank,
         tp_shard_world_size=tp_shard_world_size,
-    )
+    ).load_from_scaffold(stage_state_scaffold)
 
 
 def build_direct_pipeline_manifest(
@@ -3361,16 +3421,60 @@ def build_direct_hybrid_manifest(
         runtime=_runtime_name(modality, mode, backend),
     )
 
+
+def build_direct_tp_manifest(
+    *,
+    modality: str,
+    mode: str,
+    stage_ranges: list[tuple[int, int]],
+    tp_degrees: list[int],
+    model_path: str,
+    save_dtype: str,
+    prompt: str | None = None,
+    decode_token_id: int | None = None,
+    max_new_tokens: int | None = None,
+    num_frames: int | None = None,
+    frame_dir: str | None = None,
+    include_runtime_reference: bool | None = None,
+) -> TensorParallelManifest:
+    pipeline_manifest = build_direct_pipeline_manifest(
+        modality=modality,
+        mode=mode,
+        stage_ranges=stage_ranges,
+        model_path=model_path,
+        save_dtype=save_dtype,
+        prompt=prompt,
+        decode_token_id=decode_token_id,
+        max_new_tokens=max_new_tokens,
+        num_frames=num_frames,
+        frame_dir=frame_dir,
+        include_runtime_reference=include_runtime_reference,
+    )
+    parsed_tp_degrees = parse_tp_degrees(tp_degrees)
+    if pipeline_manifest.num_stages != 1:
+        raise ValueError(
+            f"backend=tp 是单 stage TP，当前 stage 数是 {pipeline_manifest.num_stages}。"
+        )
+    if len(parsed_tp_degrees) != 1:
+        raise ValueError(f"backend=tp 要求恰好一个 TP degree，当前拿到 {parsed_tp_degrees!r}。")
+    return TensorParallelManifest.from_pipeline_manifest(
+        pipeline_manifest,
+        tp_degree=parsed_tp_degrees[0],
+        runtime=_runtime_name(modality, mode, "tp"),
+    )
+
 __all__ = [
-    "DirectStageBundleBuilder",
-    "build_direct_stage_bundle",
+    "DirectStageStateBuilder",
+    "StageStateLoader",
+    "build_direct_stage_state",
     "pack_mm_startup_transport",
     "prepare_mm_startup_contract",
     "restore_mm_startup_transport",
     "seed_mm_startup_runtime_config",
-    "materialize_text_stage",
+    "materialize_text_stage_state",
     "pack_text_scaffold_transport",
     "build_direct_pipeline_manifest",
+    "build_direct_tp_manifest",
     "build_direct_hybrid_manifest",
     "compact_text_prompt_meta",
     "prepare_text_prompt_meta",

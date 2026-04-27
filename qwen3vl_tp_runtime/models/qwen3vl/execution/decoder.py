@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import torch
 
-from qwen3vl_tp_runtime.models.qwen3vl.execution.attention import (
+from .attention import (
     forward_attention,
     forward_attention_cached,
     forward_attention_cached_tp,
@@ -14,13 +14,13 @@ from qwen3vl_tp_runtime.models.qwen3vl.execution.attention import (
     trace_attention_cached_tp,
     trace_attention_tp,
 )
-from qwen3vl_tp_runtime.models.qwen3vl.execution.mlp import (
+from .mlp import (
     forward_mlp,
     forward_mlp_tp,
     trace_mlp,
     trace_mlp_tp,
 )
-from qwen3vl_tp_runtime.models.qwen3vl.functional import rms_norm
+from ..functional import rms_norm
 
 
 def forward_decoder_layer(layer_input: torch.Tensor, bundle: dict) -> torch.Tensor:

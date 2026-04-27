@@ -55,6 +55,13 @@ export MAX_NEW_TOKENS=4
 
 - [config.py](/mnt/ssd/code/Qwen3_vl/qwen3vl_tp_runtime/hexgen_core/config.py)
 
+主路径推荐使用短参数：
+
+- `--pp N`：按模型 text 层数平均切成 `N` 个 PP stage。
+- `--tp N`：设置统一 TP degree。
+- `--stage-ranges`：保留为手工切层覆盖参数。
+- `--tp-degrees`：保留为异构 hybrid 覆盖参数，例如当前 3 卡基线用 `--pp 2 --tp-degrees 2 1`。
+
 ## 记录方式
 
 当前硬性记录两样东西：
@@ -210,7 +217,7 @@ distributed case 额外建议保留但暂不强制比较：
 拓扑固定为：
 
 - `world_size=2`
-- `stage_ranges=0:17 18:35`
+- `--pp 2`，自动平均切成 `0:17 18:35`
 
 每个节点各执行一次，只改 `NODE_RANK`：
 
@@ -231,7 +238,7 @@ HEXGEN_STARTUP_LOG=1 /usr/bin/time -p "${TORCHRUN}" \
   --modality text \
   --mode generate \
   --model-path "${MODEL_PATH}" \
-  --stage-ranges 0:17 18:35 \
+  --pp 2 \
   --prompt "${TEXT_PROMPT}" \
   --max-new-tokens "${MAX_NEW_TOKENS}"
 ```
@@ -241,7 +248,7 @@ HEXGEN_STARTUP_LOG=1 /usr/bin/time -p "${TORCHRUN}" \
 拓扑固定为：
 
 - `world_size=2`
-- `stage_ranges=0:17 18:35`
+- `--pp 2`，自动平均切成 `0:17 18:35`
 
 ```bash
 export MASTER_ADDR="<rank0-host>"
@@ -262,7 +269,7 @@ HEXGEN_STARTUP_LOG=1 /usr/bin/time -p "${TORCHRUN}" \
   --model-path "${MODEL_PATH}" \
   --frame-dir "${FRAME_DIR}" \
   --num-frames 8 \
-  --stage-ranges 0:17 18:35 \
+  --pp 2 \
   --prompt "${MM_PROMPT}" \
   --max-new-tokens "${MAX_NEW_TOKENS}"
 ```
@@ -272,8 +279,7 @@ HEXGEN_STARTUP_LOG=1 /usr/bin/time -p "${TORCHRUN}" \
 拓扑固定为：
 
 - `world_size=2`
-- `stage_ranges=0:35`
-- `tp_degrees=2`
+- `--tp 2`，自动使用单 stage `0:35`
 
 ```bash
 export MASTER_ADDR="<rank0-host>"
@@ -292,8 +298,7 @@ HEXGEN_STARTUP_LOG=1 /usr/bin/time -p "${TORCHRUN}" \
   --modality text \
   --mode generate \
   --model-path "${MODEL_PATH}" \
-  --stage-ranges 0:35 \
-  --tp-degrees 2 \
+  --tp 2 \
   --prompt "${TEXT_PROMPT}" \
   --max-new-tokens "${MAX_NEW_TOKENS}"
 ```
@@ -303,8 +308,7 @@ HEXGEN_STARTUP_LOG=1 /usr/bin/time -p "${TORCHRUN}" \
 拓扑固定为：
 
 - `world_size=2`
-- `stage_ranges=0:35`
-- `tp_degrees=2`
+- `--tp 2`，自动使用单 stage `0:35`
 
 说明：
 
@@ -330,8 +334,7 @@ HEXGEN_STARTUP_LOG=1 /usr/bin/time -p "${TORCHRUN}" \
   --model-path "${MODEL_PATH}" \
   --frame-dir "${FRAME_DIR}" \
   --num-frames 8 \
-  --stage-ranges 0:35 \
-  --tp-degrees 2 \
+  --tp 2 \
   --prompt "${MM_PROMPT}" \
   --max-new-tokens "${MAX_NEW_TOKENS}"
 ```
@@ -341,8 +344,8 @@ HEXGEN_STARTUP_LOG=1 /usr/bin/time -p "${TORCHRUN}" \
 拓扑固定为：
 
 - `world_size=3`
-- `stage_ranges=0:17 18:35`
-- `tp_degrees=2 1`
+- `--pp 2`，自动平均切成 `0:17 18:35`
+- `--tp-degrees 2 1`
 
 ```bash
 export MASTER_ADDR="<rank0-host>"
@@ -361,7 +364,7 @@ HEXGEN_STARTUP_LOG=1 /usr/bin/time -p "${TORCHRUN}" \
   --modality text \
   --mode generate \
   --model-path "${MODEL_PATH}" \
-  --stage-ranges 0:17 18:35 \
+  --pp 2 \
   --tp-degrees 2 1 \
   --prompt "${TEXT_PROMPT}" \
   --max-new-tokens "${MAX_NEW_TOKENS}"
@@ -372,8 +375,8 @@ HEXGEN_STARTUP_LOG=1 /usr/bin/time -p "${TORCHRUN}" \
 拓扑固定为：
 
 - `world_size=3`
-- `stage_ranges=0:17 18:35`
-- `tp_degrees=2 1`
+- `--pp 2`，自动平均切成 `0:17 18:35`
+- `--tp-degrees 2 1`
 
 ```bash
 export MASTER_ADDR="<rank0-host>"
@@ -394,7 +397,7 @@ HEXGEN_STARTUP_LOG=1 /usr/bin/time -p "${TORCHRUN}" \
   --model-path "${MODEL_PATH}" \
   --frame-dir "${FRAME_DIR}" \
   --num-frames 8 \
-  --stage-ranges 0:17 18:35 \
+  --pp 2 \
   --tp-degrees 2 1 \
   --prompt "${MM_PROMPT}" \
   --max-new-tokens "${MAX_NEW_TOKENS}"

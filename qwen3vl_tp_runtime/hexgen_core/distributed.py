@@ -208,7 +208,7 @@ def send_tensor_payload_cpu(
     label: str | None = None,
     comm_dtype: torch.dtype | None = None,
 ):
-    from qwen3vl_tp_runtime.hexgen_core.transport import send_payload
+    from .transport import send_payload
 
     startup_log(
         "tensor-send",
@@ -228,7 +228,7 @@ def recv_tensor_payload_cpu(
     label: str | None = None,
     target_dtypes: dict[str, torch.dtype] | None = None,
 ) -> dict[str, torch.Tensor | None] | None:
-    from qwen3vl_tp_runtime.hexgen_core.transport import recv_payload
+    from .transport import recv_payload
 
     startup_log("tensor-recv", f"waiting {label or 'payload'} from src={src}")
     payload = recv_payload(
@@ -252,7 +252,7 @@ def broadcast_tensor_payload_cpu(
     target_dtypes: dict[str, torch.dtype] | None = None,
     comm_dtype: torch.dtype | None = None,
 ) -> dict[str, torch.Tensor | None] | None:
-    from qwen3vl_tp_runtime.hexgen_core.transport import broadcast_payload
+    from .transport import broadcast_payload
 
     startup_log(
         "tensor-bcast",

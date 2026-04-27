@@ -1,6 +1,6 @@
 """Execution kernels grouped by decoder sub-components."""
 
-from qwen3vl_tp_runtime.models.qwen3vl.execution.attention import (
+from .attention import (
     forward_attention,
     forward_attention_cached,
     forward_attention_cached_tp,
@@ -10,12 +10,13 @@ from qwen3vl_tp_runtime.models.qwen3vl.execution.attention import (
     trace_attention_cached_tp,
     trace_attention_tp,
 )
-from qwen3vl_tp_runtime.models.qwen3vl.execution.common import (
+from .common import (
     apply_deepstack,
     compose_layer_bundle,
+    compose_layer_state,
     get_deepstack_embeds,
 )
-from qwen3vl_tp_runtime.models.qwen3vl.execution.decoder import (
+from .decoder import (
     forward_decoder_layer,
     forward_decoder_layer_cached,
     forward_decoder_layer_cached_tp,
@@ -25,14 +26,15 @@ from qwen3vl_tp_runtime.models.qwen3vl.execution.decoder import (
     trace_decoder_layer_cached_tp,
     trace_decoder_layer_tp,
 )
-from qwen3vl_tp_runtime.models.qwen3vl.execution.mlp import (
+from .mlp import (
     forward_mlp,
     forward_mlp_tp,
     trace_mlp,
     trace_mlp_tp,
 )
-from qwen3vl_tp_runtime.models.qwen3vl.execution.stages import (
+from .stages import (
     build_layer_runtime_bundle,
+    build_layer_runtime_state,
     forward_layer_range,
     forward_layer_range_tp,
     forward_text_decode_logits,
@@ -70,7 +72,7 @@ from qwen3vl_tp_runtime.models.qwen3vl.execution.stages import (
 )
 
 __all__ = [
-    "compose_layer_bundle",
+    "compose_layer_state",
     "apply_deepstack",
     "get_deepstack_embeds",
     "forward_attention",
@@ -117,7 +119,7 @@ __all__ = [
     "trace_text_decode_stage",
     "trace_text_stage_tp",
     "trace_text_decode_stage_tp",
-    "build_layer_runtime_bundle",
+    "build_layer_runtime_state",
     "replay_attn",
     "replay_attn_tp",
     "replay_mlp",

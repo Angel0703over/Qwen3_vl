@@ -7,10 +7,10 @@ from typing import Any
 
 import torch
 
-from qwen3vl_tp_runtime.hexgen_core.schema import StageSpec
-from qwen3vl_tp_runtime.models.qwen3vl.live.common import _runtime_tensor
-from qwen3vl_tp_runtime.models.qwen3vl.runtime_text import _restore_text_prompt_bundle
-from qwen3vl_tp_runtime.models.qwen3vl.weights import (
+from ...hexgen_core.schema import StageSpec, StageState
+from .live.common import _runtime_tensor
+from .runtime_text import _restore_text_prompt_stage_state
+from .weights import (
     TextModelConfigSpec,
     TextStageWeightBundle,
     build_text_rotary_embedding,
@@ -87,14 +87,14 @@ _TP_SHARDED_PROJECTION_SPECS = (
 )
 
 
-def _tp_shard_projection_shape_checks(bundle: dict[str, Any]) -> tuple[
+def _tp_shard_projection_shape_checks(stage_state: dict[str, Any]) -> tuple[
     list[dict[str, Any]],
     list[dict[str, Any]],
     dict[str, int | None],
 ]:
     """Return shape proof/mismatches for tensors that must be rank-local TP shards."""
 
-    if not bool(bundle.get("tp_weight_sharded", False)):
+    if not bool(stage_state.get("tp_weight_sharded", False)):
         return [], [], {
             "local_attention_hidden_size": None,
             "local_kv_hidden_size": None,
@@ -108,7 +108,7 @@ def _tp_shard_projection_shape_checks(bundle: dict[str, Any]) -> tuple[
         "local_kv_hidden_size": None,
         "local_intermediate_size": None,
     }
-    for layer_pos, layer_bundle in enumerate(bundle.get("layers", [])):
+    for layer_pos, layer_bundle in enumerate(stage_state.get("layers", [])):
         if not isinstance(layer_bundle, dict):
             continue
         layer_idx = layer_bundle.get("layer_idx", layer_pos)
@@ -158,19 +158,19 @@ def _tp_shard_projection_shape_checks(bundle: dict[str, Any]) -> tuple[
     return checks, mismatches, local_dims
 
 
-def summarize_text_weight_load(bundle: dict[str, Any]) -> dict[str, Any]:
+def summarize_text_weight_load(stage_state: dict[str, Any]) -> dict[str, Any]:
     """Return compact, JSON-safe evidence for rank-local text weight materialization."""
 
     named_tensors: list[tuple[str, torch.Tensor]] = []
     loaded_top_level_weight_names: list[str] = []
     for key in _TEXT_TOP_LEVEL_WEIGHT_KEYS:
-        value = bundle.get(key)
+        value = stage_state.get(key)
         if torch.is_tensor(value):
             loaded_top_level_weight_names.append(key)
             named_tensors.append((key, value))
 
     loaded_layer_indices: list[int] = []
-    for layer_pos, layer_bundle in enumerate(bundle.get("layers", [])):
+    for layer_pos, layer_bundle in enumerate(stage_state.get("layers", [])):
         if not isinstance(layer_bundle, dict):
             continue
         layer_idx = layer_bundle.get("layer_idx", layer_pos)
@@ -196,11 +196,11 @@ def summarize_text_weight_load(bundle: dict[str, Any]) -> dict[str, Any]:
         }
         for name, tensor in list(unique_tensors.values())[:8]
     ]
-    sharded_parameter_names = tuple(bundle.get("tp_sharded_parameter_names") or ())
-    replicated_parameter_names = tuple(bundle.get("tp_replicated_parameter_names") or ())
+    sharded_parameter_names = tuple(stage_state.get("tp_sharded_parameter_names") or ())
+    replicated_parameter_names = tuple(stage_state.get("tp_replicated_parameter_names") or ())
     loaded_weight_tensor_bytes = sum(_weight_tensor_bytes(tensor) for _name, tensor in unique_tensors.values())
-    stage_start_idx = bundle.get("start_idx")
-    stage_end_idx = bundle.get("end_idx")
+    stage_start_idx = stage_state.get("start_idx")
+    stage_end_idx = stage_state.get("end_idx")
     try:
         stage_start_idx = None if stage_start_idx is None else int(stage_start_idx)
         stage_end_idx = None if stage_end_idx is None else int(stage_end_idx)
@@ -215,24 +215,24 @@ def summarize_text_weight_load(bundle: dict[str, Any]) -> dict[str, Any]:
             for layer_idx in loaded_layer_indices
             if layer_idx < stage_start_idx or layer_idx > stage_end_idx
         ]
-    tp_shape_checks, tp_shape_mismatches, tp_local_dims = _tp_shard_projection_shape_checks(bundle)
-    tp_weight_sharded = bool(bundle.get("tp_weight_sharded", False))
+    tp_shape_checks, tp_shape_mismatches, tp_local_dims = _tp_shard_projection_shape_checks(stage_state)
+    tp_weight_sharded = bool(stage_state.get("tp_weight_sharded", False))
     tp_shard_shape_ok = (not tp_weight_sharded or bool(tp_shape_checks)) and not tp_shape_mismatches
-    tp_stage_loaded_weight_tensor_bytes = bundle.get("_tp_stage_loaded_weight_tensor_bytes")
+    tp_stage_loaded_weight_tensor_bytes = stage_state.get("_tp_stage_loaded_weight_tensor_bytes")
     if tp_stage_loaded_weight_tensor_bytes is None:
-        tp_stage_loaded_weight_tensor_bytes = bundle.get("tp_stage_loaded_weight_tensor_bytes")
+        tp_stage_loaded_weight_tensor_bytes = stage_state.get("tp_stage_loaded_weight_tensor_bytes")
     if tp_stage_loaded_weight_tensor_bytes is not None:
         tp_stage_loaded_weight_tensor_bytes = [int(value) for value in tp_stage_loaded_weight_tensor_bytes]
-    tp_stage_loaded_weight_tensor_bytes_equal = bundle.get("_tp_stage_loaded_weight_tensor_bytes_equal")
+    tp_stage_loaded_weight_tensor_bytes_equal = stage_state.get("_tp_stage_loaded_weight_tensor_bytes_equal")
     if tp_stage_loaded_weight_tensor_bytes_equal is None:
-        tp_stage_loaded_weight_tensor_bytes_equal = bundle.get("tp_stage_loaded_weight_tensor_bytes_equal")
-    tp_stage_loaded_weight_tensor_bytes_checked = bundle.get("_tp_stage_loaded_weight_tensor_bytes_checked")
+        tp_stage_loaded_weight_tensor_bytes_equal = stage_state.get("tp_stage_loaded_weight_tensor_bytes_equal")
+    tp_stage_loaded_weight_tensor_bytes_checked = stage_state.get("_tp_stage_loaded_weight_tensor_bytes_checked")
     if tp_stage_loaded_weight_tensor_bytes_checked is None:
-        tp_stage_loaded_weight_tensor_bytes_checked = bundle.get("tp_stage_loaded_weight_tensor_bytes_checked")
+        tp_stage_loaded_weight_tensor_bytes_checked = stage_state.get("tp_stage_loaded_weight_tensor_bytes_checked")
     return {
         "tp_weight_sharded": tp_weight_sharded,
-        "tp_shard_rank": bundle.get("tp_shard_rank"),
-        "tp_shard_world_size": bundle.get("tp_shard_world_size"),
+        "tp_shard_rank": stage_state.get("tp_shard_rank"),
+        "tp_shard_world_size": stage_state.get("tp_shard_world_size"),
         "tp_local_dims": tp_local_dims,
         "tp_shard_shape_ok": tp_shard_shape_ok,
         "tp_sharded_projection_check_count": len(tp_shape_checks),
@@ -259,25 +259,25 @@ def summarize_text_weight_load(bundle: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def assert_text_weight_scope(bundle: dict[str, Any]) -> None:
-    """Fail fast if a stage bundle contains decoder layer weights outside its own range."""
+def assert_text_weight_scope(stage_state: dict[str, Any]) -> None:
+    """Fail fast if a StageState contains decoder layer weights outside its own range."""
 
-    weight_load = summarize_text_weight_load(bundle)
+    weight_load = summarize_text_weight_load(stage_state)
     if not weight_load["stage_weight_scope_ok"]:
         raise RuntimeError(
-            "stage bundle 加载了非本 stage 的 decoder layer 权重: "
+            "StageState 加载了非本 stage 的 decoder layer 权重: "
             f"stage_range={weight_load['stage_start_idx']}:{weight_load['stage_end_idx']} "
             f"unexpected_layer_indices={weight_load['unexpected_layer_indices']}"
         )
 
 
-def assert_text_tp_shard_shapes(bundle: dict[str, Any]) -> None:
+def assert_text_tp_shard_shapes(stage_state: dict[str, Any]) -> None:
     """Fail fast if TP-sharded projection tensors are not shard-sized."""
 
-    weight_load = summarize_text_weight_load(bundle)
+    weight_load = summarize_text_weight_load(stage_state)
     if not weight_load["tp_shard_shape_ok"]:
         raise RuntimeError(
-            "TP shard-only bundle 的投影权重形状不是本 rank shard 大小: "
+            "TP shard-only StageState 的投影权重形状不是本 rank shard 大小: "
             f"rank={weight_load['tp_shard_rank']}/{weight_load['tp_shard_world_size']} "
             f"check_count={weight_load['tp_sharded_projection_check_count']} "
             f"mismatches={weight_load['tp_shard_shape_mismatches']}"
@@ -293,8 +293,8 @@ def _strip_text_phase(phase_payload: dict[str, Any]) -> dict[str, Any]:
     return compact_payload
 
 
-def compact_text_scaffold(bundle: dict[str, Any]) -> dict[str, Any]:
-    scaffold = dict(bundle)
+def compact_text_scaffold(stage_state: dict[str, Any]) -> dict[str, Any]:
+    scaffold = dict(stage_state)
     scaffold["runtime_inputs_local_rebuild"] = True
     scaffold["runtime_prefill_cache_policy"] = "recompute"
     scaffold.pop("cache_by_layer", None)
@@ -306,8 +306,8 @@ def compact_text_scaffold(bundle: dict[str, Any]) -> dict[str, Any]:
     return scaffold
 
 
-def compact_rt_text_scaffold(bundle: dict[str, Any]) -> dict[str, Any]:
-    scaffold = dict(bundle)
+def compact_text_stage_state(stage_state: dict[str, Any]) -> dict[str, Any]:
+    scaffold = dict(stage_state)
     scaffold["runtime_only_prompt_local_rebuild"] = True
     scaffold.pop("input_ids", None)
     scaffold.pop("prefill_attention_mask_2d", None)
@@ -437,10 +437,10 @@ def restore_text_scaffold_transport(
     return restored
 
 
-def build_rt_text_bundle(
+def build_text_stage_state(
     *,
     spec: StageSpec,
-    bundle_device: torch.device,
+    stage_state_device: torch.device,
     compute_dtype: torch.dtype,
     prefill_attention_mask_2d: torch.Tensor,
     prefill_seq_len: int,
@@ -459,7 +459,7 @@ def build_rt_text_bundle(
         "save_dtype": _dtype_name(compute_dtype),
         "prefill_seq_len": int(prefill_seq_len),
         "max_new_tokens": 0,
-        "prefill_attention_mask_2d": _runtime_tensor(prefill_attention_mask_2d, device=bundle_device),
+        "prefill_attention_mask_2d": _runtime_tensor(prefill_attention_mask_2d, device=stage_state_device),
         "batch_size": int(batch_size),
         "token_id_dtype": _dtype_name(token_id_dtype),
         "hidden_size": int(hidden_size),
@@ -524,52 +524,52 @@ def _restore_text_phase(
 
 
 def restore_text_stage_inputs(
-    bundle: dict[str, Any],
+    stage_state: dict[str, Any],
     *,
     config_spec: TextModelConfigSpec,
     compute_dtype: torch.dtype,
 ) -> dict[str, Any]:
-    if not bundle.get("runtime_inputs_local_rebuild"):
-        return bundle
+    if not stage_state.get("runtime_inputs_local_rebuild"):
+        return stage_state
 
     rotary_emb = _builder_dep("build_text_rotary_embedding", build_text_rotary_embedding)(
         config_spec,
         device=torch.device("cpu"),
     )
-    restored_bundle = dict(bundle)
-    restored_bundle["prefill"] = _restore_text_phase(
-        restored_bundle["prefill"],
+    restored_state = dict(stage_state)
+    restored_state["prefill"] = _restore_text_phase(
+        restored_state["prefill"],
         config_spec=config_spec,
         compute_dtype=compute_dtype,
         rotary_emb=rotary_emb,
     )
-    restored_bundle["decode_steps"] = [
+    restored_state["decode_steps"] = [
         _restore_text_phase(
             step_payload,
             config_spec=config_spec,
             compute_dtype=compute_dtype,
             rotary_emb=rotary_emb,
         )
-        for step_payload in restored_bundle["decode_steps"]
+        for step_payload in restored_state["decode_steps"]
     ]
-    return restored_bundle
+    return restored_state
 
 
-def materialize_text_stage_bundle(
+def materialize_text_stage_state(
     *,
-    stage_bundle_scaffold: dict[str, Any],
+    stage_state_scaffold: StageState,
     runtime_config: dict[str, Any],
     compute_dtype: torch.dtype,
     tp_shard_rank: int | None = None,
     tp_shard_world_size: int | None = None,
-) -> dict[str, Any]:
-    bundle = _restore_text_prompt_bundle(
-        dict(stage_bundle_scaffold),
+) -> StageState:
+    stage_state = _restore_text_prompt_stage_state(
+        dict(stage_state_scaffold),
         runtime_config=runtime_config,
     )
     model_path = runtime_config["model_path"]
-    start_idx = int(bundle["start_idx"])
-    end_idx = int(bundle["end_idx"])
+    start_idx = int(stage_state["start_idx"])
+    end_idx = int(stage_state["end_idx"])
 
     weight_index = _builder_dep("load_model_weight_index", load_model_weight_index)(model_path)
     config_spec = _builder_dep("load_text_model_config_spec", load_text_model_config_spec)(model_path)
@@ -590,28 +590,29 @@ def materialize_text_stage_bundle(
         tp_shard_world_size=tp_shard_world_size,
     )
 
-    bundle["layers"] = [dict(layer_bundle) for layer_bundle in stage_weights.layer_bundles]
-    bundle["tp_weight_sharded"] = stage_weights.tp_weight_sharded
-    bundle["tp_shard_rank"] = stage_weights.tp_shard_rank
-    bundle["tp_shard_world_size"] = stage_weights.tp_shard_world_size
-    bundle["tp_sharded_parameter_names"] = stage_weights.tp_sharded_parameter_names
-    bundle["tp_replicated_parameter_names"] = stage_weights.tp_replicated_parameter_names
-    bundle.pop("cache_by_layer", None)
+    stage_state["layers"] = [dict(layer_bundle) for layer_bundle in stage_weights.layer_bundles]
+    stage_state["tp_weight_sharded"] = stage_weights.tp_weight_sharded
+    stage_state["tp_shard_rank"] = stage_weights.tp_shard_rank
+    stage_state["tp_shard_world_size"] = stage_weights.tp_shard_world_size
+    stage_state["tp_sharded_parameter_names"] = stage_weights.tp_sharded_parameter_names
+    stage_state["tp_replicated_parameter_names"] = stage_weights.tp_replicated_parameter_names
+    stage_state.pop("cache_by_layer", None)
 
     if start_idx == 0 and stage_weights.embed_tokens_weight is not None:
-        bundle["embed_tokens_weight"] = stage_weights.embed_tokens_weight
+        stage_state["embed_tokens_weight"] = stage_weights.embed_tokens_weight
     if end_idx == config_spec.num_hidden_layers - 1:
         if stage_weights.final_norm_weight is not None:
-            bundle["final_norm_weight"] = stage_weights.final_norm_weight
+            stage_state["final_norm_weight"] = stage_weights.final_norm_weight
         if stage_weights.final_norm_eps is not None:
-            bundle["final_norm_eps"] = stage_weights.final_norm_eps
+            stage_state["final_norm_eps"] = stage_weights.final_norm_eps
         if stage_weights.lm_head_weight is not None:
-            bundle["lm_head_weight"] = stage_weights.lm_head_weight
-        bundle["lm_head_bias"] = stage_weights.lm_head_bias
-    assert_text_weight_scope(bundle)
-    assert_text_tp_shard_shapes(bundle)
+            stage_state["lm_head_weight"] = stage_weights.lm_head_weight
+        stage_state["lm_head_bias"] = stage_weights.lm_head_bias
+    assert_text_weight_scope(stage_state)
+    assert_text_tp_shard_shapes(stage_state)
     return restore_text_stage_inputs(
-        bundle,
+        stage_state,
         config_spec=config_spec,
         compute_dtype=compute_dtype,
     )
+

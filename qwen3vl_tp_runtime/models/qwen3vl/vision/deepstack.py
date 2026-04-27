@@ -32,8 +32,8 @@ def apply_deepstack(
     return hidden_states
 
 
-def get_deepstack_embeds(stage_bundle: dict, layer_idx: int) -> torch.Tensor | None:
-    deepstack_by_layer = stage_bundle.get("deepstack_by_layer")
+def get_deepstack_embeds(stage_state: dict, layer_idx: int) -> torch.Tensor | None:
+    deepstack_by_layer = stage_state.get("deepstack_by_layer")
     if deepstack_by_layer is None:
         return None
     return deepstack_by_layer.get(layer_idx)

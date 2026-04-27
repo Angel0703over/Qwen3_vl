@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
+import json
+from pathlib import Path
 import sys
 
-from qwen3vl_tp_runtime.hexgen_core import parse_stage_ranges
-from qwen3vl_tp_runtime.scripts.runtime_replay import (
+from ..hexgen_core import parse_stage_ranges
+from .runtime_replay import (
     load_debug_hybrid_manifest,
     load_debug_pipeline_manifest,
+    load_debug_tp_manifest,
 )
 
 
@@ -24,26 +28,143 @@ def _runtime_dep(name: str, fallback=None):
     raise AttributeError(name)
 
 
-def _resolve_defaults(args: argparse.Namespace) -> None:
+@dataclass(slots=True)
+class ParallelConfig:
+    """Resolved PP/TP layout from user-facing parallel CLI shortcuts."""
+
+    stage_ranges: list[str]
+    tp_degrees: list[int]
+    resolved_from_pp: bool = False
+    resolved_from_tp: bool = False
+
+    @classmethod
+    def from_args(
+        cls,
+        args: argparse.Namespace,
+        parser: argparse.ArgumentParser | None = None,
+    ) -> "ParallelConfig":
+        _reject_parallel_shortcut_conflicts(args, parser)
+
+        default_stage_ranges = _runtime_dep("DEFAULT_STAGE_RANGES")
+        tp_single_stage_ranges = _runtime_dep("TP_SINGLE_STAGE_RANGES")
+        default_tp_degrees = _runtime_dep("DEFAULT_TP_DEGREES")
+        tp_single_stage_degrees = _runtime_dep("TP_SINGLE_STAGE_DEGREES")
+
+        stage_ranges = args.stage_ranges
+        resolved_from_pp = bool(getattr(args, "_stage_ranges_resolved_from_pp", False))
+        if stage_ranges is None:
+            if getattr(args, "pp", None) is not None:
+                try:
+                    stage_ranges = build_even_stage_ranges(
+                        num_layers=_read_text_num_hidden_layers(args.model_path),
+                        pp_degree=args.pp,
+                    )
+                except (FileNotFoundError, KeyError, ValueError) as exc:
+                    _raise_or_parser_error(parser, str(exc))
+                resolved_from_pp = True
+            elif args.backend == "tp":
+                stage_ranges = tp_single_stage_ranges.copy()
+            else:
+                stage_ranges = default_stage_ranges.copy()
+
+        tp_degrees = args.tp_degrees
+        resolved_from_tp = bool(getattr(args, "_tp_degrees_resolved_from_tp", False))
+        if tp_degrees is None:
+            if getattr(args, "tp", None) is not None:
+                if args.backend == "hybrid":
+                    tp_degrees = [args.tp for _ in stage_ranges]
+                else:
+                    tp_degrees = [args.tp]
+                resolved_from_tp = True
+            elif args.backend == "tp":
+                tp_degrees = tp_single_stage_degrees.copy()
+            elif args.backend == "pp":
+                tp_degrees = [1 for _ in stage_ranges]
+            else:
+                tp_degrees = default_tp_degrees.copy()
+
+        return cls(
+            stage_ranges=stage_ranges,
+            tp_degrees=tp_degrees,
+            resolved_from_pp=resolved_from_pp,
+            resolved_from_tp=resolved_from_tp,
+        )
+
+    def apply(self, args: argparse.Namespace) -> None:
+        args.stage_ranges = self.stage_ranges
+        args.tp_degrees = self.tp_degrees
+        if self.resolved_from_pp:
+            args._stage_ranges_resolved_from_pp = True
+        if self.resolved_from_tp:
+            args._tp_degrees_resolved_from_tp = True
+
+
+def _resolve_defaults(args: argparse.Namespace, parser: argparse.ArgumentParser | None = None) -> None:
     if args.dump_topk is None:
         args.dump_topk = args.topk
+    ParallelConfig.from_args(args, parser).apply(args)
 
-    default_stage_ranges = _runtime_dep("DEFAULT_STAGE_RANGES")
-    tp_single_stage_ranges = _runtime_dep("TP_SINGLE_STAGE_RANGES")
-    default_tp_degrees = _runtime_dep("DEFAULT_TP_DEGREES")
-    tp_single_stage_degrees = _runtime_dep("TP_SINGLE_STAGE_DEGREES")
 
-    if args.backend == "tp":
-        if args.stage_ranges == default_stage_ranges:
-            args.stage_ranges = tp_single_stage_ranges.copy()
-        if args.tp_degrees == default_tp_degrees:
-            args.tp_degrees = tp_single_stage_degrees.copy()
+def _raise_or_parser_error(parser: argparse.ArgumentParser | None, message: str) -> None:
+    if parser is not None:
+        parser.error(message)
+    raise ValueError(message)
+
+
+def _reject_parallel_shortcut_conflicts(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser | None = None,
+) -> None:
+    if (
+        getattr(args, "pp", None) is not None
+        and args.stage_ranges is not None
+        and not getattr(args, "_stage_ranges_resolved_from_pp", False)
+    ):
+        _raise_or_parser_error(parser, "不能同时传 --pp 和 --stage-ranges；请二选一。")
+    if (
+        getattr(args, "tp", None) is not None
+        and args.tp_degrees is not None
+        and not getattr(args, "_tp_degrees_resolved_from_tp", False)
+    ):
+        _raise_or_parser_error(parser, "不能同时传 --tp 和 --tp-degrees；请二选一。")
+
+
+def _read_text_num_hidden_layers(model_path: str) -> int:
+    config_path = Path(model_path) / "config.json"
+    if not config_path.exists():
+        raise FileNotFoundError(f"无法根据 --pp 自动切分：没有找到 config.json: {config_path}")
+    payload = json.loads(config_path.read_text())
+    text_config = payload.get("text_config", payload)
+    return int(text_config["num_hidden_layers"])
+
+
+def build_even_stage_ranges(*, num_layers: int, pp_degree: int) -> list[str]:
+    if pp_degree <= 0:
+        raise ValueError(f"--pp 必须大于 0，当前拿到 {pp_degree}。")
+    if num_layers <= 0:
+        raise ValueError(f"num_layers 必须大于 0，当前拿到 {num_layers}。")
+    if pp_degree > num_layers:
+        raise ValueError(f"--pp={pp_degree} 不能大于模型层数 {num_layers}。")
+
+    base, remainder = divmod(num_layers, pp_degree)
+    ranges: list[str] = []
+    start_idx = 0
+    for stage_idx in range(pp_degree):
+        stage_layers = base + (1 if stage_idx < remainder else 0)
+        end_idx = start_idx + stage_layers - 1
+        ranges.append(f"{start_idx}:{end_idx}")
+        start_idx = end_idx + 1
+    return ranges
 
 
 def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     _reject_unsupported_debug_transport_backend(parser, args)
     _reject_unsupported_generate_debug_flags(parser, args)
     live_runners = _runtime_dep("LIVE_RUNNERS")
+    if getattr(args, "tp", None) is not None and args.tp <= 0:
+        parser.error(f"--tp 必须大于 0，当前拿到 {args.tp}。")
+    if getattr(args, "tp_degrees", None) is not None and any(tp_degree <= 0 for tp_degree in args.tp_degrees):
+        parser.error(f"--tp-degrees 每一项都必须大于 0，当前拿到 {args.tp_degrees!r}。")
 
     if args.backend == "hf":
         if args.mode != "generate":
@@ -56,12 +177,23 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         return
 
     if args.backend == "pp":
+        if getattr(args, "tp", None) not in (None, 1):
+            parser.error("backend=pp 不支持 --tp > 1；如需 PP+TP，请使用 backend=hybrid。")
+        if any(tp_degree != 1 for tp_degree in args.tp_degrees):
+            parser.error("backend=pp 不使用 TP；如需 TP，请使用 backend=tp 或 backend=hybrid。")
         return
 
     if args.backend == "hybrid":
+        if len(args.tp_degrees) != len(args.stage_ranges):
+            parser.error(
+                "backend=hybrid 要求 TP 度数数量和 PP stage 数一致，"
+                f"当前 stage_ranges={args.stage_ranges!r} tp_degrees={args.tp_degrees!r}。"
+            )
         return
 
     if args.backend == "tp":
+        if getattr(args, "pp", None) not in (None, 1):
+            parser.error("backend=tp 是单 stage TP；如需同时指定 --pp 和 --tp，请使用 backend=hybrid。")
         if len(args.stage_ranges) != 1:
             parser.error("backend=tp 要求恰好一个 --stage-ranges，也就是单 stage 无 PP。")
         if len(args.tp_degrees) != 1:
@@ -167,6 +299,7 @@ def _emit_debug_path_warnings(args: argparse.Namespace) -> None:
 
 
 def _build_direct_manifest_kwargs(args: argparse.Namespace) -> dict:
+    _resolve_defaults(args)
     include_runtime_reference = _supports_debug_transport_backend(args) and (
         args.compare_direct or args.trace_layers or args.dump_layer is not None
     )
@@ -210,12 +343,24 @@ def _load_hybrid_manifest_for_args(args: argparse.Namespace, *, backend: str):
     return load_debug_hybrid_manifest(args.manifest_path)
 
 
+def _load_tp_manifest_for_args(args: argparse.Namespace):
+    if args.manifest_path is None:
+        return _runtime_dep("build_direct_tp_manifest")(
+            **_build_direct_manifest_kwargs(args),
+            tp_degrees=args.tp_degrees,
+        )
+    return load_debug_tp_manifest(args.manifest_path)
+
+
 __all__ = [
+    "ParallelConfig",
     "_build_direct_manifest_kwargs",
+    "build_even_stage_ranges",
     "_debug_path_warnings",
     "_emit_debug_path_warnings",
     "_load_hybrid_manifest_for_args",
     "_load_pipeline_manifest_for_args",
+    "_load_tp_manifest_for_args",
     "_reject_unsupported_debug_transport_backend",
     "_reject_unsupported_generate_debug_flags",
     "_require_debug_path_opt_in",

@@ -6,8 +6,8 @@ import torch
 import torch.nn.functional as F
 from transformers.activations import ACT2FN
 
-from qwen3vl_tp_runtime.hexgen_core.distributed import all_gather_cpu, all_reduce_cpu, broadcast_cpu
-from qwen3vl_tp_runtime.models.qwen3vl.execution.common import (
+from ....hexgen_core.distributed import all_gather_cpu, all_reduce_cpu, broadcast_cpu
+from .common import (
     _cast_optional_tensor,
     _resolve_tp_math_dtype,
 )

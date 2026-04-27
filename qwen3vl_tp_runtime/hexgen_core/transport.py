@@ -6,8 +6,8 @@ from typing import Any
 import torch
 import torch.distributed as dist
 
-from qwen3vl_tp_runtime.hexgen_core.schema import PayloadSummary, StageHandoffPayload
-from qwen3vl_tp_runtime.hexgen_core.stage import build_stage_handoff_target_dtypes
+from .schema import PayloadSummary, StageHandoffPayload
+from .stage import build_stage_handoff_target_dtypes
 
 TensorPayload = dict[str, torch.Tensor | None]
 
@@ -36,8 +36,8 @@ class StageHandoffMessage:
     summary: PayloadSummary
 
 
-class StageHandoffTransport:
-    """Jupiter-style handler that owns the stage-handoff transport schema."""
+class StageCommunicator:
+    """Stage-to-stage communicator for structured runtime handoff payloads."""
 
     channel_name = "stage_handoff"
 
@@ -45,8 +45,8 @@ class StageHandoffTransport:
         self.device = device
         self.comm_dtype = comm_dtype
 
-    def build_target_dtypes(self, stage_bundle: dict[str, Any]) -> dict[str, torch.dtype]:
-        return build_stage_handoff_target_dtypes(stage_bundle)
+    def build_target_dtypes(self, stage_state: dict[str, Any]) -> dict[str, torch.dtype]:
+        return build_stage_handoff_target_dtypes(stage_state)
 
     def send(self, handoff: StageHandoffPayload | None, dst: int) -> PayloadSummary:
         payload = None if handoff is None else handoff.to_transport_payload()
@@ -55,16 +55,26 @@ class StageHandoffTransport:
     def send_empty(self, dst: int) -> PayloadSummary:
         return send_payload(None, dst=dst, comm_dtype=self.comm_dtype)
 
-    def recv(self, src: int, stage_bundle: dict[str, Any]) -> StageHandoffMessage:
+    def recv(
+        self,
+        src: int,
+        stage_state: dict[str, Any] | None = None,
+    ) -> StageHandoffMessage:
+        if stage_state is None:
+            raise ValueError("recv 需要 stage_state。")
         payload = recv_payload(
             src=src,
             device=self.device,
-            target_dtypes=self.build_target_dtypes(stage_bundle),
+            target_dtypes=self.build_target_dtypes(stage_state),
         )
         return StageHandoffMessage(
             handoff=StageHandoffPayload.from_transport_payload(payload),
             summary=PayloadSummary.from_payload(payload),
         )
+
+
+class StageHandoffTransport(StageCommunicator):
+    """Compatibility name for the old stage handoff transport wrapper."""
 
 
 def _send_scalar(value: int, dst: int) -> None:
@@ -404,6 +414,7 @@ def recv_hidden_states(
 __all__ = [
     "TensorPayload",
     "StageHandoffMessage",
+    "StageCommunicator",
     "StageHandoffTransport",
     "PayloadSummary",
     "broadcast_payload",

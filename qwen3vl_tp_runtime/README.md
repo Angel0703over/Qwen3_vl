@@ -1,87 +1,109 @@
 # qwen3vl_tp_runtime
 
-Qwen3-VL runtime code for direct `pp` / `tp` / `hybrid` execution.
+这是面向 Qwen3-VL 的分布式推理运行时原型，主路径支持直接执行 `pp` / `tp` / `hybrid`。
 
-## Main Path
+## 主路径
 
-- Main runtime entry: `scripts/runtime.py`
-- Preferred mode: `backend=pp|tp|hybrid`
-- Main path builds runtime state directly from `model_path`
+- 主入口：`scripts/runtime.py`
+- 推荐模式：`backend=pp|tp|hybrid`
+- 主路径在启动时直接从 `model_path` 构建每个 stage/rank 的 `StageState`
+- 推荐并行参数：`--pp N` 表示 pipeline stage 数，自动按模型层数平均切分；`--tp N` 表示统一 tensor parallel 度数。
+- 高级覆盖参数：`--stage-ranges` 和 `--tp-degrees` 仍然保留，用于手工切层或异构 hybrid，例如 `--pp 2 --tp-degrees 2 1`。
 
-## Status
+常用写法：
 
-This runtime started with two concrete goals:
+```bash
+# 纯 PP：2 个 stage，默认平均切层，例如 36 层会切成 0:17 / 18:35
+--backend pp --pp 2
 
-- `TP` should load only the local shard for each rank instead of loading full weights on every GPU and slicing at execution time.
-- `PP / TP / hybrid` main runs should build stage/rank runtime state directly from `model_path` at startup instead of depending on prepared `bundle` or manifest replay artifacts.
+# 纯 TP：单 stage，全模型 TP=2
+--backend tp --tp 2
 
-Current state:
+# 均匀 PP+TP hybrid：2 个 PP stage，每个 stage 都是 TP=2
+--backend hybrid --pp 2 --tp 2
 
-- The main `pp / tp / hybrid` path is direct-first and builds runtime state from `model_path`.
-- The main text `TP` path no longer loads full decoder projection weights on every GPU and slices only during compute. Direct `tp_degree > 1` stages first broadcast a no-weight scaffold, then each rank materializes its local shard from `model_path`.
-- `backend=tp` text generate has passed real Jetson smoke with `weight_load.tp_weight_sharded=true` on both ranks, `tp_shard_rank=0/2` and `1/2`, shard-sized projection shapes, and identical `loaded_weight_tensor_bytes`.
-- `backend=hybrid` text generate has passed real Jetson smoke with stage0 running rank-local TP shards and stage1 loading only its own PP stage weights.
-- Multimodal direct runtime for `pp / hybrid` has passed real Jetson smoke runs on the runtime-only main path. All ranks produced matching `generated_token_ids=[87140, 15946, 3837, 101177]`, and summaries prove stage-local frontend/weight scope plus hybrid TP shard-local materialization.
-- Multimodal startup transport is now stage-local and thin: it carries only runtime shared metadata/tensors, local stage handoffs, local stage visuals, and frame metadata; root/full/replay payloads are rejected.
-- The current milestone is considered complete for direct-from-`model_path` PP/TP/hybrid startup, rank-local text decoder shards, and `pp / hybrid` multimodal stage-only/shard-only smoke. Runtime summary now includes PP stage weight scope, TP projection shape proof, and same-stage TP weight-byte equality evidence.
+# 异构 PP+TP hybrid：2 个 PP stage，stage0 TP=2，stage1 TP=1
+--backend hybrid --pp 2 --tp-degrees 2 1
+```
 
-Remaining tail work:
+## 当前状态
 
-- Embedding and `lm_head` are still replicated where the current execution semantics require them. Vocab/embedding parallelism is a later optimization, not part of the completed milestone.
-- Startup time and peak-memory baselines are intentionally deferred; current acceptance is based on output tokens and `weight_load` shard evidence.
-- Some schema, legacy compatibility, and debug-only transport cleanup may still continue, but replay/capture paths are no longer considered the main runtime surface.
+这个 runtime 最初有两个明确目标：
 
-## Debug Path
+- `TP` 不能再是“每张卡先加载完整权重，再在计算时按 rank 切分”，而要改成“每张卡只加载自己那份 shard”。
+- `PP / TP / hybrid` 主运行路径不能依赖预先准备好的 `replay bundle` 或 manifest replay 产物，而要在启动时直接从 `model_path` 构建每个 stage/rank 的 `StageState`。
 
-These paths are kept for replay, capture, and regression work only:
+当前已经完成：
 
-- `--manifest-path` replay runs
+- 主 `pp / tp / hybrid` 路径已经是直接构建优先，会直接从 `model_path` 构建 `StageState`。
+- `backend=tp` 已有独立入口 `hexgen_core/modules/tensor_parallel.py`：先在 TP 模块内校验单 stage TP layout，再复用共享的 `StageState` 执行引擎。
+- TP 主路径公开名已收口为 `TensorParallelRunner`、`run_tensor_parallel_rank`、`run_stage_state_tp`；无引用的旧 text-specific TP wrapper 已删除。
+- text `TP` 主路径不再让每张卡加载完整 decoder projection 权重再计算时切分。`tp_degree > 1` 的 direct stage 会先广播无权重 scaffold，然后每个 rank 从 `model_path` materialize 自己的本地 shard。
+- `backend=tp` text generate 已通过真实 Jetson 冒烟验证：两个 rank 都是 `weight_load.tp_weight_sharded=true`，分别为 `tp_shard_rank=0/2` 和 `1/2`，projection 形状是 shard 后大小，`loaded_weight_tensor_bytes` 完全一致。
+- `backend=hybrid` text generate 已通过真实 Jetson 冒烟验证：stage0 使用 rank-local TP shard，stage1 只加载自己的 PP stage 权重。
+- `pp / hybrid` multimodal direct runtime 已在只依赖运行时构建的主路径通过真实 Jetson 冒烟验证。所有 rank 生成一致的 `generated_token_ids=[87140, 15946, 3837, 101177]`，summary 能证明 stage-local frontend/weight scope 和 hybrid TP shard-local materialization。
+- multimodal startup transport 已经保持 stage-local 且足够薄：只携带 runtime shared metadata/tensor、本地 stage handoff、本地 stage visual 和 frame metadata；root/full/replay payload 会被拒绝。
+- 当前里程碑可以认为已完成：从 `model_path` 直接启动 PP/TP/hybrid、rank-local text decoder shard，以及 `pp / hybrid` multimodal stage-only/shard-only 冒烟验证。runtime summary 已包含 PP stage 权重范围、TP projection shape proof，以及同一 TP stage 内权重字节数一致性证据。
+
+仍然保留的尾部工作：
+
+- embedding 和 `lm_head` 目前仍按当前执行语义复制。vocab/embedding parallelism 是后续优化，不属于当前已完成里程碑。
+- 启动时间和峰值显存基线暂时不作为硬验收；当前验收重点是输出 token 和 `weight_load` shard 证据。
+- schema、legacy compatibility、仅调试用 transport 仍可以继续清理，但 replay/capture 路径已经不再是主运行入口。
+
+## 调试路径
+
+下面这些路径只用于 replay、capture 和回归调试：
+
+- `--manifest-path` replay run
 - `--compare-direct`
 - `--trace-layers`
 - `--dump-layer`
 
-They require `--allow-debug-paths`.
-`--compare-direct / --trace-layers / --dump-layer` are currently `backend=tp|hybrid` and non-generate only.
+这些路径需要显式传 `--allow-debug-paths`。
+其中 `--compare-direct / --trace-layers / --dump-layer` 目前只支持 `backend=tp|hybrid` 的非 generate run。
 
-## Roadmap
+## 后续路线
 
-- Ordered next steps are tracked in `ROADMAP.md`.
-- Unless we explicitly realign, continue work in that document's order.
+- 有序后续任务记录在 `ROADMAP.md`。
+- 除非重新对齐目标，否则后续工作默认按 `ROADMAP.md` 的顺序推进。
 
-## Baseline
+## 基线
 
-- Fixed regression commands are tracked in `BASELINE.md`.
-- Use those case ids as the default smoke/regression set before and after runtime changes.
+- 固定回归命令记录在 `BASELINE.md`。
+- 修改 runtime 前后，默认使用这些 case id 作为 smoke/regression 集合。
 
-## Directory Layout
+## 目录结构
 
 - `hexgen_core/`
-  Core distributed runtime pieces: process groups, transport, schema, PP/TP/hybrid runners.
+  核心分布式运行时：process group、transport、schema，以及独立的 `pp` / `tp` / `hybrid` runner 模块。
 - `models/qwen3vl/`
-  Model-specific runtime code.
+  Qwen3-VL 相关的模型适配代码。
 - `models/qwen3vl/execution/`
-  Low-level tensor execution for attention, decoder, and stage forward/trace logic.
+  attention、decoder、stage forward/trace 等底层 tensor 执行逻辑。
 - `models/qwen3vl/processing/`
-  Input building, processor/tokenizer loading, and model-path helpers.
+  输入构造、processor/tokenizer 加载、model-path helper。
 - `models/qwen3vl/weights/`
-  Weight index, load plan, shard slicing, and stage bundle materialization from weights.
+  权重 index、load plan、shard slicing，以及从权重 materialize `StageState` 的逻辑。
 - `models/qwen3vl/runtime_builder.py`
-  Direct runtime builders that turn `model_path` into stage/rank runtime bundles and manifests.
+  direct runtime builder：把 `model_path` 转换成 stage/rank `StageState` 和 manifest。
 - `models/qwen3vl/runtime_text.py`
-  Text-only prompt metadata, runtime-only scaffold restore, and startup session helpers.
+  text-only prompt metadata、runtime-only scaffold restore、启动 session helper。
 - `models/qwen3vl/runtime_text_stage.py`
-  Text scaffold compaction, runtime input rebuild, and local stage materialization helpers.
+  text scaffold compaction、runtime input rebuild、本地 stage materialization helper。
 - `scripts/`
-  User-facing runtime and helper scripts.
+  面向用户的 runtime 入口和辅助脚本。
 - `scripts/helpers/`
-  Stable shell wrappers for common entrypoints such as `run-runtime.sh` and `generate.sh`.
+  稳定 shell wrapper，例如 `run-runtime.sh` 和 `generate.sh`。
 - `scripts/runtime_cli.py`
-  Runtime CLI defaults, validation, and debug-path gating helpers.
+  runtime CLI 默认值、参数校验和 debug-path gating helper。
 - `scripts/runtime_summary.py`
-  JSON summary and generated-text decoding helpers for runtime outputs.
+  runtime 输出 JSON summary 和 generated text 解码 helper。
 
-## Naming Notes
+## 命名约定
 
-- Prefer short, specific helper names over long workflow-style names.
-- Use `text_prompt_meta` instead of repeating `runtime_only_text_generate_prompt_metadata`.
-- Keep public names descriptive, but avoid encoding the whole call chain in the function name.
+- 主路径中，从 `model_path` 构建出来的本地 stage/rank 执行对象统一叫 `StageState`。
+- `replay bundle` / `bundle` 只保留给 debug、capture 和 manifest replay 产物。
+- helper 名称优先短、明确，不把整条调用链都编码进函数名。
+- 使用 `text_prompt_meta`，避免反复写 `runtime_only_text_generate_prompt_metadata`。
+- 公开名称要描述清楚职责，但避免过长。

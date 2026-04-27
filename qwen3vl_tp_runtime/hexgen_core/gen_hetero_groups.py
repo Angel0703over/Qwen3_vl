@@ -1,6 +1,6 @@
 """HexGen-style helpers for deriving PP/TP groups and point-to-point plans."""
 
-from qwen3vl_tp_runtime.hexgen_core.schema import HybridLayout
+from .schema import HybridLayout
 
 
 def parse_tp_degrees(values: list[int]) -> list[int]:

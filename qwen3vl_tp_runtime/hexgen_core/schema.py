@@ -1,9 +1,11 @@
 """Structured runtime schemas for manifests, rank context, and stage handoff payloads."""
 
 from dataclasses import asdict, dataclass, field
-from typing import Any
+from typing import Any, TypeAlias
 
 import torch
+
+StageState: TypeAlias = dict[str, Any]
 
 
 @dataclass(slots=True)
@@ -214,6 +216,209 @@ class TextPipelineManifest:
         return cls(
             pipeline_type=data["pipeline_type"],
             num_stages=data["num_stages"],
+            stage_ranges=[tuple(item) for item in data["stage_ranges"]],
+            stages=[StageSpec.from_dict(item) for item in data["stages"]],
+            boundaries=[BoundaryStats.from_dict(item) for item in data["boundaries"]],
+            num_frames=data["num_frames"],
+            save_dtype=data["save_dtype"],
+            runtime_config=data.get("runtime_config", {}),
+            replay=replay,
+            bundle_dir=data.get("bundle_dir"),
+        )
+
+
+@dataclass(slots=True, init=False)
+class TensorParallelManifest:
+    """Serializable manifest for a standalone TP direct runtime."""
+
+    runtime: str
+    tp_degree: int
+    tp_degrees: list[int]
+    stage_rank_groups: list[list[int]]
+    pp_rank_groups: list[list[int]]
+    world_size: int
+    num_stages: int
+    send_list: list[list[int]]
+    recv_list: list[list[int]]
+    send_empty_list: list[list[bool]]
+    recv_empty_list: list[list[bool]]
+    stage_ranges: list[tuple[int, int]]
+    stages: list[StageSpec]
+    boundaries: list[BoundaryStats]
+    num_frames: int
+    save_dtype: str
+    pipeline_type: str = "text"
+    runtime_config: dict[str, Any] = field(default_factory=dict)
+    replay: ManifestReplaySpec | None = None
+
+    def __init__(
+        self,
+        runtime: str,
+        tp_degree: int | None = None,
+        stage_ranges: list[tuple[int, int]] | None = None,
+        bundle_dir: str | None = None,
+        *,
+        stages: list[StageSpec],
+        boundaries: list[BoundaryStats],
+        num_frames: int,
+        save_dtype: str,
+        pipeline_type: str = "text",
+        runtime_config: dict[str, Any] | None = None,
+        replay: ManifestReplaySpec | dict[str, Any] | str | None = None,
+        tp_degrees: list[int] | None = None,
+        stage_rank_groups: list[list[int]] | None = None,
+        pp_rank_groups: list[list[int]] | None = None,
+        world_size: int | None = None,
+        num_stages: int | None = None,
+        send_list: list[list[int]] | None = None,
+        recv_list: list[list[int]] | None = None,
+        send_empty_list: list[list[bool]] | None = None,
+        recv_empty_list: list[list[bool]] | None = None,
+    ) -> None:
+        if tp_degree is None:
+            if tp_degrees is None or len(tp_degrees) != 1:
+                raise ValueError("TensorParallelManifest 需要恰好一个 TP degree。")
+            tp_degree = int(tp_degrees[0])
+        if tp_degree <= 1:
+            raise ValueError(f"backend=tp 要求 TP degree > 1，当前拿到 {tp_degree}。")
+        if stage_ranges is None:
+            raise ValueError("TensorParallelManifest 需要 stage_ranges。")
+        if len(stage_ranges) != 1 or len(stages) != 1:
+            raise ValueError("TensorParallelManifest 是单 stage TP manifest。")
+        if num_stages is not None and num_stages != 1:
+            raise ValueError(f"TensorParallelManifest num_stages 必须是 1，当前拿到 {num_stages}。")
+        if world_size is not None and world_size != tp_degree:
+            raise ValueError(
+                "TensorParallelManifest world_size 必须等于 TP degree，"
+                f"world_size={world_size} tp_degree={tp_degree}。"
+            )
+
+        self.runtime = runtime
+        self.tp_degree = int(tp_degree)
+        self.tp_degrees = [self.tp_degree]
+        self.stage_rank_groups = [list(range(self.tp_degree))]
+        self.pp_rank_groups = [[rank] for rank in range(self.tp_degree)]
+        self.world_size = self.tp_degree
+        self.num_stages = 1
+        self.send_list = [[] for _ in range(self.tp_degree)]
+        self.recv_list = [[] for _ in range(self.tp_degree)]
+        self.send_empty_list = [[] for _ in range(self.tp_degree)]
+        self.recv_empty_list = [[] for _ in range(self.tp_degree)]
+        self.stage_ranges = stage_ranges
+        self.stages = stages
+        self.boundaries = boundaries
+        self.num_frames = num_frames
+        self.save_dtype = save_dtype
+        self.pipeline_type = pipeline_type
+        self.runtime_config = {} if runtime_config is None else runtime_config
+        self.replay = ManifestReplaySpec.from_dict(replay)
+        if bundle_dir is not None:
+            if self.replay is not None and self.replay.bundle_dir != bundle_dir:
+                raise ValueError("tp manifest replay.bundle_dir 和 legacy bundle_dir 不一致。")
+            self.replay = ManifestReplaySpec(bundle_dir=bundle_dir)
+
+        expected_layout = {
+            "tp_degrees": self.tp_degrees,
+            "stage_rank_groups": self.stage_rank_groups,
+            "pp_rank_groups": self.pp_rank_groups,
+            "send_list": self.send_list,
+            "recv_list": self.recv_list,
+            "send_empty_list": self.send_empty_list,
+            "recv_empty_list": self.recv_empty_list,
+        }
+        provided_layout = {
+            "tp_degrees": tp_degrees,
+            "stage_rank_groups": stage_rank_groups,
+            "pp_rank_groups": pp_rank_groups,
+            "send_list": send_list,
+            "recv_list": recv_list,
+            "send_empty_list": send_empty_list,
+            "recv_empty_list": recv_empty_list,
+        }
+        for key, value in provided_layout.items():
+            if value is not None and value != expected_layout[key]:
+                raise ValueError(f"TensorParallelManifest 的 {key} 和单 stage TP layout 不一致。")
+
+    @property
+    def is_direct(self) -> bool:
+        return self.replay is None and all(stage.is_direct for stage in self.stages)
+
+    @property
+    def replay_bundle_dir(self) -> str | None:
+        return None if self.replay is None else self.replay.bundle_dir
+
+    @property
+    def bundle_dir(self) -> str | None:
+        """Compatibility shim for legacy replay callers."""
+
+        return self.replay_bundle_dir
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = {
+            "runtime": self.runtime,
+            "tp_degree": self.tp_degree,
+            "tp_degrees": self.tp_degrees,
+            "stage_rank_groups": self.stage_rank_groups,
+            "pp_rank_groups": self.pp_rank_groups,
+            "world_size": self.world_size,
+            "num_stages": self.num_stages,
+            "send_list": self.send_list,
+            "recv_list": self.recv_list,
+            "send_empty_list": self.send_empty_list,
+            "recv_empty_list": self.recv_empty_list,
+            "pipeline_type": self.pipeline_type,
+            "stage_ranges": self.stage_ranges,
+            "stages": [stage.to_dict() for stage in self.stages],
+            "boundaries": [asdict(boundary) for boundary in self.boundaries],
+            "num_frames": self.num_frames,
+            "save_dtype": self.save_dtype,
+            "runtime_config": self.runtime_config,
+        }
+        if self.replay is not None:
+            payload["replay"] = self.replay.to_dict()
+        return payload
+
+    @classmethod
+    def from_pipeline_manifest(
+        cls,
+        manifest: TextPipelineManifest,
+        *,
+        tp_degree: int,
+        runtime: str = "text_tp",
+    ) -> "TensorParallelManifest":
+        return cls(
+            runtime=runtime,
+            tp_degree=tp_degree,
+            pipeline_type=manifest.pipeline_type,
+            stage_ranges=manifest.stage_ranges,
+            stages=manifest.stages,
+            boundaries=manifest.boundaries,
+            num_frames=manifest.num_frames,
+            save_dtype=manifest.save_dtype,
+            runtime_config=dict(manifest.runtime_config),
+            replay=manifest.replay,
+        )
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "TensorParallelManifest":
+        replay = ManifestReplaySpec.from_dict(data.get("replay"))
+        tp_degrees = data.get("tp_degrees")
+        tp_degree = data.get("tp_degree")
+        if tp_degree is None and tp_degrees is not None and len(tp_degrees) == 1:
+            tp_degree = tp_degrees[0]
+        return cls(
+            runtime=data.get("runtime", "text_tp"),
+            tp_degree=tp_degree,
+            tp_degrees=tp_degrees,
+            stage_rank_groups=data.get("stage_rank_groups"),
+            pp_rank_groups=data.get("pp_rank_groups"),
+            world_size=data.get("world_size"),
+            num_stages=data.get("num_stages"),
+            send_list=data.get("send_list"),
+            recv_list=data.get("recv_list"),
+            send_empty_list=data.get("send_empty_list"),
+            recv_empty_list=data.get("recv_empty_list"),
+            pipeline_type=data.get("pipeline_type", "text"),
             stage_ranges=[tuple(item) for item in data["stage_ranges"]],
             stages=[StageSpec.from_dict(item) for item in data["stages"]],
             boundaries=[BoundaryStats.from_dict(item) for item in data["boundaries"]],

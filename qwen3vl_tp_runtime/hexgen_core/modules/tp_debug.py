@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import torch
 
-from qwen3vl_tp_runtime.hexgen_core.stage import trace_stage, trace_stage_tp
+from ..stage import trace_stage, trace_stage_tp
 
 
 @dataclass(frozen=True)

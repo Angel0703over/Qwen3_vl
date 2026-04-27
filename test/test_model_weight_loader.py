@@ -11,7 +11,7 @@ import torch
 from qwen3vl_tp_runtime.hexgen_core.schema import StageSpec
 from qwen3vl_tp_runtime.models.qwen3vl.runtime_builder import (
     DirectStageBundleBuilder,
-    materialize_text_stage,
+    materialize_text_stage_state,
     pack_text_scaffold_transport,
     prepare_text_prompt_meta,
     restore_text_scaffold_transport,
@@ -1056,8 +1056,8 @@ class ModelWeightLoaderTest(unittest.TestCase):
                     ) as builder:
                         reference_bundle = builder.build_stage_bundle(0)
 
-            materialized = materialize_text_stage(
-                stage_bundle_scaffold=scaffold,
+            materialized = materialize_text_stage_state(
+                stage_state_scaffold=scaffold,
                 runtime_config=runtime_config,
                 compute_dtype=torch.float32,
                 tp_shard_rank=1,
@@ -1518,8 +1518,8 @@ class ModelWeightLoaderTest(unittest.TestCase):
             self.assertNotIn("batch_size", scaffold)
             self.assertNotIn("token_id_dtype", scaffold)
 
-            materialized = materialize_text_stage(
-                stage_bundle_scaffold=scaffold,
+            materialized = materialize_text_stage_state(
+                stage_state_scaffold=scaffold,
                 runtime_config=runtime_config,
                 compute_dtype=torch.float32,
                 tp_shard_rank=1,
@@ -1638,8 +1638,8 @@ class ModelWeightLoaderTest(unittest.TestCase):
             self.assertNotIn("cos", scaffold["decode_steps"][0])
             self.assertNotIn("sin", scaffold["decode_steps"][0])
 
-            materialized = materialize_text_stage(
-                stage_bundle_scaffold=scaffold,
+            materialized = materialize_text_stage_state(
+                stage_state_scaffold=scaffold,
                 runtime_config=runtime_config,
                 compute_dtype=torch.float32,
                 tp_shard_rank=1,

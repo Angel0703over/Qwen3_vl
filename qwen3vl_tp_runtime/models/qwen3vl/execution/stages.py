@@ -5,16 +5,16 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
-from qwen3vl_tp_runtime.models.qwen3vl.execution.common import (
+from .common import (
     apply_deepstack,
-    compose_layer_bundle,
+    compose_layer_state,
     get_deepstack_embeds,
 )
-from qwen3vl_tp_runtime.models.qwen3vl.execution.attention import (
+from .attention import (
     forward_attention,
     forward_attention_tp,
 )
-from qwen3vl_tp_runtime.models.qwen3vl.execution.decoder import (
+from .decoder import (
     forward_decoder_layer,
     forward_decoder_layer_cached,
     forward_decoder_layer_cached_tp,
@@ -24,21 +24,21 @@ from qwen3vl_tp_runtime.models.qwen3vl.execution.decoder import (
     trace_decoder_layer_cached_tp,
     trace_decoder_layer_tp,
 )
-from qwen3vl_tp_runtime.models.qwen3vl.execution.mlp import forward_mlp, forward_mlp_tp
-from qwen3vl_tp_runtime.models.qwen3vl.functional import rms_norm
+from .mlp import forward_mlp, forward_mlp_tp
+from ..functional import rms_norm
 
 
-def forward_layer_range(hidden_states: torch.Tensor, range_bundle: dict) -> torch.Tensor:
+def forward_layer_range(hidden_states: torch.Tensor, range_state: dict) -> torch.Tensor:
     output = hidden_states
-    for layer_bundle in range_bundle["layers"]:
-        runtime_bundle = compose_layer_bundle(layer_bundle, range_bundle)
-        output = forward_decoder_layer(output, runtime_bundle)
+    for layer_bundle in range_state["layers"]:
+        layer_runtime_state = compose_layer_state(layer_bundle, range_state)
+        output = forward_decoder_layer(output, layer_runtime_state)
     return output
 
 
 def forward_layer_range_tp(
     hidden_states: torch.Tensor,
-    range_bundle: dict,
+    range_state: dict,
     rank: int,
     world_size: int,
     comm_dtype: torch.dtype,
@@ -48,11 +48,11 @@ def forward_layer_range_tp(
     mlp_math_mode: str = "orig",
 ) -> torch.Tensor:
     output = hidden_states
-    for layer_bundle in range_bundle["layers"]:
-        runtime_bundle = compose_layer_bundle(layer_bundle, range_bundle)
+    for layer_bundle in range_state["layers"]:
+        layer_runtime_state = compose_layer_state(layer_bundle, range_state)
         output = forward_decoder_layer_tp(
             output,
-            runtime_bundle,
+            layer_runtime_state,
             rank,
             world_size,
             comm_dtype,
@@ -64,23 +64,23 @@ def forward_layer_range_tp(
     return output
 
 
-def forward_text_stage(hidden_states: torch.Tensor, stage_bundle: dict) -> torch.Tensor:
+def forward_text_stage(hidden_states: torch.Tensor, stage_state: dict) -> torch.Tensor:
     output = hidden_states
-    visual_pos_masks = stage_bundle.get("visual_pos_masks")
+    visual_pos_masks = stage_state.get("visual_pos_masks")
 
-    for layer_bundle in stage_bundle["layers"]:
-        runtime_bundle = compose_layer_bundle(layer_bundle, stage_bundle)
+    for layer_bundle in stage_state["layers"]:
+        layer_runtime_state = compose_layer_state(layer_bundle, stage_state)
         layer_idx = layer_bundle["layer_idx"]
 
-        output = forward_decoder_layer(output, runtime_bundle)
-        output = apply_deepstack(output, visual_pos_masks, get_deepstack_embeds(stage_bundle, layer_idx))
+        output = forward_decoder_layer(output, layer_runtime_state)
+        output = apply_deepstack(output, visual_pos_masks, get_deepstack_embeds(stage_state, layer_idx))
 
     return output
 
 
 def forward_text_stage_tp(
     hidden_states: torch.Tensor,
-    stage_bundle: dict,
+    stage_state: dict,
     rank: int,
     world_size: int,
     comm_dtype: torch.dtype,
@@ -90,15 +90,15 @@ def forward_text_stage_tp(
     mlp_math_mode: str = "orig",
 ) -> torch.Tensor:
     output = hidden_states
-    visual_pos_masks = stage_bundle.get("visual_pos_masks")
+    visual_pos_masks = stage_state.get("visual_pos_masks")
 
-    for layer_bundle in stage_bundle["layers"]:
-        runtime_bundle = compose_layer_bundle(layer_bundle, stage_bundle)
+    for layer_bundle in stage_state["layers"]:
+        layer_runtime_state = compose_layer_state(layer_bundle, stage_state)
         layer_idx = layer_bundle["layer_idx"]
 
         output = forward_decoder_layer_tp(
             output,
-            runtime_bundle,
+            layer_runtime_state,
             rank,
             world_size,
             comm_dtype,
@@ -107,26 +107,26 @@ def forward_text_stage_tp(
             attn_math_mode=attn_math_mode,
             mlp_math_mode=mlp_math_mode,
         )
-        output = apply_deepstack(output, visual_pos_masks, get_deepstack_embeds(stage_bundle, layer_idx))
+        output = apply_deepstack(output, visual_pos_masks, get_deepstack_embeds(stage_state, layer_idx))
 
     return output
 
 
-def forward_text_embeddings(input_ids: torch.Tensor, bundle: dict) -> torch.Tensor:
-    return F.embedding(input_ids, bundle["embed_tokens_weight"])
+def forward_text_embeddings(input_ids: torch.Tensor, stage_state: dict) -> torch.Tensor:
+    return F.embedding(input_ids, stage_state["embed_tokens_weight"])
 
 
-def trace_text_prefill_logits(layer_input: torch.Tensor, bundle: dict) -> dict:
-    stage_output = forward_text_stage(layer_input, bundle)
+def trace_text_prefill_logits(layer_input: torch.Tensor, stage_state: dict) -> dict:
+    stage_output = forward_text_stage(layer_input, stage_state)
     norm_output = rms_norm(
         stage_output,
-        bundle["final_norm_weight"],
-        bundle["final_norm_eps"],
+        stage_state["final_norm_weight"],
+        stage_state["final_norm_eps"],
     )
     logits = F.linear(
         norm_output,
-        bundle["lm_head_weight"],
-        bundle["lm_head_bias"],
+        stage_state["lm_head_weight"],
+        stage_state["lm_head_bias"],
     )
     return {
         "layer_input": layer_input,
@@ -136,24 +136,24 @@ def trace_text_prefill_logits(layer_input: torch.Tensor, bundle: dict) -> dict:
     }
 
 
-def forward_text_prefill_logits(layer_input: torch.Tensor, bundle: dict) -> torch.Tensor:
-    return trace_text_prefill_logits(layer_input, bundle)["logits"]
+def forward_text_prefill_logits(layer_input: torch.Tensor, stage_state: dict) -> torch.Tensor:
+    return trace_text_prefill_logits(layer_input, stage_state)["logits"]
 
 
-def forward_text_decode_stage(hidden_states: torch.Tensor, stage_bundle: dict) -> torch.Tensor:
+def forward_text_decode_stage(hidden_states: torch.Tensor, stage_state: dict) -> torch.Tensor:
     output = hidden_states
-    visual_pos_masks = stage_bundle.get("visual_pos_masks")
-    for layer_bundle in stage_bundle["layers"]:
-        runtime_bundle = compose_layer_bundle(layer_bundle, stage_bundle)
+    visual_pos_masks = stage_state.get("visual_pos_masks")
+    for layer_bundle in stage_state["layers"]:
+        layer_runtime_state = compose_layer_state(layer_bundle, stage_state)
         layer_idx = layer_bundle["layer_idx"]
-        output = forward_decoder_layer_cached(output, runtime_bundle)
-        output = apply_deepstack(output, visual_pos_masks, get_deepstack_embeds(stage_bundle, layer_idx))
+        output = forward_decoder_layer_cached(output, layer_runtime_state)
+        output = apply_deepstack(output, visual_pos_masks, get_deepstack_embeds(stage_state, layer_idx))
     return output
 
 
 def forward_text_decode_stage_tp(
     hidden_states: torch.Tensor,
-    stage_bundle: dict,
+    stage_state: dict,
     rank: int,
     world_size: int,
     comm_dtype: torch.dtype,
@@ -163,13 +163,13 @@ def forward_text_decode_stage_tp(
     mlp_math_mode: str = "orig",
 ) -> torch.Tensor:
     output = hidden_states
-    visual_pos_masks = stage_bundle.get("visual_pos_masks")
-    for layer_bundle in stage_bundle["layers"]:
-        runtime_bundle = compose_layer_bundle(layer_bundle, stage_bundle)
+    visual_pos_masks = stage_state.get("visual_pos_masks")
+    for layer_bundle in stage_state["layers"]:
+        layer_runtime_state = compose_layer_state(layer_bundle, stage_state)
         layer_idx = layer_bundle["layer_idx"]
         output = forward_decoder_layer_cached_tp(
             output,
-            runtime_bundle,
+            layer_runtime_state,
             rank,
             world_size,
             comm_dtype,
@@ -178,21 +178,21 @@ def forward_text_decode_stage_tp(
             attn_math_mode=attn_math_mode,
             mlp_math_mode=mlp_math_mode,
         )
-        output = apply_deepstack(output, visual_pos_masks, get_deepstack_embeds(stage_bundle, layer_idx))
+        output = apply_deepstack(output, visual_pos_masks, get_deepstack_embeds(stage_state, layer_idx))
     return output
 
 
-def trace_text_decode_logits(layer_input: torch.Tensor, bundle: dict) -> dict:
-    stage_output = forward_text_decode_stage(layer_input, bundle)
+def trace_text_decode_logits(layer_input: torch.Tensor, stage_state: dict) -> dict:
+    stage_output = forward_text_decode_stage(layer_input, stage_state)
     norm_output = rms_norm(
         stage_output,
-        bundle["final_norm_weight"],
-        bundle["final_norm_eps"],
+        stage_state["final_norm_weight"],
+        stage_state["final_norm_eps"],
     )
     logits = F.linear(
         norm_output,
-        bundle["lm_head_weight"],
-        bundle["lm_head_bias"],
+        stage_state["lm_head_weight"],
+        stage_state["lm_head_bias"],
     )
     return {
         "layer_input": layer_input,
@@ -202,33 +202,33 @@ def trace_text_decode_logits(layer_input: torch.Tensor, bundle: dict) -> dict:
     }
 
 
-def forward_text_decode_logits(layer_input: torch.Tensor, bundle: dict) -> torch.Tensor:
-    return trace_text_decode_logits(layer_input, bundle)["logits"]
+def forward_text_decode_logits(layer_input: torch.Tensor, stage_state: dict) -> torch.Tensor:
+    return trace_text_decode_logits(layer_input, stage_state)["logits"]
 
 
 def trace_text_decode_stage_with_runtime_cache(
     hidden_states: torch.Tensor,
-    stage_bundle: dict,
+    stage_state: dict,
     cache_by_layer: dict[int, tuple[torch.Tensor | None, torch.Tensor | None]] | None = None,
 ) -> dict:
     traces = []
     output = hidden_states
-    visual_pos_masks = stage_bundle.get("visual_pos_masks")
+    visual_pos_masks = stage_state.get("visual_pos_masks")
     current_cache = cache_by_layer or {}
     updated_cache: dict[int, tuple[torch.Tensor | None, torch.Tensor | None]] = {}
 
-    for layer_bundle in stage_bundle["layers"]:
-        runtime_bundle = compose_layer_bundle(layer_bundle, stage_bundle)
+    for layer_bundle in stage_state["layers"]:
+        layer_runtime_state = compose_layer_state(layer_bundle, stage_state)
         layer_idx = int(layer_bundle["layer_idx"])
         past_key, past_value = current_cache.get(
             layer_idx,
-            (runtime_bundle.get("past_key"), runtime_bundle.get("past_value")),
+            (layer_runtime_state.get("past_key"), layer_runtime_state.get("past_value")),
         )
-        runtime_bundle["past_key"] = past_key
-        runtime_bundle["past_value"] = past_value
+        layer_runtime_state["past_key"] = past_key
+        layer_runtime_state["past_value"] = past_value
 
-        layer_trace = trace_decoder_layer_cached(output, runtime_bundle)
-        deepstack_embeds = get_deepstack_embeds(stage_bundle, layer_idx)
+        layer_trace = trace_decoder_layer_cached(output, layer_runtime_state)
+        deepstack_embeds = get_deepstack_embeds(stage_state, layer_idx)
         post_deepstack = apply_deepstack(layer_trace["layer_output"], visual_pos_masks, deepstack_embeds)
         layer_trace["layer_idx"] = layer_idx
         layer_trace["deepstack_applied"] = deepstack_embeds is not None
@@ -250,23 +250,23 @@ def trace_text_decode_stage_with_runtime_cache(
 
 def trace_text_decode_logits_with_runtime_cache(
     layer_input: torch.Tensor,
-    bundle: dict,
+    stage_state: dict,
     cache_by_layer: dict[int, tuple[torch.Tensor | None, torch.Tensor | None]] | None = None,
 ) -> dict:
     stage_trace = trace_text_decode_stage_with_runtime_cache(
         layer_input,
-        bundle,
+        stage_state,
         cache_by_layer=cache_by_layer,
     )
     norm_output = rms_norm(
         stage_trace["stage_output"],
-        bundle["final_norm_weight"],
-        bundle["final_norm_eps"],
+        stage_state["final_norm_weight"],
+        stage_state["final_norm_eps"],
     )
     logits = F.linear(
         norm_output,
-        bundle["lm_head_weight"],
-        bundle["lm_head_bias"],
+        stage_state["lm_head_weight"],
+        stage_state["lm_head_bias"],
     )
     return {
         "layer_input": layer_input,
@@ -280,7 +280,7 @@ def trace_text_decode_logits_with_runtime_cache(
 
 def trace_text_decode_stage_tp_with_runtime_cache(
     hidden_states: torch.Tensor,
-    stage_bundle: dict,
+    stage_state: dict,
     rank: int,
     world_size: int,
     comm_dtype: torch.dtype,
@@ -292,23 +292,23 @@ def trace_text_decode_stage_tp_with_runtime_cache(
 ) -> dict:
     traces = []
     output = hidden_states
-    visual_pos_masks = stage_bundle.get("visual_pos_masks")
+    visual_pos_masks = stage_state.get("visual_pos_masks")
     current_cache = cache_by_layer or {}
     updated_cache: dict[int, tuple[torch.Tensor | None, torch.Tensor | None]] = {}
 
-    for layer_bundle in stage_bundle["layers"]:
-        runtime_bundle = compose_layer_bundle(layer_bundle, stage_bundle)
+    for layer_bundle in stage_state["layers"]:
+        layer_runtime_state = compose_layer_state(layer_bundle, stage_state)
         layer_idx = int(layer_bundle["layer_idx"])
         past_key, past_value = current_cache.get(
             layer_idx,
-            (runtime_bundle.get("past_key"), runtime_bundle.get("past_value")),
+            (layer_runtime_state.get("past_key"), layer_runtime_state.get("past_value")),
         )
-        runtime_bundle["past_key"] = past_key
-        runtime_bundle["past_value"] = past_value
+        layer_runtime_state["past_key"] = past_key
+        layer_runtime_state["past_value"] = past_value
 
         layer_trace = trace_decoder_layer_cached_tp(
             output,
-            runtime_bundle,
+            layer_runtime_state,
             rank,
             world_size,
             comm_dtype,
@@ -317,7 +317,7 @@ def trace_text_decode_stage_tp_with_runtime_cache(
             attn_math_mode=attn_math_mode,
             mlp_math_mode=mlp_math_mode,
         )
-        deepstack_embeds = get_deepstack_embeds(stage_bundle, layer_idx)
+        deepstack_embeds = get_deepstack_embeds(stage_state, layer_idx)
         post_deepstack = apply_deepstack(layer_trace["layer_output"], visual_pos_masks, deepstack_embeds)
         layer_trace["layer_idx"] = layer_idx
         layer_trace["deepstack_applied"] = deepstack_embeds is not None
@@ -339,7 +339,7 @@ def trace_text_decode_stage_tp_with_runtime_cache(
 
 def trace_text_decode_logits_tp_with_runtime_cache(
     layer_input: torch.Tensor,
-    bundle: dict,
+    stage_state: dict,
     rank: int,
     world_size: int,
     comm_dtype: torch.dtype,
@@ -351,7 +351,7 @@ def trace_text_decode_logits_tp_with_runtime_cache(
 ) -> dict:
     stage_trace = trace_text_decode_stage_tp_with_runtime_cache(
         layer_input,
-        bundle,
+        stage_state,
         rank,
         world_size,
         comm_dtype,
@@ -363,13 +363,13 @@ def trace_text_decode_logits_tp_with_runtime_cache(
     )
     norm_output = rms_norm(
         stage_trace["stage_output"],
-        bundle["final_norm_weight"],
-        bundle["final_norm_eps"],
+        stage_state["final_norm_weight"],
+        stage_state["final_norm_eps"],
     )
     logits = F.linear(
         norm_output,
-        bundle["lm_head_weight"],
-        bundle["lm_head_bias"],
+        stage_state["lm_head_weight"],
+        stage_state["lm_head_bias"],
     )
     return {
         "layer_input": layer_input,
@@ -383,7 +383,7 @@ def trace_text_decode_logits_tp_with_runtime_cache(
 
 def forward_text_decode_logits_tp(
     layer_input: torch.Tensor,
-    bundle: dict,
+    stage_state: dict,
     rank: int,
     world_size: int,
     comm_dtype: torch.dtype,
@@ -394,7 +394,7 @@ def forward_text_decode_logits_tp(
 ) -> torch.Tensor:
     stage_output = forward_text_decode_stage_tp(
         layer_input,
-        bundle,
+        stage_state,
         rank,
         world_size,
         comm_dtype,
@@ -405,27 +405,27 @@ def forward_text_decode_logits_tp(
     )
     norm_output = rms_norm(
         stage_output,
-        bundle["final_norm_weight"],
-        bundle["final_norm_eps"],
+        stage_state["final_norm_weight"],
+        stage_state["final_norm_eps"],
     )
     return F.linear(
         norm_output,
-        bundle["lm_head_weight"],
-        bundle["lm_head_bias"],
+        stage_state["lm_head_weight"],
+        stage_state["lm_head_bias"],
     )
 
 
-def trace_text_prefill_stage_logits(hidden_states: torch.Tensor, bundle: dict) -> dict:
-    hidden_stage_output = forward_text_stage(hidden_states, bundle)
+def trace_text_prefill_stage_logits(hidden_states: torch.Tensor, stage_state: dict) -> dict:
+    hidden_stage_output = forward_text_stage(hidden_states, stage_state)
     norm_output = rms_norm(
         hidden_stage_output,
-        bundle["final_norm_weight"],
-        bundle["final_norm_eps"],
+        stage_state["final_norm_weight"],
+        stage_state["final_norm_eps"],
     )
     logits = F.linear(
         norm_output,
-        bundle["lm_head_weight"],
-        bundle["lm_head_bias"],
+        stage_state["lm_head_weight"],
+        stage_state["lm_head_bias"],
     )
     return {
         "stage_input": hidden_states,
@@ -437,7 +437,7 @@ def trace_text_prefill_stage_logits(hidden_states: torch.Tensor, bundle: dict) -
 
 def trace_text_prefill_stage_logits_tp(
     hidden_states: torch.Tensor,
-    bundle: dict,
+    stage_state: dict,
     rank: int,
     world_size: int,
     comm_dtype: torch.dtype,
@@ -448,7 +448,7 @@ def trace_text_prefill_stage_logits_tp(
 ) -> dict:
     hidden_stage_output = forward_text_stage_tp(
         hidden_states,
-        bundle,
+        stage_state,
         rank,
         world_size,
         comm_dtype,
@@ -459,13 +459,13 @@ def trace_text_prefill_stage_logits_tp(
     )
     norm_output = rms_norm(
         hidden_stage_output,
-        bundle["final_norm_weight"],
-        bundle["final_norm_eps"],
+        stage_state["final_norm_weight"],
+        stage_state["final_norm_eps"],
     )
     logits = F.linear(
         norm_output,
-        bundle["lm_head_weight"],
-        bundle["lm_head_bias"],
+        stage_state["lm_head_weight"],
+        stage_state["lm_head_bias"],
     )
     return {
         "stage_input": hidden_states,
@@ -475,13 +475,13 @@ def trace_text_prefill_stage_logits_tp(
     }
 
 
-def forward_text_prefill_stage_logits(hidden_states: torch.Tensor, bundle: dict) -> torch.Tensor:
-    return trace_text_prefill_stage_logits(hidden_states, bundle)["logits"]
+def forward_text_prefill_stage_logits(hidden_states: torch.Tensor, stage_state: dict) -> torch.Tensor:
+    return trace_text_prefill_stage_logits(hidden_states, stage_state)["logits"]
 
 
 def forward_text_prefill_stage_logits_tp(
     hidden_states: torch.Tensor,
-    bundle: dict,
+    stage_state: dict,
     rank: int,
     world_size: int,
     comm_dtype: torch.dtype,
@@ -492,7 +492,7 @@ def forward_text_prefill_stage_logits_tp(
 ) -> torch.Tensor:
     return trace_text_prefill_stage_logits_tp(
         hidden_states,
-        bundle,
+        stage_state,
         rank,
         world_size,
         comm_dtype,
@@ -503,17 +503,17 @@ def forward_text_prefill_stage_logits_tp(
     )["logits"]
 
 
-def trace_text_stage(hidden_states: torch.Tensor, stage_bundle: dict) -> list[dict]:
+def trace_text_stage(hidden_states: torch.Tensor, stage_state: dict) -> list[dict]:
     traces = []
     output = hidden_states
-    visual_pos_masks = stage_bundle.get("visual_pos_masks")
+    visual_pos_masks = stage_state.get("visual_pos_masks")
 
-    for layer_bundle in stage_bundle["layers"]:
-        runtime_bundle = compose_layer_bundle(layer_bundle, stage_bundle)
+    for layer_bundle in stage_state["layers"]:
+        layer_runtime_state = compose_layer_state(layer_bundle, stage_state)
         layer_idx = layer_bundle["layer_idx"]
-        deepstack_embeds = get_deepstack_embeds(stage_bundle, layer_idx)
+        deepstack_embeds = get_deepstack_embeds(stage_state, layer_idx)
 
-        layer_trace = trace_decoder_layer(output, runtime_bundle)
+        layer_trace = trace_decoder_layer(output, layer_runtime_state)
         post_deepstack = apply_deepstack(layer_trace["layer_output"], visual_pos_masks, deepstack_embeds)
         layer_trace["layer_idx"] = layer_idx
         layer_trace["deepstack_applied"] = deepstack_embeds is not None
@@ -525,17 +525,17 @@ def trace_text_stage(hidden_states: torch.Tensor, stage_bundle: dict) -> list[di
     return traces
 
 
-def trace_text_decode_stage(hidden_states: torch.Tensor, stage_bundle: dict) -> list[dict]:
+def trace_text_decode_stage(hidden_states: torch.Tensor, stage_state: dict) -> list[dict]:
     traces = []
     output = hidden_states
-    visual_pos_masks = stage_bundle.get("visual_pos_masks")
+    visual_pos_masks = stage_state.get("visual_pos_masks")
 
-    for layer_bundle in stage_bundle["layers"]:
-        runtime_bundle = compose_layer_bundle(layer_bundle, stage_bundle)
+    for layer_bundle in stage_state["layers"]:
+        layer_runtime_state = compose_layer_state(layer_bundle, stage_state)
         layer_idx = layer_bundle["layer_idx"]
-        deepstack_embeds = get_deepstack_embeds(stage_bundle, layer_idx)
+        deepstack_embeds = get_deepstack_embeds(stage_state, layer_idx)
 
-        layer_trace = trace_decoder_layer_cached(output, runtime_bundle)
+        layer_trace = trace_decoder_layer_cached(output, layer_runtime_state)
         post_deepstack = apply_deepstack(layer_trace["layer_output"], visual_pos_masks, deepstack_embeds)
         layer_trace["layer_idx"] = layer_idx
         layer_trace["deepstack_applied"] = deepstack_embeds is not None
@@ -549,7 +549,7 @@ def trace_text_decode_stage(hidden_states: torch.Tensor, stage_bundle: dict) -> 
 
 def trace_text_stage_tp(
     hidden_states: torch.Tensor,
-    stage_bundle: dict,
+    stage_state: dict,
     rank: int,
     world_size: int,
     comm_dtype: torch.dtype,
@@ -560,16 +560,16 @@ def trace_text_stage_tp(
 ) -> list[dict]:
     traces = []
     output = hidden_states
-    visual_pos_masks = stage_bundle.get("visual_pos_masks")
+    visual_pos_masks = stage_state.get("visual_pos_masks")
 
-    for layer_bundle in stage_bundle["layers"]:
-        runtime_bundle = compose_layer_bundle(layer_bundle, stage_bundle)
+    for layer_bundle in stage_state["layers"]:
+        layer_runtime_state = compose_layer_state(layer_bundle, stage_state)
         layer_idx = layer_bundle["layer_idx"]
-        deepstack_embeds = get_deepstack_embeds(stage_bundle, layer_idx)
+        deepstack_embeds = get_deepstack_embeds(stage_state, layer_idx)
 
         layer_trace = trace_decoder_layer_tp(
             output,
-            runtime_bundle,
+            layer_runtime_state,
             rank,
             world_size,
             comm_dtype,
@@ -591,7 +591,7 @@ def trace_text_stage_tp(
 
 def trace_text_decode_stage_tp(
     hidden_states: torch.Tensor,
-    stage_bundle: dict,
+    stage_state: dict,
     rank: int,
     world_size: int,
     comm_dtype: torch.dtype,
@@ -602,16 +602,16 @@ def trace_text_decode_stage_tp(
 ) -> list[dict]:
     traces = []
     output = hidden_states
-    visual_pos_masks = stage_bundle.get("visual_pos_masks")
+    visual_pos_masks = stage_state.get("visual_pos_masks")
 
-    for layer_bundle in stage_bundle["layers"]:
-        runtime_bundle = compose_layer_bundle(layer_bundle, stage_bundle)
+    for layer_bundle in stage_state["layers"]:
+        layer_runtime_state = compose_layer_state(layer_bundle, stage_state)
         layer_idx = layer_bundle["layer_idx"]
-        deepstack_embeds = get_deepstack_embeds(stage_bundle, layer_idx)
+        deepstack_embeds = get_deepstack_embeds(stage_state, layer_idx)
 
         layer_trace = trace_decoder_layer_cached_tp(
             output,
-            runtime_bundle,
+            layer_runtime_state,
             rank,
             world_size,
             comm_dtype,
@@ -631,7 +631,8 @@ def trace_text_decode_stage_tp(
     return traces
 
 
-build_layer_runtime_bundle = compose_layer_bundle
+build_layer_runtime_state = compose_layer_state
+build_layer_runtime_bundle = compose_layer_state
 replay_attn = forward_attention
 replay_attn_tp = forward_attention_tp
 replay_mlp = forward_mlp
@@ -669,7 +670,7 @@ __all__ = [
     "trace_text_decode_stage",
     "trace_text_stage_tp",
     "trace_text_decode_stage_tp",
-    "build_layer_runtime_bundle",
+    "build_layer_runtime_state",
     "replay_attn",
     "replay_attn_tp",
     "replay_mlp",

@@ -4,16 +4,20 @@ from __future__ import annotations
 
 import torch
 
-from qwen3vl_tp_runtime.models.qwen3vl.vision import apply_deepstack, get_deepstack_embeds
+from ..vision import apply_deepstack, get_deepstack_embeds
+
+
+def compose_layer_state(layer_state: dict, stage_state: dict) -> dict:
+    # 多层执行时，每层参数独立存放，共享的运行时张量在这里补齐。
+    runtime_state = dict(layer_state)
+    runtime_state["attention_mask"] = stage_state["attention_mask"]
+    runtime_state["cos"] = stage_state["cos"]
+    runtime_state["sin"] = stage_state["sin"]
+    return runtime_state
 
 
 def compose_layer_bundle(layer_bundle: dict, runtime_bundle: dict) -> dict:
-    # 多层执行时，每层参数独立存放，共享的运行时张量在这里补齐。
-    bundle = dict(layer_bundle)
-    bundle["attention_mask"] = runtime_bundle["attention_mask"]
-    bundle["cos"] = runtime_bundle["cos"]
-    bundle["sin"] = runtime_bundle["sin"]
-    return bundle
+    return compose_layer_state(layer_bundle, runtime_bundle)
 
 def _resolve_tp_math_dtype(hidden_states: torch.Tensor, math_mode: str) -> tuple[torch.dtype, torch.dtype]:
     orig_dtype = hidden_states.dtype
@@ -68,7 +72,7 @@ def _slice_local_past_states(
 
 
 __all__ = [
-    "compose_layer_bundle",
+    "compose_layer_state",
     "apply_deepstack",
     "get_deepstack_embeds",
 ]

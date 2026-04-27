@@ -19,7 +19,16 @@ def load_debug_hybrid_manifest(manifest_path: str):
     return load_hybrid_manifest(manifest_path)
 
 
+def load_debug_tp_manifest(manifest_path: str):
+    """Load a prepared TP manifest for debug/regression replay runs."""
+
+    from qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel import load_tp_manifest
+
+    return load_tp_manifest(manifest_path)
+
+
 __all__ = [
     "load_debug_pipeline_manifest",
     "load_debug_hybrid_manifest",
+    "load_debug_tp_manifest",
 ]

@@ -5,13 +5,13 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
-from qwen3vl_tp_runtime.hexgen_core.distributed import all_reduce_cpu, broadcast_cpu
-from qwen3vl_tp_runtime.models.qwen3vl.execution.common import (
+from ....hexgen_core.distributed import all_reduce_cpu, broadcast_cpu
+from .common import (
     _cast_optional_tensor,
     _resolve_tp_math_dtype,
     _slice_local_past_states,
 )
-from qwen3vl_tp_runtime.models.qwen3vl.functional import apply_rope, attn_eager, rms_norm
+from ..functional import apply_rope, attn_eager, rms_norm
 
 
 def _validate_attention_mask_shape(

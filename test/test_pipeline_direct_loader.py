@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import torch
 
 from qwen3vl_tp_runtime.hexgen_core.modules import pipeline_parallel as pipeline_parallel_module
-from qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel import load_stage_bundle_for_rank
+from qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel import load_stage_state_for_rank
 from qwen3vl_tp_runtime.hexgen_core.schema import StageSpec, TextPipelineManifest
 from qwen3vl_tp_runtime.models.qwen3vl.runtime_mm_stage import (
     MmFrontendSeed,
@@ -112,7 +112,7 @@ class PipelineDirectLoaderTest(unittest.TestCase):
                 sin=torch.zeros(1, 1, 4),
             ),
         ):
-            decode_bundle = pipeline_parallel_module._build_runtime_only_text_generate_phase_bundle(
+            decode_bundle = pipeline_parallel_module._build_runtime_only_text_generate_phase_state(
                 stage_bundle,
                 phase_kind="decode",
                 attention_mask_2d=torch.ones(1, 4, dtype=torch.long),
@@ -216,7 +216,7 @@ class PipelineDirectLoaderTest(unittest.TestCase):
         with patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.prepare_text_prompt_meta",
         ) as prepare_meta_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.DirectStageBundleBuilder",
+            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.DirectStageStateBuilder",
         ) as builder_cls, patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.recv_object_cpu",
             return_value=local_startup_meta,
@@ -224,7 +224,7 @@ class PipelineDirectLoaderTest(unittest.TestCase):
             "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.recv_tensor_payload_cpu",
             return_value=local_startup_tensors,
         ) as recv_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.build_direct_stage_bundle",
+            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.build_direct_stage_state",
             return_value=direct_bundle,
         ) as build_mock, patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.dist.is_available",
@@ -235,7 +235,7 @@ class PipelineDirectLoaderTest(unittest.TestCase):
         ), patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.dist.barrier",
         ) as barrier_mock:
-            bundle, compute_dtype = load_stage_bundle_for_rank(
+            bundle, compute_dtype = load_stage_state_for_rank(
                 manifest,
                 rank=1,
                 device=torch.device("cpu"),
@@ -304,14 +304,14 @@ class PipelineDirectLoaderTest(unittest.TestCase):
         with patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.prepare_text_prompt_meta",
         ) as prepare_meta_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.DirectStageBundleBuilder",
+            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.DirectStageStateBuilder",
             return_value=builder_instance,
         ) as builder_cls, patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.send_object_cpu",
         ) as send_meta_mock, patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.send_tensor_payload_cpu",
         ) as send_tensor_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.build_direct_stage_bundle",
+            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.build_direct_stage_state",
             return_value=direct_bundle,
         ) as build_mock, patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.dist.is_available",
@@ -322,7 +322,7 @@ class PipelineDirectLoaderTest(unittest.TestCase):
         ), patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.dist.barrier",
         ) as barrier_mock:
-            bundle, compute_dtype = load_stage_bundle_for_rank(
+            bundle, compute_dtype = load_stage_state_for_rank(
                 manifest,
                 rank=0,
                 device=torch.device("cpu"),
@@ -396,7 +396,7 @@ class PipelineDirectLoaderTest(unittest.TestCase):
             "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.broadcast_tensor_payload_cpu",
             side_effect=lambda payload, **_kwargs: payload,
         ) as bcast_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.build_direct_stage_bundle",
+            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.build_direct_stage_state",
             return_value=direct_bundle,
         ) as build_mock, patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.dist.is_available",
@@ -407,7 +407,7 @@ class PipelineDirectLoaderTest(unittest.TestCase):
         ), patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.dist.barrier",
         ) as barrier_mock:
-            bundle, compute_dtype = load_stage_bundle_for_rank(
+            bundle, compute_dtype = load_stage_state_for_rank(
                 manifest,
                 rank=0,
                 device=torch.device("cpu"),
@@ -448,7 +448,7 @@ class PipelineDirectLoaderTest(unittest.TestCase):
             "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.broadcast_tensor_payload_cpu",
             return_value={"input_ids": torch.tensor([[7, 8, 9]], dtype=torch.int64)},
         ) as bcast_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.build_direct_stage_bundle",
+            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.build_direct_stage_state",
             return_value=direct_bundle,
         ) as build_mock, patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.dist.is_available",
@@ -459,7 +459,7 @@ class PipelineDirectLoaderTest(unittest.TestCase):
         ), patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.dist.barrier",
         ) as barrier_mock:
-            bundle, compute_dtype = load_stage_bundle_for_rank(
+            bundle, compute_dtype = load_stage_state_for_rank(
                 manifest,
                 rank=1,
                 device=torch.device("cpu"),

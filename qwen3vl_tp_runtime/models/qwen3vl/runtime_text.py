@@ -7,14 +7,14 @@ from typing import Any
 
 import torch
 
-from qwen3vl_tp_runtime.models.qwen3vl.live.common import _resolve_compute_dtype, _runtime_tensor
-from qwen3vl_tp_runtime.models.qwen3vl.processing import (
+from .live.common import _resolve_compute_dtype, _runtime_tensor
+from .processing import (
     build_text_inputs,
     load_processor,
     load_text_tokenizer,
     load_text_tokenizer_backend,
 )
-from qwen3vl_tp_runtime.models.qwen3vl.weights import load_tensors_from_index
+from .weights import load_tensors_from_index
 
 
 def _builder_dep(name: str, fallback):
@@ -192,29 +192,29 @@ def _resolve_text_prompt_meta(
     }
 
 
-def _restore_text_prompt_bundle(
-    bundle: dict[str, Any],
+def _restore_text_prompt_stage_state(
+    stage_state: dict[str, Any],
     *,
     runtime_config: dict[str, Any],
 ) -> dict[str, Any]:
-    if not bundle.get("runtime_only_generate"):
-        return bundle
+    if not stage_state.get("runtime_only_generate"):
+        return stage_state
 
-    if bundle.get("modality") == "multimodal":
-        restored = dict(bundle)
+    if stage_state.get("modality") == "multimodal":
+        restored = dict(stage_state)
         restored.pop("runtime_only_prompt_local_rebuild", None)
         if restored.get("prefill_attention_mask_2d") is None:
             raise RuntimeError("multimodal runtime-only generate scaffold 缺少 prefill_attention_mask_2d。")
         return restored
 
-    needs_restore = bool(bundle.pop("runtime_only_prompt_local_rebuild", False))
-    is_first_stage = int(bundle["start_idx"]) == 0
+    needs_restore = bool(stage_state.pop("runtime_only_prompt_local_rebuild", False))
+    is_first_stage = int(stage_state["start_idx"]) == 0
     if (
         not needs_restore
-        and bundle.get("prefill_attention_mask_2d") is not None
-        and (not is_first_stage or bundle.get("input_ids") is not None)
+        and stage_state.get("prefill_attention_mask_2d") is not None
+        and (not is_first_stage or stage_state.get("input_ids") is not None)
     ):
-        return bundle
+        return stage_state
 
     prompt_metadata = _resolve_text_prompt_meta(runtime_config)
     input_ids = _runtime_tensor(prompt_metadata["input_ids"], device=torch.device("cpu"))
@@ -223,7 +223,7 @@ def _restore_text_prompt_bundle(
         prompt_metadata.get("attention_mask"),
     )
 
-    restored = dict(bundle)
+    restored = dict(stage_state)
     restored["prefill_attention_mask_2d"] = _runtime_tensor(
         attention_mask_2d,
         device=torch.device("cpu"),
@@ -234,6 +234,14 @@ def _restore_text_prompt_bundle(
     if is_first_stage:
         restored["input_ids"] = input_ids
     return restored
+
+
+def _restore_text_prompt_bundle(
+    bundle: dict[str, Any],
+    *,
+    runtime_config: dict[str, Any],
+) -> dict[str, Any]:
+    return _restore_text_prompt_stage_state(bundle, runtime_config=runtime_config)
 
 
 def _prep_rt_text_session(

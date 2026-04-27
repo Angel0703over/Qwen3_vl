@@ -10,9 +10,11 @@ from __future__ import annotations
 from importlib import import_module
 from typing import Any
 
-from qwen3vl_tp_runtime.models.qwen3vl.execution import (
+from ...hexgen_core.schema import StageState
+from .execution import (
     apply_deepstack,
     compose_layer_bundle,
+    compose_layer_state,
     forward_attention_cached,
     forward_attention_cached_tp,
     forward_attention,
@@ -51,7 +53,7 @@ from qwen3vl_tp_runtime.models.qwen3vl.execution import (
     trace_text_stage,
     trace_text_stage_tp,
 )
-from qwen3vl_tp_runtime.models.qwen3vl.processing import (
+from .processing import (
     build_inputs,
     build_text_inputs,
     inspect_model_weights,
@@ -61,7 +63,7 @@ from qwen3vl_tp_runtime.models.qwen3vl.processing import (
     load_processor,
     load_tensors_by_name,
 )
-from qwen3vl_tp_runtime.models.qwen3vl.live import (
+from .live import (
     MultimodalRuntimeInputs,
     build_cache_by_layer_from_past_key_values,
     build_live_multimodal_stage_bundle,
@@ -71,7 +73,7 @@ from qwen3vl_tp_runtime.models.qwen3vl.live import (
     prepare_text_decode_runtime_inputs,
     prepare_text_prefill_runtime_inputs,
 )
-from qwen3vl_tp_runtime.models.qwen3vl.weights import (
+from .weights import (
     ModelWeightIndex,
     TextDecoderStageWeightPlan,
     TextModelConfigSpec,
@@ -87,18 +89,23 @@ from qwen3vl_tp_runtime.models.qwen3vl.weights import (
     prepare_text_decode_runtime_inputs_from_weights,
     prepare_text_prefill_runtime_inputs_from_weights,
 )
-from qwen3vl_tp_runtime.models.qwen3vl.runtime_builder import (
+from .runtime_builder import (
     DirectStageBundleBuilder,
+    DirectStageStateBuilder,
+    StageStateLoader,
     build_direct_hybrid_manifest,
     build_direct_pipeline_manifest,
+    build_direct_tp_manifest,
     build_direct_stage_bundle,
+    build_direct_stage_state,
+    materialize_text_stage_state,
 )
-from qwen3vl_tp_runtime.models.qwen3vl.vision import (
+from .vision import (
     encode_image_features,
     encode_video_features,
     materialize_visual_features,
 )
-from qwen3vl_tp_runtime.models.qwen3vl.functional import (
+from .functional import (
     apply_rope,
     attn_eager,
     build_causal_mask,
@@ -112,6 +119,7 @@ from qwen3vl_tp_runtime.models.qwen3vl.functional import (
 )
 
 DIRECT_RUNTIME_EXPORTS = [
+    "StageState",
     "build_inputs",
     "build_text_inputs",
     "inspect_model_weights",
@@ -141,15 +149,17 @@ DIRECT_RUNTIME_EXPORTS = [
     "prepare_text_prefill_runtime_inputs_from_weights",
     "extract_decoder_layer_params_live",
     "build_cache_by_layer_from_past_key_values",
-    "build_live_multimodal_stage_bundle",
-    "DirectStageBundleBuilder",
-    "build_direct_stage_bundle",
+    "DirectStageStateBuilder",
+    "StageStateLoader",
+    "build_direct_stage_state",
     "build_direct_pipeline_manifest",
+    "build_direct_tp_manifest",
     "build_direct_hybrid_manifest",
+    "materialize_text_stage_state",
     "encode_image_features",
     "encode_video_features",
     "materialize_visual_features",
-    "compose_layer_bundle",
+    "compose_layer_state",
     "apply_deepstack",
     "get_deepstack_embeds",
     "forward_attention_cached",
@@ -223,10 +233,20 @@ LEGACY_CAPTURE_EXPORTS = [
     "run_forward_with_runtime_hook",
 ]
 
+LEGACY_STAGE_BUNDLE_EXPORTS = [
+    "DirectStageBundleBuilder",
+    "build_direct_stage_bundle",
+    "build_live_multimodal_stage_bundle",
+    "compose_layer_bundle",
+]
+
 __all__ = [*DIRECT_RUNTIME_EXPORTS]
 
 
 def __getattr__(name: str) -> Any:
+    if name in LEGACY_STAGE_BUNDLE_EXPORTS:
+        value = globals()[name]
+        return value
     if name in LEGACY_CAPTURE_EXPORTS:
         capture_mod = import_module("qwen3vl_tp_runtime.models.qwen3vl.capture")
         value = getattr(capture_mod, name)
@@ -236,4 +256,9 @@ def __getattr__(name: str) -> Any:
 
 
 def __dir__() -> list[str]:
-    return sorted(set(globals()) | set(DIRECT_RUNTIME_EXPORTS) | set(LEGACY_CAPTURE_EXPORTS))
+    return sorted(
+        set(globals())
+        | set(DIRECT_RUNTIME_EXPORTS)
+        | set(LEGACY_CAPTURE_EXPORTS)
+        | set(LEGACY_STAGE_BUNDLE_EXPORTS)
+    )
