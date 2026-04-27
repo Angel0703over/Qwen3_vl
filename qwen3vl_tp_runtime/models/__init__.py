@@ -3,9 +3,9 @@
 Prefer importing from the concrete family module such as
 `qwen3vl_tp_runtime.models.qwen3vl.*`.
 
-This package keeps the historical flat `qwen3vl_tp_runtime.models.*` surface only
-for compatibility, and resolves names lazily so the main direct-runtime path is
-not coupled to legacy capture/replay helpers by default.
+`__all__` describes only the direct-runtime surface. The historical flat
+`qwen3vl_tp_runtime.models.*` compatibility attributes for capture/replay remain
+lazy and are listed separately under `LEGACY_CAPTURE_EXPORTS`.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from __future__ import annotations
 from importlib import import_module
 from typing import Any
 
-_MAIN_EXPORTS = [
+DIRECT_RUNTIME_EXPORTS = [
     "DirectStageBundleBuilder",
     "extract_decoder_layer_params_live",
     "inspect_model_weights",
@@ -102,7 +102,7 @@ _MAIN_EXPORTS = [
     "repeat_kv",
 ]
 
-_LEGACY_CAPTURE_EXPORTS = [
+LEGACY_CAPTURE_EXPORTS = [
     "capture_decoder_layer_params",
     "capture_multimodal_decode_bundle",
     "capture_multimodal_decode_stage_bundle",
@@ -125,11 +125,11 @@ _LEGACY_CAPTURE_EXPORTS = [
     "run_forward_with_runtime_hook",
 ]
 
-__all__ = [*_MAIN_EXPORTS, *_LEGACY_CAPTURE_EXPORTS]
+__all__ = [*DIRECT_RUNTIME_EXPORTS]
 
 
 def __getattr__(name: str) -> Any:
-    if name in __all__:
+    if name in DIRECT_RUNTIME_EXPORTS or name in LEGACY_CAPTURE_EXPORTS:
         model_mod = import_module("qwen3vl_tp_runtime.models.qwen3vl")
         value = getattr(model_mod, name)
         globals()[name] = value
@@ -138,4 +138,4 @@ def __getattr__(name: str) -> Any:
 
 
 def __dir__() -> list[str]:
-    return sorted(set(globals()) | set(__all__))
+    return sorted(set(globals()) | set(DIRECT_RUNTIME_EXPORTS) | set(LEGACY_CAPTURE_EXPORTS))

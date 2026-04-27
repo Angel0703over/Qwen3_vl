@@ -24,6 +24,11 @@ from qwen3vl_tp_runtime.hexgen_core import (
     run_text_pipeline_rank,
 )
 from qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel import TextHybridRunner
+from qwen3vl_tp_runtime.hexgen_core.modules.tp_debug import TpDebugConfig
+from qwen3vl_tp_runtime.models.qwen3vl import (
+    build_direct_hybrid_manifest,
+    build_direct_pipeline_manifest,
+)
 from qwen3vl_tp_runtime.models.qwen3vl.processing import (
     build_inputs,
     build_text_inputs,
@@ -35,6 +40,8 @@ from qwen3vl_tp_runtime.scripts.runtime_cli import (
     _emit_debug_path_warnings,
     _load_hybrid_manifest_for_args,
     _load_pipeline_manifest_for_args,
+    _reject_unsupported_debug_transport_backend,
+    _reject_unsupported_generate_debug_flags,
     _require_debug_path_opt_in,
     _resolve_defaults,
     _validate_args,
@@ -204,6 +211,12 @@ def _run_hybrid_family(args: argparse.Namespace, *, backend: str) -> None:
     manifest = _load_hybrid_manifest_for_args(args, backend=backend)
     rank, world_size = init_dist()
     device = get_device(args.device)
+    debug_config = TpDebugConfig(
+        compare_direct=args.compare_direct,
+        trace_layers=args.trace_layers,
+        dump_layer=args.dump_layer,
+        dump_topk=args.dump_topk,
+    )
     runner = TextHybridRunner(
         manifest=manifest,
         device=device,
@@ -211,10 +224,7 @@ def _run_hybrid_family(args: argparse.Namespace, *, backend: str) -> None:
         comm_dtype_arg=args.comm_dtype,
         tp_attn_math_mode=args.tp_attn_math,
         tp_mlp_math_mode=args.tp_mlp_math,
-        compare_direct=args.compare_direct,
-        trace_layers=args.trace_layers,
-        dump_layer=args.dump_layer,
-        dump_topk=args.dump_topk,
+        debug_config=debug_config,
         return_tensors=True,
     )
     stats = runner.run_rank(rank, world_size)
@@ -223,9 +233,7 @@ def _run_hybrid_family(args: argparse.Namespace, *, backend: str) -> None:
         manifest,
         backend=backend,
         topk=args.dump_topk,
-        compare_direct=args.compare_direct,
-        trace_layers=args.trace_layers,
-        dump_layer=args.dump_layer,
+        debug_config=debug_config,
     )
     summary = _attach_generated_texts(summary, args)
     print(json.dumps(summary, ensure_ascii=False, indent=2))
@@ -299,9 +307,31 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser.add_argument("--tp-attn-math", choices=["orig", "float32", "bfloat16"], default="orig")
     parser.add_argument("--tp-mlp-math", choices=["orig", "float32", "bfloat16"], default="orig")
-    parser.add_argument("--compare-direct", action="store_true")
-    parser.add_argument("--trace-layers", action="store_true")
-    parser.add_argument("--dump-layer", type=int, default=None)
+    parser.add_argument(
+        "--compare-direct",
+        action="store_true",
+        help=(
+            "Debug-only direct/reference compare path for backend=tp|hybrid non-generate runs. "
+            "Requires --allow-debug-paths."
+        ),
+    )
+    parser.add_argument(
+        "--trace-layers",
+        action="store_true",
+        help=(
+            "Debug-only layer trace path for backend=tp|hybrid non-generate runs. "
+            "Requires --allow-debug-paths."
+        ),
+    )
+    parser.add_argument(
+        "--dump-layer",
+        type=int,
+        default=None,
+        help=(
+            "Debug-only layer dump path for backend=tp|hybrid non-generate runs. "
+            "Requires --allow-debug-paths."
+        ),
+    )
     parser.add_argument("--dump-topk", type=int, default=None)
     parser.add_argument("--attn-implementation", type=str, default="eager")
     parser.add_argument("--do-sample", action="store_true")
@@ -322,6 +352,8 @@ def run_args(args: argparse.Namespace, parser: argparse.ArgumentParser | None = 
     if parser is None:
         parser = build_parser()
     _resolve_defaults(args)
+    _reject_unsupported_debug_transport_backend(parser, args)
+    _reject_unsupported_generate_debug_flags(parser, args)
     _require_debug_path_opt_in(parser, args)
     _validate_args(parser, args)
     _emit_debug_path_warnings(args)

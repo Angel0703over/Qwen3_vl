@@ -6,12 +6,19 @@ import argparse
 import sys
 
 from qwen3vl_tp_runtime.hexgen_core import parse_stage_ranges
+from qwen3vl_tp_runtime.scripts.runtime_replay import (
+    load_debug_hybrid_manifest,
+    load_debug_pipeline_manifest,
+)
 
 
 def _runtime_dep(name: str, fallback=None):
     runtime_mod = sys.modules.get("qwen3vl_tp_runtime.scripts.runtime")
     if runtime_mod is not None and hasattr(runtime_mod, name):
         return getattr(runtime_mod, name)
+    main_mod = sys.modules.get("__main__")
+    if main_mod is not None and hasattr(main_mod, name):
+        return getattr(main_mod, name)
     if fallback is not None:
         return fallback
     raise AttributeError(name)
@@ -34,6 +41,8 @@ def _resolve_defaults(args: argparse.Namespace) -> None:
 
 
 def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    _reject_unsupported_debug_transport_backend(parser, args)
+    _reject_unsupported_generate_debug_flags(parser, args)
     live_runners = _runtime_dep("LIVE_RUNNERS")
 
     if args.backend == "hf":
@@ -71,16 +80,72 @@ def _debug_path_warnings(args: argparse.Namespace) -> list[str]:
             f"[warning] backend={args.backend} --manifest-path 已降级为调试/回放路径；"
             "推荐省略 --manifest-path，直接从 model_path 构建运行参数。"
         )
+    debug_flags = _debug_transport_flags(args)
+    if _supports_debug_transport_backend(args) and debug_flags:
+        warnings.append(
+            f"[warning] backend={args.backend} {' '.join(debug_flags)} 已归类为调试路径；"
+            "这会重新启用更重的 reference/trace transport。"
+            "主路径建议省略这些标志。"
+        )
     return warnings
 
 
+def _debug_transport_flags(args: argparse.Namespace) -> list[str]:
+    flags: list[str] = []
+    if getattr(args, "compare_direct", False):
+        flags.append("--compare-direct")
+    if getattr(args, "trace_layers", False):
+        flags.append("--trace-layers")
+    if getattr(args, "dump_layer", None) is not None:
+        flags.append("--dump-layer")
+    return flags
+
+
+def _supports_debug_transport_backend(args: argparse.Namespace) -> bool:
+    return args.backend in {"tp", "hybrid"}
+
+
+def _reject_unsupported_debug_transport_backend(
+    parser: argparse.ArgumentParser,
+    args: argparse.Namespace,
+) -> None:
+    debug_flags = _debug_transport_flags(args)
+    if not debug_flags or _supports_debug_transport_backend(args):
+        return
+    parser.error(
+        f"backend={args.backend} 当前不支持 {' '.join(debug_flags)}；"
+        "这些标志目前只在 backend=tp|hybrid 的调试路径上有效。"
+    )
+
+
+def _reject_unsupported_generate_debug_flags(
+    parser: argparse.ArgumentParser,
+    args: argparse.Namespace,
+) -> None:
+    debug_flags = _debug_transport_flags(args)
+    if args.mode != "generate" or not debug_flags:
+        return
+    parser.error(
+        f"--mode generate 当前不支持 {' '.join(debug_flags)}；"
+        "这些标志目前只在非 generate 的 TP/hybrid 调试路径上有效。"
+    )
+
+
 def _is_debug_path(args: argparse.Namespace) -> bool:
-    return args.backend in {"pp", "tp", "hybrid"} and getattr(args, "manifest_path", None) is not None
+    if args.backend in {"pp", "tp", "hybrid"} and getattr(args, "manifest_path", None) is not None:
+        return True
+    return _supports_debug_transport_backend(args) and bool(_debug_transport_flags(args))
 
 
 def _debug_path_label(args: argparse.Namespace) -> str | None:
-    if args.backend in {"pp", "tp", "hybrid"} and getattr(args, "manifest_path", None) is not None:
-        return f"backend={args.backend} --manifest-path"
+    if args.backend in {"pp", "tp", "hybrid"}:
+        debug_parts: list[str] = []
+        if getattr(args, "manifest_path", None) is not None:
+            debug_parts.append("--manifest-path")
+        if _supports_debug_transport_backend(args):
+            debug_parts.extend(_debug_transport_flags(args))
+        if debug_parts:
+            return f"backend={args.backend} {' '.join(debug_parts)}"
     return None
 
 
@@ -92,7 +157,7 @@ def _require_debug_path_opt_in(parser: argparse.ArgumentParser, args: argparse.N
         return
     parser.error(
         f"{label} 已降级为调试路径；如确需使用，请显式传 --allow-debug-paths。"
-        "推荐使用 backend=pp|tp|hybrid 直接从 model_path 构建运行参数。"
+        "推荐省略这些调试入口，直接使用 backend=pp|tp|hybrid 从 model_path 构建运行参数。"
     )
 
 
@@ -102,7 +167,9 @@ def _emit_debug_path_warnings(args: argparse.Namespace) -> None:
 
 
 def _build_direct_manifest_kwargs(args: argparse.Namespace) -> dict:
-    include_runtime_reference = args.compare_direct or args.trace_layers or args.dump_layer is not None
+    include_runtime_reference = _supports_debug_transport_backend(args) and (
+        args.compare_direct or args.trace_layers or args.dump_layer is not None
+    )
     kwargs = {
         "modality": args.modality,
         "mode": args.mode,
@@ -130,7 +197,7 @@ def _build_direct_manifest_kwargs(args: argparse.Namespace) -> dict:
 def _load_pipeline_manifest_for_args(args: argparse.Namespace):
     if args.manifest_path is None:
         return _runtime_dep("build_direct_pipeline_manifest")(**_build_direct_manifest_kwargs(args))
-    return _runtime_dep("load_pipeline_manifest")(args.manifest_path)
+    return load_debug_pipeline_manifest(args.manifest_path)
 
 
 def _load_hybrid_manifest_for_args(args: argparse.Namespace, *, backend: str):
@@ -140,7 +207,7 @@ def _load_hybrid_manifest_for_args(args: argparse.Namespace, *, backend: str):
             tp_degrees=args.tp_degrees,
             backend=backend,
         )
-    return _runtime_dep("load_hybrid_manifest")(args.manifest_path)
+    return load_debug_hybrid_manifest(args.manifest_path)
 
 
 __all__ = [
@@ -149,7 +216,10 @@ __all__ = [
     "_emit_debug_path_warnings",
     "_load_hybrid_manifest_for_args",
     "_load_pipeline_manifest_for_args",
+    "_reject_unsupported_debug_transport_backend",
+    "_reject_unsupported_generate_debug_flags",
     "_require_debug_path_opt_in",
     "_resolve_defaults",
+    "_supports_debug_transport_backend",
     "_validate_args",
 ]

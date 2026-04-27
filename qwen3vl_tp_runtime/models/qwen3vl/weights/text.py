@@ -17,6 +17,7 @@ from qwen3vl_tp_runtime.models.qwen3vl.weights.loader import load_tensors_from_i
 from qwen3vl_tp_runtime.models.qwen3vl.weights.planner import (
     TextDecoderStageWeightPlan,
     TextTensorParallelShardPlan,
+    build_text_decoder_stage_tp_sharded_parameter_names,
     build_text_decoder_stage_tp_shard_plan,
     build_text_decoder_stage_weight_plan,
 )
@@ -64,6 +65,8 @@ class TextStageWeightBundle:
     tp_local_num_attention_heads: int | None = None
     tp_local_num_key_value_heads: int | None = None
     tp_local_intermediate_size: int | None = None
+    tp_sharded_parameter_names: tuple[str, ...] = ()
+    tp_replicated_parameter_names: tuple[str, ...] = ()
 
 
 def load_text_model_config_spec(
@@ -152,6 +155,7 @@ def load_text_decoder_stage_weight_bundle(
         is_first_stage=is_first_stage,
         is_last_stage=is_last_stage,
     )
+    _validate_tp_shard_plan_covers_stage_parameters(plan, shard_plan)
     loaded_tensors = load_tensors_from_index(
         index,
         plan.resolved_parameter_names,
@@ -217,7 +221,52 @@ def load_text_decoder_stage_weight_bundle(
         tp_local_num_attention_heads=None if shard_plan is None else shard_plan.local_num_attention_heads,
         tp_local_num_key_value_heads=None if shard_plan is None else shard_plan.local_num_key_value_heads,
         tp_local_intermediate_size=None if shard_plan is None else shard_plan.local_intermediate_size,
+        tp_sharded_parameter_names=_tp_sharded_parameter_names(plan, shard_plan),
+        tp_replicated_parameter_names=_tp_replicated_parameter_names(plan, shard_plan),
     )
+
+
+def _validate_tp_shard_plan_covers_stage_parameters(
+    plan: TextDecoderStageWeightPlan,
+    shard_plan: TextTensorParallelShardPlan | None,
+) -> None:
+    if shard_plan is None:
+        return
+
+    required_sharded_names = set(
+        build_text_decoder_stage_tp_sharded_parameter_names(
+            start_idx=plan.start_idx,
+            end_idx=plan.end_idx,
+        )
+    )
+    resolved_required_names = required_sharded_names.intersection(plan.resolved_parameter_names)
+    missing_slice_names = sorted(
+        tensor_name for tensor_name in resolved_required_names if tensor_name not in shard_plan.tensor_slices
+    )
+    if missing_slice_names:
+        raise RuntimeError(
+            "TP shard-only text loader 缺少必须的 tensor slice 规划，"
+            f"rank={shard_plan.rank}/{shard_plan.world_size} missing={missing_slice_names}"
+        )
+
+
+def _tp_sharded_parameter_names(
+    plan: TextDecoderStageWeightPlan,
+    shard_plan: TextTensorParallelShardPlan | None,
+) -> tuple[str, ...]:
+    if shard_plan is None:
+        return ()
+    return tuple(sorted(set(plan.resolved_parameter_names).intersection(shard_plan.tensor_slices)))
+
+
+def _tp_replicated_parameter_names(
+    plan: TextDecoderStageWeightPlan,
+    shard_plan: TextTensorParallelShardPlan | None,
+) -> tuple[str, ...]:
+    if shard_plan is None:
+        return ()
+    sharded_names = set(_tp_sharded_parameter_names(plan, shard_plan))
+    return tuple(sorted(tensor_name for tensor_name in plan.resolved_parameter_names if tensor_name not in sharded_names))
 
 
 def _build_text_layer_bundle(

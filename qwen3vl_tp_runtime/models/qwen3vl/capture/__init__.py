@@ -27,7 +27,7 @@ from qwen3vl_tp_runtime.models.qwen3vl.capture.text import (
     capture_text_prefill_stage_bundle,
 )
 
-__all__ = [
+LEGACY_CAPTURE_EXPORTS = [
     "capture_decoder_layer_params",
     "capture_full_layer_bundle",
     "capture_layer_range_bundle",
@@ -49,3 +49,5 @@ __all__ = [
     "capture_multimodal_prefill_stage_bundle",
     "capture_text_stage_bundle",
 ]
+
+__all__ = [*LEGACY_CAPTURE_EXPORTS]

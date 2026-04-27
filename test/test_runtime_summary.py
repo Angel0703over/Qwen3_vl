@@ -5,6 +5,7 @@ import unittest
 import torch
 
 from qwen3vl_tp_runtime.hexgen_core.schema import StageSpec, TextHybridManifest, TextPipelineManifest
+from qwen3vl_tp_runtime.hexgen_core.modules.tp_debug import TpDebugConfig
 from qwen3vl_tp_runtime.scripts.runtime_summary import (
     _summarize_hybrid_run,
     _summarize_pipeline_generate_run,
@@ -125,6 +126,13 @@ class RuntimeSummaryTest(unittest.TestCase):
             "leader_rank": 2,
             "current_pp_group": [2],
             "num_stages": 1,
+            "weight_load": {
+                "tp_weight_sharded": False,
+                "tp_shard_rank": None,
+                "tp_shard_world_size": None,
+                "loaded_weight_tensor_count": 3,
+                "loaded_weight_tensor_bytes": 128,
+            },
             "prefill_seq_len": 4,
             "max_new_tokens": 3,
             "prefill": _build_generate_phase_stats(3),
@@ -142,9 +150,7 @@ class RuntimeSummaryTest(unittest.TestCase):
             manifest,
             backend="hybrid",
             topk=2,
-            compare_direct=False,
-            trace_layers=False,
-            dump_layer=None,
+            debug_config=TpDebugConfig(),
         )
 
         self.assertIn("prefill_topk", summary)
@@ -154,6 +160,7 @@ class RuntimeSummaryTest(unittest.TestCase):
         self.assertNotIn("token_match", summary)
         self.assertEqual(len(summary["step_topks"]), 2)
         self.assertNotIn("reference_topk", summary["step_topks"][0])
+        self.assertEqual(summary["weight_load"]["loaded_weight_tensor_bytes"], 128)
 
 
 if __name__ == "__main__":

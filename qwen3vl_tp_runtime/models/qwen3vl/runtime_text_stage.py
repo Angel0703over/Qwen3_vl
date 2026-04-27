@@ -32,6 +32,99 @@ def _dtype_name(dtype: torch.dtype) -> str:
     return str(dtype).replace("torch.", "")
 
 
+_TEXT_TENSOR_REF = "__tensor_ref__"
+_TEXT_TUPLE_REF = "__tuple_ref__"
+
+_TEXT_TOP_LEVEL_WEIGHT_KEYS = (
+    "embed_tokens_weight",
+    "final_norm_weight",
+    "lm_head_weight",
+    "lm_head_bias",
+)
+
+_TEXT_LAYER_WEIGHT_KEYS = (
+    "q_weight",
+    "q_bias",
+    "k_weight",
+    "k_bias",
+    "v_weight",
+    "v_bias",
+    "o_weight",
+    "o_bias",
+    "q_norm_weight",
+    "k_norm_weight",
+    "gate_weight",
+    "gate_bias",
+    "up_weight",
+    "up_bias",
+    "down_weight",
+    "down_bias",
+    "input_ln_weight",
+    "post_attn_ln_weight",
+)
+
+
+def _clone_tensor_cpu(tensor: torch.Tensor | None) -> torch.Tensor | None:
+    return _runtime_tensor(tensor, device=torch.device("cpu"))
+
+
+def _weight_tensor_key(tensor: torch.Tensor) -> tuple[str, int, tuple[int, ...], str]:
+    return (str(tensor.device), int(tensor.data_ptr()), tuple(tensor.shape), str(tensor.dtype))
+
+
+def _weight_tensor_bytes(tensor: torch.Tensor) -> int:
+    return int(tensor.numel() * tensor.element_size())
+
+
+def summarize_text_weight_load(bundle: dict[str, Any]) -> dict[str, Any]:
+    """Return compact, JSON-safe evidence for rank-local text weight materialization."""
+
+    named_tensors: list[tuple[str, torch.Tensor]] = []
+    for key in _TEXT_TOP_LEVEL_WEIGHT_KEYS:
+        value = bundle.get(key)
+        if torch.is_tensor(value):
+            named_tensors.append((key, value))
+
+    for layer_pos, layer_bundle in enumerate(bundle.get("layers", [])):
+        if not isinstance(layer_bundle, dict):
+            continue
+        layer_idx = layer_bundle.get("layer_idx", layer_pos)
+        for key in _TEXT_LAYER_WEIGHT_KEYS:
+            value = layer_bundle.get(key)
+            if torch.is_tensor(value):
+                named_tensors.append((f"layers.{layer_idx}.{key}", value))
+
+    unique_tensors: dict[tuple[str, int, tuple[int, ...], str], tuple[str, torch.Tensor]] = {}
+    for name, tensor in named_tensors:
+        unique_tensors.setdefault(_weight_tensor_key(tensor), (name, tensor))
+
+    tensor_examples = [
+        {
+            "name": name,
+            "shape": list(tensor.shape),
+            "dtype": str(tensor.dtype),
+            "bytes": _weight_tensor_bytes(tensor),
+        }
+        for name, tensor in list(unique_tensors.values())[:8]
+    ]
+    sharded_parameter_names = tuple(bundle.get("tp_sharded_parameter_names") or ())
+    replicated_parameter_names = tuple(bundle.get("tp_replicated_parameter_names") or ())
+    loaded_weight_tensor_bytes = sum(_weight_tensor_bytes(tensor) for _name, tensor in unique_tensors.values())
+    return {
+        "tp_weight_sharded": bool(bundle.get("tp_weight_sharded", False)),
+        "tp_shard_rank": bundle.get("tp_shard_rank"),
+        "tp_shard_world_size": bundle.get("tp_shard_world_size"),
+        "loaded_weight_tensor_count": len(unique_tensors),
+        "loaded_weight_tensor_bytes": loaded_weight_tensor_bytes,
+        "loaded_weight_tensor_mib": round(loaded_weight_tensor_bytes / (1024 * 1024), 3),
+        "loaded_weight_tensor_examples": tensor_examples,
+        "tp_sharded_parameter_count": len(sharded_parameter_names),
+        "tp_replicated_parameter_count": len(replicated_parameter_names),
+        "tp_sharded_parameter_examples": list(sharded_parameter_names[:8]),
+        "tp_replicated_parameter_examples": list(replicated_parameter_names[:8]),
+    }
+
+
 def _strip_text_phase(phase_payload: dict[str, Any]) -> dict[str, Any]:
     compact_payload = dict(phase_payload)
     compact_payload.pop("attention_mask", None)
@@ -65,6 +158,126 @@ def compact_rt_text_scaffold(bundle: dict[str, Any]) -> dict[str, Any]:
     return scaffold
 
 
+def _pack_text_transport_value(
+    value: Any,
+    *,
+    path: tuple[str, ...],
+    tensor_payload: dict[str, torch.Tensor | None],
+) -> Any:
+    if torch.is_tensor(value):
+        key = ".".join(path)
+        tensor_payload[key] = _clone_tensor_cpu(value)
+        return {_TEXT_TENSOR_REF: key}
+    if isinstance(value, dict):
+        return {
+            key: _pack_text_transport_value(
+                item,
+                path=(*path, str(key)),
+                tensor_payload=tensor_payload,
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [
+            _pack_text_transport_value(
+                item,
+                path=(*path, str(index)),
+                tensor_payload=tensor_payload,
+            )
+            for index, item in enumerate(value)
+        ]
+    if isinstance(value, tuple):
+        return {
+            _TEXT_TUPLE_REF: [
+                _pack_text_transport_value(
+                    item,
+                    path=(*path, str(index)),
+                    tensor_payload=tensor_payload,
+                )
+                for index, item in enumerate(value)
+            ]
+        }
+    return value
+
+
+def pack_text_scaffold_transport(
+    scaffold: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, torch.Tensor | None]]:
+    tensor_payload: dict[str, torch.Tensor | None] = {}
+    meta = _pack_text_transport_value(
+        scaffold,
+        path=("scaffold",),
+        tensor_payload=tensor_payload,
+    )
+    if not isinstance(meta, dict):
+        raise RuntimeError("text scaffold transport meta 必须是 dict。")
+    return (
+        {
+            "version": 1,
+            "scaffold": meta,
+        },
+        tensor_payload,
+    )
+
+
+def _restore_text_transport_value(
+    value: Any,
+    *,
+    tensor_payload: dict[str, torch.Tensor | None],
+) -> Any:
+    if isinstance(value, dict):
+        tensor_ref = value.get(_TEXT_TENSOR_REF)
+        if isinstance(tensor_ref, str):
+            if tensor_ref not in tensor_payload:
+                raise RuntimeError(f"text scaffold transport 缺少 tensor payload: {tensor_ref}")
+            return _clone_tensor_cpu(tensor_payload[tensor_ref])
+        tuple_ref = value.get(_TEXT_TUPLE_REF)
+        if isinstance(tuple_ref, list):
+            return tuple(
+                _restore_text_transport_value(
+                    item,
+                    tensor_payload=tensor_payload,
+                )
+                for item in tuple_ref
+            )
+        return {
+            key: _restore_text_transport_value(
+                item,
+                tensor_payload=tensor_payload,
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [
+            _restore_text_transport_value(
+                item,
+                tensor_payload=tensor_payload,
+            )
+            for item in value
+        ]
+    return value
+
+
+def restore_text_scaffold_transport(
+    meta: dict[str, Any],
+    tensor_payload: dict[str, torch.Tensor | None] | None,
+) -> dict[str, Any]:
+    if not isinstance(meta, dict):
+        raise RuntimeError("text scaffold transport meta 缺少 metadata。")
+    if tensor_payload is None:
+        raise RuntimeError("text scaffold transport 缺少 tensor payload。")
+    scaffold_meta = meta.get("scaffold")
+    if not isinstance(scaffold_meta, dict):
+        raise RuntimeError("text scaffold transport meta 缺少 scaffold。")
+    restored = _restore_text_transport_value(
+        scaffold_meta,
+        tensor_payload=tensor_payload,
+    )
+    if not isinstance(restored, dict):
+        raise RuntimeError("text scaffold transport 恢复结果不是 dict。")
+    return restored
+
+
 def build_rt_text_bundle(
     *,
     spec: StageSpec,
@@ -95,6 +308,8 @@ def build_rt_text_bundle(
         "tp_weight_sharded": False if text_stage_weights is None else text_stage_weights.tp_weight_sharded,
         "tp_shard_rank": None if text_stage_weights is None else text_stage_weights.tp_shard_rank,
         "tp_shard_world_size": None if text_stage_weights is None else text_stage_weights.tp_shard_world_size,
+        "tp_sharded_parameter_names": () if text_stage_weights is None else text_stage_weights.tp_sharded_parameter_names,
+        "tp_replicated_parameter_names": () if text_stage_weights is None else text_stage_weights.tp_replicated_parameter_names,
     }
 
 
@@ -220,6 +435,8 @@ def materialize_text_stage_bundle(
     bundle["tp_weight_sharded"] = stage_weights.tp_weight_sharded
     bundle["tp_shard_rank"] = stage_weights.tp_shard_rank
     bundle["tp_shard_world_size"] = stage_weights.tp_shard_world_size
+    bundle["tp_sharded_parameter_names"] = stage_weights.tp_sharded_parameter_names
+    bundle["tp_replicated_parameter_names"] = stage_weights.tp_replicated_parameter_names
     bundle.pop("cache_by_layer", None)
 
     if start_idx == 0 and stage_weights.embed_tokens_weight is not None:
@@ -237,4 +454,3 @@ def materialize_text_stage_bundle(
         config_spec=config_spec,
         compute_dtype=compute_dtype,
     )
-

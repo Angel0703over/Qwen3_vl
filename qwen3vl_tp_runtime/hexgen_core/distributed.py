@@ -201,6 +201,78 @@ def recv_object_cpu(src: int, label: str | None = None) -> Any:
     return _deserialize_object_from_uint8(payload)
 
 
+def send_tensor_payload_cpu(
+    payload: dict[str, torch.Tensor | None] | None,
+    dst: int,
+    *,
+    label: str | None = None,
+    comm_dtype: torch.dtype | None = None,
+):
+    from qwen3vl_tp_runtime.hexgen_core.transport import send_payload
+
+    startup_log(
+        "tensor-send",
+        f"sending {label or 'payload'} to dst={dst} tensors={0 if payload is None else len(payload)}",
+    )
+    summary = send_payload(payload, dst=dst, comm_dtype=comm_dtype)
+    startup_log(
+        "tensor-send",
+        f"sent {label or 'payload'} to dst={dst} tensors={summary.num_tensors}",
+    )
+    return summary
+
+
+def recv_tensor_payload_cpu(
+    src: int,
+    *,
+    label: str | None = None,
+    target_dtypes: dict[str, torch.dtype] | None = None,
+) -> dict[str, torch.Tensor | None] | None:
+    from qwen3vl_tp_runtime.hexgen_core.transport import recv_payload
+
+    startup_log("tensor-recv", f"waiting {label or 'payload'} from src={src}")
+    payload = recv_payload(
+        src=src,
+        device=torch.device("cpu"),
+        target_dtypes=target_dtypes,
+    )
+    startup_log(
+        "tensor-recv",
+        f"received {label or 'payload'} from src={src} tensors={0 if payload is None else len(payload)}",
+    )
+    return payload
+
+
+def broadcast_tensor_payload_cpu(
+    payload: dict[str, torch.Tensor | None] | None,
+    *,
+    src: int,
+    group=None,
+    label: str | None = None,
+    target_dtypes: dict[str, torch.dtype] | None = None,
+    comm_dtype: torch.dtype | None = None,
+) -> dict[str, torch.Tensor | None] | None:
+    from qwen3vl_tp_runtime.hexgen_core.transport import broadcast_payload
+
+    startup_log(
+        "tensor-bcast",
+        f"broadcasting {label or 'payload'} src={src} local_has_payload={payload is not None}",
+    )
+    restored = broadcast_payload(
+        payload,
+        src=src,
+        device=torch.device("cpu"),
+        group=group,
+        target_dtypes=target_dtypes,
+        comm_dtype=comm_dtype,
+    )
+    startup_log(
+        "tensor-bcast",
+        f"broadcast done for {label or 'payload'} src={src} tensors={0 if restored is None else len(restored)}",
+    )
+    return restored
+
+
 def broadcast_object_cpu(payload: Any | None, src: int, group=None, label: str | None = None) -> Any:
     if payload is None:
         serialized = None

@@ -32,6 +32,21 @@ _TEXT_LAYER_SUFFIXES = (
     "post_attention_layernorm.weight",
 )
 
+_TEXT_TP_SHARDED_LAYER_SUFFIXES = (
+    "self_attn.q_proj.weight",
+    "self_attn.q_proj.bias",
+    "self_attn.k_proj.weight",
+    "self_attn.k_proj.bias",
+    "self_attn.v_proj.weight",
+    "self_attn.v_proj.bias",
+    "self_attn.o_proj.weight",
+    "mlp.gate_proj.weight",
+    "mlp.gate_proj.bias",
+    "mlp.up_proj.weight",
+    "mlp.up_proj.bias",
+    "mlp.down_proj.weight",
+)
+
 
 @dataclass(slots=True)
 class TextDecoderStageWeightPlan:
@@ -132,6 +147,23 @@ def build_text_decoder_stage_parameter_names(
         parameter_names.append("model.language_model.norm.weight")
     if include_lm_head:
         parameter_names.extend(["lm_head.weight", "lm_head.bias"])
+    return parameter_names
+
+
+def build_text_decoder_stage_tp_sharded_parameter_names(
+    *,
+    start_idx: int,
+    end_idx: int,
+) -> list[str]:
+    """Return the tensor names that must be slice-loaded for shard-only TP."""
+
+    if start_idx > end_idx:
+        raise ValueError("start_idx 不能大于 end_idx。")
+
+    parameter_names: list[str] = []
+    for layer_idx in range(start_idx, end_idx + 1):
+        prefix = f"model.language_model.layers.{layer_idx}"
+        parameter_names.extend(f"{prefix}.{suffix}" for suffix in _TEXT_TP_SHARDED_LAYER_SUFFIXES)
     return parameter_names
 
 
@@ -255,6 +287,7 @@ __all__ = [
     "TextDecoderStageWeightPlan",
     "TextTensorParallelShardPlan",
     "build_text_decoder_stage_parameter_names",
+    "build_text_decoder_stage_tp_sharded_parameter_names",
     "build_text_decoder_stage_tp_shard_plan",
     "build_text_decoder_stage_weight_plan",
 ]

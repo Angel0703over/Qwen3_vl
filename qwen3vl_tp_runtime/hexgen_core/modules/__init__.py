@@ -3,9 +3,9 @@
 Prefer importing concrete modules such as `pipeline_parallel`, `hybrid_parallel`,
 or `tensor_parallel` directly.
 
-This package keeps the old flat surface for compatibility. Main direct-runtime
-helpers and legacy prepare/replay helpers are grouped separately and resolved
-lazily.
+`__all__` intentionally describes the direct-runtime surface. Legacy
+prepare/replay helpers remain available as lazy compatibility attributes, but
+are listed separately under `LEGACY_REPLAY_EXPORTS`.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from __future__ import annotations
 from importlib import import_module
 from typing import Any
 
-_MAIN_EXPORTS = [
+DIRECT_RUNTIME_EXPORTS = [
     "StageSpec",
     "BoundaryStats",
     "TextPipelineManifest",
@@ -32,7 +32,7 @@ _MAIN_EXPORTS = [
     "run_text_hybrid_rank",
 ]
 
-_LEGACY_DEBUG_EXPORTS = [
+LEGACY_REPLAY_EXPORTS = [
     "build_stage_bundle_path",
     "load_pipeline_manifest",
     "prepare_multimodal_decode_pipeline",
@@ -56,7 +56,7 @@ _LEGACY_DEBUG_EXPORTS = [
     "prepare_text_hybrid",
 ]
 
-__all__ = [*_MAIN_EXPORTS, *_LEGACY_DEBUG_EXPORTS]
+__all__ = [*DIRECT_RUNTIME_EXPORTS]
 
 _NAME_TO_MODULE = {
     "StageSpec": "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel",
@@ -98,8 +98,15 @@ _NAME_TO_MODULE = {
     "prepare_text_hybrid": "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel",
 }
 
+_EXPORT_GROUP_BY_NAME = {
+    **{name: "direct" for name in DIRECT_RUNTIME_EXPORTS},
+    **{name: "legacy_replay" for name in LEGACY_REPLAY_EXPORTS},
+}
+
 
 def __getattr__(name: str) -> Any:
+    if name not in _EXPORT_GROUP_BY_NAME:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     module_name = _NAME_TO_MODULE.get(name)
     if module_name is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
@@ -110,4 +117,4 @@ def __getattr__(name: str) -> Any:
 
 
 def __dir__() -> list[str]:
-    return sorted(set(globals()) | set(__all__))
+    return sorted(set(globals()) | set(DIRECT_RUNTIME_EXPORTS) | set(LEGACY_REPLAY_EXPORTS))

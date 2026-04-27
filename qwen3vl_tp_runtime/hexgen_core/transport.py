@@ -110,6 +110,56 @@ def _recv_string(src: int) -> str:
     return bytes(payload.tolist()).decode("utf-8")
 
 
+def _broadcast_scalar(
+    value: int | None,
+    *,
+    src: int,
+    group=None,
+) -> int:
+    tensor = (
+        torch.tensor([int(value)], dtype=torch.int64)
+        if value is not None
+        else torch.empty(1, dtype=torch.int64)
+    )
+    dist.broadcast(tensor, src=src, group=group)
+    return int(tensor.item())
+
+
+def _broadcast_shape(
+    shape: torch.Size | tuple[int, ...] | None,
+    *,
+    src: int,
+    group=None,
+) -> tuple[int, ...]:
+    ndim = _broadcast_scalar(None if shape is None else len(shape), src=src, group=group)
+    if ndim == 0:
+        return ()
+    if shape is not None:
+        shape_tensor = torch.tensor(list(shape), dtype=torch.int64)
+    else:
+        shape_tensor = torch.empty(ndim, dtype=torch.int64)
+    dist.broadcast(shape_tensor, src=src, group=group)
+    return tuple(int(v) for v in shape_tensor.tolist())
+
+
+def _broadcast_string(
+    value: str | None,
+    *,
+    src: int,
+    group=None,
+) -> str:
+    encoded = None if value is None else value.encode("utf-8")
+    num_bytes = _broadcast_scalar(None if encoded is None else len(encoded), src=src, group=group)
+    if num_bytes == 0:
+        return ""
+    if encoded is not None:
+        payload = torch.tensor(list(encoded), dtype=torch.uint8)
+    else:
+        payload = torch.empty(num_bytes, dtype=torch.uint8)
+    dist.broadcast(payload, src=src, group=group)
+    return bytes(payload.tolist()).decode("utf-8")
+
+
 def _dtype_to_code(dtype: torch.dtype) -> int:
     if dtype not in _DTYPE_TO_CODE:
         raise ValueError(f"transport 暂不支持 dtype={dtype!r}。")
@@ -122,8 +172,11 @@ def _code_to_dtype(code: int) -> torch.dtype:
     return _CODE_TO_DTYPE[code]
 
 
-def _resolve_wire_dtype(tensor: torch.Tensor, comm_dtype: torch.dtype) -> torch.dtype:
-    if tensor.is_floating_point():
+def _resolve_wire_dtype(
+    tensor: torch.Tensor,
+    comm_dtype: torch.dtype | None,
+) -> torch.dtype:
+    if tensor.is_floating_point() and comm_dtype is not None:
         return comm_dtype
     return tensor.dtype
 
@@ -131,7 +184,7 @@ def _resolve_wire_dtype(tensor: torch.Tensor, comm_dtype: torch.dtype) -> torch.
 def send_payload(
     payload: TensorPayload | None,
     dst: int,
-    comm_dtype: torch.dtype,
+    comm_dtype: torch.dtype | None,
 ) -> PayloadSummary:
     # payload 为 None 表示“空通信占位”，用于和异构 PP 的 dummy send/recv 对齐。
     if payload is None:
@@ -195,6 +248,89 @@ def recv_payload(
             target_dtype = target_dtypes[name]
         payload[name] = tensor_cpu.to(device=device, dtype=target_dtype)
     return payload
+
+
+def broadcast_payload(
+    payload: TensorPayload | None,
+    *,
+    src: int,
+    device: torch.device,
+    group=None,
+    target_dtypes: dict[str, torch.dtype] | None = None,
+    comm_dtype: torch.dtype | None = None,
+) -> TensorPayload | None:
+    local_is_src = dist.get_rank() == src
+    is_empty = bool(
+        _broadcast_scalar(
+            1 if local_is_src and payload is None else (0 if local_is_src else None),
+            src=src,
+            group=group,
+        )
+    )
+    if is_empty:
+        return None
+
+    items = [] if payload is None else list(payload.items())
+    num_tensors = _broadcast_scalar(
+        len(items) if local_is_src else None,
+        src=src,
+        group=group,
+    )
+    restored: TensorPayload = {}
+    for index in range(num_tensors):
+        item = items[index] if payload is not None else None
+        name = _broadcast_string(
+            None if item is None else item[0],
+            src=src,
+            group=group,
+        )
+        tensor = None if item is None else item[1]
+        has_tensor = bool(
+            _broadcast_scalar(
+                None if item is None else (0 if tensor is None else 1),
+                src=src,
+                group=group,
+            )
+        )
+        if not has_tensor:
+            restored[name] = None
+            continue
+
+        source_dtype = _code_to_dtype(
+            _broadcast_scalar(
+                None if tensor is None else _dtype_to_code(tensor.dtype),
+                src=src,
+                group=group,
+            )
+        )
+        wire_dtype = _code_to_dtype(
+            _broadcast_scalar(
+                None
+                if tensor is None
+                else _dtype_to_code(_resolve_wire_dtype(tensor, comm_dtype)),
+                src=src,
+                group=group,
+            )
+        )
+        if tensor is not None:
+            tensor_cpu = tensor.detach().to("cpu", dtype=wire_dtype).contiguous()
+            expected_shape = _broadcast_shape(tensor_cpu.shape, src=src, group=group)
+            if tuple(tensor_cpu.shape) != tuple(expected_shape):
+                raise RuntimeError(
+                    f"broadcast_payload shape mismatch for {name}: "
+                    f"local={tuple(tensor_cpu.shape)} expected={tuple(expected_shape)}"
+                )
+        else:
+            expected_shape = _broadcast_shape(None, src=src, group=group)
+            tensor_cpu = torch.empty(expected_shape, dtype=wire_dtype)
+        if tensor_cpu.numel() > 0:
+            dist.broadcast(tensor_cpu, src=src, group=group)
+
+        target_dtype = source_dtype
+        if target_dtypes is not None and name in target_dtypes:
+            target_dtype = target_dtypes[name]
+        restored[name] = tensor_cpu.to(device=device, dtype=target_dtype)
+    return restored
 
 
 def send_tensor(
@@ -270,6 +406,7 @@ __all__ = [
     "StageHandoffMessage",
     "StageHandoffTransport",
     "PayloadSummary",
+    "broadcast_payload",
     "send_payload",
     "recv_payload",
     "send_tensor",

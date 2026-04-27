@@ -7,23 +7,119 @@ import torch
 
 
 @dataclass(slots=True)
+class StageReplaySpec:
+    """Replay-only metadata for a captured pipeline stage."""
+
+    bundle_path: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: "StageReplaySpec | dict[str, Any] | str | None") -> "StageReplaySpec | None":
+        if data is None:
+            return None
+        if isinstance(data, StageReplaySpec):
+            return data
+        if isinstance(data, str):
+            return cls(bundle_path=data)
+        return cls(bundle_path=data["bundle_path"])
+
+
+@dataclass(slots=True)
+class ManifestReplaySpec:
+    """Replay-only metadata shared by captured pipeline manifests."""
+
+    bundle_dir: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(
+        cls,
+        data: "ManifestReplaySpec | dict[str, Any] | str | None",
+    ) -> "ManifestReplaySpec | None":
+        if data is None:
+            return None
+        if isinstance(data, ManifestReplaySpec):
+            return data
+        if isinstance(data, str):
+            return cls(bundle_dir=data)
+        return cls(bundle_dir=data.get("bundle_dir"))
+
+
+@dataclass(slots=True, init=False)
 class StageSpec:
-    """Metadata describing one pipeline stage."""
+    """Direct runtime metadata describing one pipeline stage."""
 
     stage_idx: int
     start_idx: int
     end_idx: int
     num_layers: int
     save_dtype: str
-    bundle_path: str | None = None
+    replay: StageReplaySpec | None = None
+
+    def __init__(
+        self,
+        stage_idx: int,
+        start_idx: int,
+        end_idx: int,
+        num_layers: int,
+        save_dtype: str,
+        replay: StageReplaySpec | dict[str, Any] | str | None = None,
+        bundle_path: str | None = None,
+    ) -> None:
+        self.stage_idx = stage_idx
+        self.start_idx = start_idx
+        self.end_idx = end_idx
+        self.num_layers = num_layers
+        self.save_dtype = save_dtype
+        self.replay = StageReplaySpec.from_dict(replay)
+        if bundle_path is None:
+            return
+        if self.replay is not None and self.replay.bundle_path != bundle_path:
+            raise ValueError("StageSpec replay.bundle_path 和 legacy bundle_path 不一致。")
+        self.replay = StageReplaySpec(bundle_path=bundle_path)
 
     @property
     def is_direct(self) -> bool:
-        return self.bundle_path is None
+        return self.replay_bundle_path is None
+
+    @property
+    def replay_bundle_path(self) -> str | None:
+        return None if self.replay is None else self.replay.bundle_path
+
+    @property
+    def bundle_path(self) -> str | None:
+        """Compatibility shim for legacy replay callers."""
+
+        return self.replay_bundle_path
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = {
+            "stage_idx": self.stage_idx,
+            "start_idx": self.start_idx,
+            "end_idx": self.end_idx,
+            "num_layers": self.num_layers,
+            "save_dtype": self.save_dtype,
+        }
+        if self.replay is not None:
+            payload["replay"] = self.replay.to_dict()
+        return payload
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "StageSpec":
-        return cls(**data)
+        replay = StageReplaySpec.from_dict(data.get("replay"))
+        return cls(
+            stage_idx=data["stage_idx"],
+            start_idx=data["start_idx"],
+            end_idx=data["end_idx"],
+            num_layers=data["num_layers"],
+            save_dtype=data["save_dtype"],
+            replay=replay,
+            bundle_path=data.get("bundle_path"),
+        )
 
 
 @dataclass(slots=True)
@@ -40,49 +136,92 @@ class BoundaryStats:
         return cls(**data)
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, init=False)
 class TextPipelineManifest:
-    """Serializable manifest for a multi-stage runtime."""
+    """Serializable manifest for a multi-stage direct runtime."""
 
     pipeline_type: str
     num_stages: int
     stage_ranges: list[tuple[int, int]]
-    bundle_dir: str | None
     stages: list[StageSpec]
     boundaries: list[BoundaryStats]
     num_frames: int
     save_dtype: str
     runtime_config: dict[str, Any] = field(default_factory=dict)
+    replay: ManifestReplaySpec | None = None
+
+    def __init__(
+        self,
+        pipeline_type: str,
+        num_stages: int,
+        stage_ranges: list[tuple[int, int]],
+        bundle_dir: str | None = None,
+        *,
+        stages: list[StageSpec],
+        boundaries: list[BoundaryStats],
+        num_frames: int,
+        save_dtype: str,
+        runtime_config: dict[str, Any] | None = None,
+        replay: ManifestReplaySpec | dict[str, Any] | str | None = None,
+    ) -> None:
+        self.pipeline_type = pipeline_type
+        self.num_stages = num_stages
+        self.stage_ranges = stage_ranges
+        self.stages = stages
+        self.boundaries = boundaries
+        self.num_frames = num_frames
+        self.save_dtype = save_dtype
+        self.runtime_config = {} if runtime_config is None else runtime_config
+        self.replay = ManifestReplaySpec.from_dict(replay)
+        if bundle_dir is None:
+            return
+        if self.replay is not None and self.replay.bundle_dir != bundle_dir:
+            raise ValueError("manifest replay.bundle_dir 和 legacy bundle_dir 不一致。")
+        self.replay = ManifestReplaySpec(bundle_dir=bundle_dir)
 
     @property
     def is_direct(self) -> bool:
-        return all(stage.is_direct for stage in self.stages)
+        return self.replay is None and all(stage.is_direct for stage in self.stages)
+
+    @property
+    def replay_bundle_dir(self) -> str | None:
+        return None if self.replay is None else self.replay.bundle_dir
+
+    @property
+    def bundle_dir(self) -> str | None:
+        """Compatibility shim for legacy replay callers."""
+
+        return self.replay_bundle_dir
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "pipeline_type": self.pipeline_type,
             "num_stages": self.num_stages,
             "stage_ranges": self.stage_ranges,
-            "bundle_dir": self.bundle_dir,
-            "stages": [asdict(stage) for stage in self.stages],
+            "stages": [stage.to_dict() for stage in self.stages],
             "boundaries": [asdict(boundary) for boundary in self.boundaries],
             "num_frames": self.num_frames,
             "save_dtype": self.save_dtype,
             "runtime_config": self.runtime_config,
         }
+        if self.replay is not None:
+            payload["replay"] = self.replay.to_dict()
+        return payload
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "TextPipelineManifest":
+        replay = ManifestReplaySpec.from_dict(data.get("replay"))
         return cls(
             pipeline_type=data["pipeline_type"],
             num_stages=data["num_stages"],
             stage_ranges=[tuple(item) for item in data["stage_ranges"]],
-            bundle_dir=data.get("bundle_dir"),
             stages=[StageSpec.from_dict(item) for item in data["stages"]],
             boundaries=[BoundaryStats.from_dict(item) for item in data["boundaries"]],
             num_frames=data["num_frames"],
             save_dtype=data["save_dtype"],
             runtime_config=data.get("runtime_config", {}),
+            replay=replay,
+            bundle_dir=data.get("bundle_dir"),
         )
 
 
@@ -108,9 +247,9 @@ class HybridLayout:
         return cls(**data)
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, init=False)
 class TextHybridManifest:
-    """Serializable manifest for a hybrid PP+TP runtime."""
+    """Serializable manifest for a hybrid PP+TP direct runtime."""
 
     runtime: str
     tp_degrees: list[int]
@@ -123,20 +262,77 @@ class TextHybridManifest:
     send_empty_list: list[list[bool]]
     recv_empty_list: list[list[bool]]
     stage_ranges: list[tuple[int, int]]
-    bundle_dir: str | None
     stages: list[StageSpec]
     boundaries: list[BoundaryStats]
     num_frames: int
     save_dtype: str
     pipeline_type: str = "text"
     runtime_config: dict[str, Any] = field(default_factory=dict)
+    replay: ManifestReplaySpec | None = None
+
+    def __init__(
+        self,
+        runtime: str,
+        tp_degrees: list[int],
+        stage_rank_groups: list[list[int]],
+        pp_rank_groups: list[list[int]],
+        world_size: int,
+        num_stages: int,
+        send_list: list[list[int]],
+        recv_list: list[list[int]],
+        send_empty_list: list[list[bool]],
+        recv_empty_list: list[list[bool]],
+        stage_ranges: list[tuple[int, int]],
+        bundle_dir: str | None = None,
+        *,
+        stages: list[StageSpec],
+        boundaries: list[BoundaryStats],
+        num_frames: int,
+        save_dtype: str,
+        pipeline_type: str = "text",
+        runtime_config: dict[str, Any] | None = None,
+        replay: ManifestReplaySpec | dict[str, Any] | str | None = None,
+    ) -> None:
+        self.runtime = runtime
+        self.tp_degrees = tp_degrees
+        self.stage_rank_groups = stage_rank_groups
+        self.pp_rank_groups = pp_rank_groups
+        self.world_size = world_size
+        self.num_stages = num_stages
+        self.send_list = send_list
+        self.recv_list = recv_list
+        self.send_empty_list = send_empty_list
+        self.recv_empty_list = recv_empty_list
+        self.stage_ranges = stage_ranges
+        self.stages = stages
+        self.boundaries = boundaries
+        self.num_frames = num_frames
+        self.save_dtype = save_dtype
+        self.pipeline_type = pipeline_type
+        self.runtime_config = {} if runtime_config is None else runtime_config
+        self.replay = ManifestReplaySpec.from_dict(replay)
+        if bundle_dir is None:
+            return
+        if self.replay is not None and self.replay.bundle_dir != bundle_dir:
+            raise ValueError("hybrid manifest replay.bundle_dir 和 legacy bundle_dir 不一致。")
+        self.replay = ManifestReplaySpec(bundle_dir=bundle_dir)
 
     @property
     def is_direct(self) -> bool:
-        return all(stage.is_direct for stage in self.stages)
+        return self.replay is None and all(stage.is_direct for stage in self.stages)
+
+    @property
+    def replay_bundle_dir(self) -> str | None:
+        return None if self.replay is None else self.replay.bundle_dir
+
+    @property
+    def bundle_dir(self) -> str | None:
+        """Compatibility shim for legacy replay callers."""
+
+        return self.replay_bundle_dir
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "runtime": self.runtime,
             "tp_degrees": self.tp_degrees,
             "stage_rank_groups": self.stage_rank_groups,
@@ -149,13 +345,15 @@ class TextHybridManifest:
             "recv_empty_list": self.recv_empty_list,
             "pipeline_type": self.pipeline_type,
             "stage_ranges": self.stage_ranges,
-            "bundle_dir": self.bundle_dir,
-            "stages": [asdict(stage) for stage in self.stages],
+            "stages": [stage.to_dict() for stage in self.stages],
             "boundaries": [asdict(boundary) for boundary in self.boundaries],
             "num_frames": self.num_frames,
             "save_dtype": self.save_dtype,
             "runtime_config": self.runtime_config,
         }
+        if self.replay is not None:
+            payload["replay"] = self.replay.to_dict()
+        return payload
 
     @classmethod
     def from_pipeline_manifest(
@@ -177,16 +375,17 @@ class TextHybridManifest:
             recv_empty_list=layout.recv_empty_list,
             pipeline_type=manifest.pipeline_type,
             stage_ranges=manifest.stage_ranges,
-            bundle_dir=manifest.bundle_dir,
             stages=manifest.stages,
             boundaries=manifest.boundaries,
             num_frames=manifest.num_frames,
             save_dtype=manifest.save_dtype,
             runtime_config=dict(manifest.runtime_config),
+            replay=manifest.replay,
         )
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "TextHybridManifest":
+        replay = ManifestReplaySpec.from_dict(data.get("replay"))
         return cls(
             runtime=data.get("runtime", "text_hybrid"),
             tp_degrees=data["tp_degrees"],
@@ -200,12 +399,13 @@ class TextHybridManifest:
             recv_empty_list=data["recv_empty_list"],
             pipeline_type=data.get("pipeline_type", "text"),
             stage_ranges=[tuple(item) for item in data["stage_ranges"]],
-            bundle_dir=data.get("bundle_dir"),
             stages=[StageSpec.from_dict(item) for item in data["stages"]],
             boundaries=[BoundaryStats.from_dict(item) for item in data["boundaries"]],
             num_frames=data["num_frames"],
             save_dtype=data["save_dtype"],
             runtime_config=data.get("runtime_config", {}),
+            replay=replay,
+            bundle_dir=data.get("bundle_dir"),
         )
 
 

@@ -1,8 +1,8 @@
 """Qwen3-VL runtime package.
 
-Main direct-runtime helpers stay on the eager import path here.
-Legacy capture/replay helpers remain available for compatibility, but are loaded
-only when explicitly requested.
+`__all__` is the direct-runtime surface. Legacy capture/replay helpers remain
+available for compatibility, but are loaded only when explicitly requested and
+listed separately under `LEGACY_CAPTURE_EXPORTS`.
 """
 
 from __future__ import annotations
@@ -111,7 +111,7 @@ from qwen3vl_tp_runtime.models.qwen3vl.functional import (
     rotate_half,
 )
 
-_MAIN_EXPORTS = [
+DIRECT_RUNTIME_EXPORTS = [
     "build_inputs",
     "build_text_inputs",
     "inspect_model_weights",
@@ -200,7 +200,7 @@ _MAIN_EXPORTS = [
     "attn_eager",
 ]
 
-_LEGACY_CAPTURE_EXPORTS = [
+LEGACY_CAPTURE_EXPORTS = [
     "capture_decoder_layer_params",
     "capture_multimodal_decode_bundle",
     "capture_multimodal_decode_stage_bundle",
@@ -223,11 +223,11 @@ _LEGACY_CAPTURE_EXPORTS = [
     "run_forward_with_runtime_hook",
 ]
 
-__all__ = [*_MAIN_EXPORTS, *_LEGACY_CAPTURE_EXPORTS]
+__all__ = [*DIRECT_RUNTIME_EXPORTS]
 
 
 def __getattr__(name: str) -> Any:
-    if name in _LEGACY_CAPTURE_EXPORTS:
+    if name in LEGACY_CAPTURE_EXPORTS:
         capture_mod = import_module("qwen3vl_tp_runtime.models.qwen3vl.capture")
         value = getattr(capture_mod, name)
         globals()[name] = value
@@ -236,4 +236,4 @@ def __getattr__(name: str) -> Any:
 
 
 def __dir__() -> list[str]:
-    return sorted(set(globals()) | set(__all__))
+    return sorted(set(globals()) | set(DIRECT_RUNTIME_EXPORTS) | set(LEGACY_CAPTURE_EXPORTS))

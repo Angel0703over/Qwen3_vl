@@ -5,7 +5,12 @@ import torch.distributed as dist
 
 from qwen3vl_tp_runtime.hexgen_core.distributed import (
     broadcast_cpu,
+    broadcast_tensor_payload_cpu,
     broadcast_object_cpu,
+    recv_tensor_payload_cpu,
+    recv_object_cpu,
+    send_tensor_payload_cpu,
+    send_object_cpu,
     startup_log,
     startup_timer,
 )
@@ -24,10 +29,8 @@ from qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel import (
     prepare_text_prefill_pipeline,
     prepare_text_pipeline,
 )
-from qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel import (
-    build_stage_traces,
-    run_text_tensor_parallel_stage,
-)
+from qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel import run_text_tensor_parallel_stage
+from qwen3vl_tp_runtime.hexgen_core.modules.tp_debug import TpDebugConfig
 from qwen3vl_tp_runtime.hexgen_core.schema import HybridRankContext, StageHandoffPayload, TextHybridManifest
 from qwen3vl_tp_runtime.hexgen_core.stage import (
     apply_stage_handoff_payload,
@@ -44,12 +47,16 @@ from qwen3vl_tp_runtime.models.qwen3vl.execution import (
 )
 from qwen3vl_tp_runtime.models.qwen3vl.functional import dtype_from_name, resolve_comm_dtype
 from qwen3vl_tp_runtime.models.qwen3vl.runtime_builder import (
+    DirectStageBundleBuilder,
     build_direct_stage_bundle,
-    compact_text_prompt_meta,
     materialize_text_stage,
+    pack_text_scaffold_transport,
     prepare_text_prompt_meta,
-    restore_text_prompt_meta,
+    restore_text_scaffold_transport,
+    restore_mm_startup_transport,
+    seed_mm_startup_runtime_config,
 )
+from qwen3vl_tp_runtime.models.qwen3vl.runtime_text_stage import summarize_text_weight_load
 from qwen3vl_tp_runtime.models.qwen3vl.capture import load_bundle, move_bundle
 from qwen3vl_tp_runtime.models.qwen3vl.weights import (
     build_text_rotary_embedding,
@@ -71,7 +78,67 @@ def _build_rank_group_index(rank_groups: list[list[int]], world_size: int) -> li
 
 
 def _all_hybrid_stages_are_direct(manifest: TextHybridManifest) -> bool:
-    return manifest.is_direct
+    manifest_is_direct = getattr(manifest, "is_direct", None)
+    if manifest_is_direct is not None:
+        return bool(manifest_is_direct)
+    return all(
+        getattr(stage, "replay_bundle_path", getattr(stage, "bundle_path", None)) is None
+        for stage in getattr(manifest, "stages", [])
+    )
+
+
+def _broadcast_stage_bundle_transport(
+    bundle: dict | None,
+    *,
+    src: int,
+    group,
+    meta_label: str,
+    tensor_label: str,
+) -> dict:
+    bundle_meta = None
+    bundle_tensors = None
+    if bundle is not None:
+        # Historical helper name is text_scaffold, but the transport itself is a
+        # generic dict+tensor codec that also works for multimodal stage bundles.
+        bundle_meta, bundle_tensors = pack_text_scaffold_transport(bundle)
+    bundle_meta = broadcast_object_cpu(
+        bundle_meta,
+        src=src,
+        group=group,
+        label=meta_label,
+    )
+    bundle_tensors = broadcast_tensor_payload_cpu(
+        bundle_tensors,
+        src=src,
+        group=group,
+        label=tensor_label,
+    )
+    restored = restore_text_scaffold_transport(
+        bundle_meta,
+        bundle_tensors,
+    )
+    if not isinstance(restored, dict):
+        raise RuntimeError("stage bundle transport 恢复结果不是 dict。")
+    return restored
+
+
+def _validate_rank_local_sharded_bundle(bundle: dict, rank_stage: HybridRankContext) -> None:
+    if rank_stage.tp_degree <= 1:
+        return
+    if not bool(bundle.get("tp_weight_sharded")):
+        raise RuntimeError(
+            "direct TP stage 必须 materialize 成 rank-local shard bundle，"
+            f"stage_idx={rank_stage.stage_idx} rank_local={rank_stage.local_rank}/{rank_stage.tp_degree} "
+            "但 bundle 没有 tp_weight_sharded=True。"
+        )
+    bundle_rank = bundle.get("tp_shard_rank")
+    bundle_world_size = bundle.get("tp_shard_world_size")
+    if bundle_rank != rank_stage.local_rank or bundle_world_size != rank_stage.tp_degree:
+        raise RuntimeError(
+            "direct TP stage 的本地 shard 标记和 rank layout 不一致，"
+            f"stage_idx={rank_stage.stage_idx} expected={rank_stage.local_rank}/{rank_stage.tp_degree} "
+            f"actual={bundle_rank}/{bundle_world_size}。"
+        )
 
 
 def _need_text_prompt_meta(manifest: TextHybridManifest) -> bool:
@@ -93,24 +160,113 @@ def _seed_text_prompt_meta(manifest: TextHybridManifest, *, rank: int) -> None:
     if rank == 0:
         with startup_timer("hybrid-direct-loader", "prepare runtime-only text prompt metadata"):
             prompt_metadata = prepare_text_prompt_meta(runtime_config)
-        prompt_metadata = compact_text_prompt_meta(prompt_metadata)
 
     startup_log(
         "hybrid-direct-loader",
         f"rank={rank} waiting runtime-only text prompt metadata broadcast from src=0",
     )
-    prompt_metadata = broadcast_object_cpu(
+    prompt_metadata = broadcast_tensor_payload_cpu(
         prompt_metadata,
         src=0,
         label="runtime_only_text_prompt_metadata",
     )
-    prompt_metadata = restore_text_prompt_meta(prompt_metadata)
+    if prompt_metadata is None or prompt_metadata.get("input_ids") is None:
+        raise RuntimeError("runtime-only text prompt metadata 广播后缺少 input_ids。")
     runtime_config["_runtime_only_input_ids"] = prompt_metadata["input_ids"]
     if prompt_metadata.get("attention_mask") is not None:
         runtime_config["_runtime_only_attention_mask"] = prompt_metadata["attention_mask"]
     else:
         runtime_config.pop("_runtime_only_attention_mask", None)
     runtime_config["_runtime_only_prompt_metadata_ready"] = True
+
+
+def _need_mm_startup_contract(manifest: TextHybridManifest) -> bool:
+    runtime_config = manifest.runtime_config
+    return (
+        _all_hybrid_stages_are_direct(manifest)
+        and str(runtime_config.get("modality", "multimodal")) == "multimodal"
+    )
+
+
+def _seed_mm_startup_contract(
+    manifest: TextHybridManifest,
+    *,
+    rank: int,
+    local_stage_idx: int,
+    rank_stage: HybridRankContext,
+) -> None:
+    runtime_config = manifest.runtime_config
+    if (
+        runtime_config.get("_mm_startup_contract_ready")
+        or not _need_mm_startup_contract(manifest)
+        or rank_stage.local_rank != 0
+    ):
+        return
+
+    label = f"multimodal_startup_contract stage_idx={int(local_stage_idx)}"
+    startup_contract = None
+    if rank == 0:
+        with startup_timer("hybrid-direct-loader", "prepare multimodal startup payloads"):
+            with DirectStageBundleBuilder(
+                stage_specs=manifest.stages,
+                runtime_config=dict(runtime_config),
+                include_text_weights=False,
+                mm_activate_frontend=True,
+            ) as builder:
+                startup_meta, startup_tensors = builder.export_mm_startup_transport(
+                    local_stage_indices=[int(local_stage_idx)],
+                )
+                startup_contract = restore_mm_startup_transport(
+                    startup_meta,
+                    startup_tensors,
+                )
+                if manifest.stage_rank_groups:
+                    leader_stage_indices = [
+                        (int(stage_idx), int(stage_ranks[0]))
+                        for stage_idx, stage_ranks in enumerate(manifest.stage_rank_groups)
+                        if stage_ranks
+                    ]
+                else:
+                    leader_stage_indices = []
+                for stage_idx, leader_rank in leader_stage_indices:
+                    if leader_rank == rank:
+                        continue
+                    dst_meta, dst_tensors = builder.export_mm_startup_transport(
+                        local_stage_indices=[stage_idx],
+                    )
+                    send_object_cpu(
+                        dst_meta,
+                        dst=leader_rank,
+                        label=f"multimodal_startup_contract_meta stage_idx={stage_idx}",
+                    )
+                    send_tensor_payload_cpu(
+                        dst_tensors,
+                        dst=leader_rank,
+                        label=f"multimodal_startup_contract_tensors stage_idx={stage_idx}",
+                    )
+    else:
+        startup_log(
+            "hybrid-direct-loader",
+            f"rank={rank} waiting {label} from src=0",
+        )
+        startup_meta = recv_object_cpu(
+            src=0,
+            label=f"multimodal_startup_contract_meta stage_idx={int(local_stage_idx)}",
+        )
+        startup_tensors = recv_tensor_payload_cpu(
+            src=0,
+            label=f"multimodal_startup_contract_tensors stage_idx={int(local_stage_idx)}",
+        )
+        startup_contract = restore_mm_startup_transport(
+            startup_meta,
+            startup_tensors,
+        )
+
+    seed_mm_startup_runtime_config(
+        runtime_config,
+        startup_contract,
+        local_stage_indices=[int(local_stage_idx)],
+    )
 
 
 def load_stage_bundle_for_hybrid_rank(
@@ -125,11 +281,13 @@ def load_stage_bundle_for_hybrid_rank(
     all_direct = _all_hybrid_stages_are_direct(manifest)
     runtime_modality = str(manifest.runtime_config.get("modality", "multimodal"))
     _seed_text_prompt_meta(manifest, rank=rank)
-    use_rank_local_text_tp_bundle = (
-        all_direct
-        and runtime_modality == "text"
-        and rank_stage.tp_degree > 1
+    _seed_mm_startup_contract(
+        manifest,
+        rank=rank,
+        local_stage_idx=rank_stage.stage_idx,
+        rank_stage=rank_stage,
     )
+    use_rank_local_sharded_bundle = all_direct and rank_stage.tp_degree > 1
     use_single_rank_direct_bundle = all_direct and rank_stage.tp_degree == 1
 
     if use_single_rank_direct_bundle:
@@ -148,6 +306,9 @@ def load_stage_bundle_for_hybrid_rank(
             start_idx=stage_meta.start_idx,
             end_idx=stage_meta.end_idx,
             runtime_config=manifest.runtime_config,
+            mm_activate_frontend=(
+                stage_meta.start_idx == 0 if runtime_modality == "multimodal" else None
+            ),
         )
         compute_dtype_name = bundle["save_dtype"] if compute_dtype_arg == "auto" else compute_dtype_arg
         compute_dtype = dtype_from_name(compute_dtype_name)
@@ -160,11 +321,13 @@ def load_stage_bundle_for_hybrid_rank(
         )
         return move_bundle(bundle, device, compute_dtype), compute_dtype
 
-    if use_rank_local_text_tp_bundle:
+    if use_rank_local_sharded_bundle:
+        scaffold_label_prefix = "text_scaffold" if runtime_modality == "text" else "stage_scaffold"
+        scaffold_kind = "text scaffold" if runtime_modality == "text" else "stage scaffold"
         if rank_stage.local_rank == 0:
             startup_log(
                 "hybrid-direct-loader",
-                f"rank={rank} stage_idx={rank_stage.stage_idx} leader building shared text scaffold "
+                f"rank={rank} stage_idx={rank_stage.stage_idx} leader building shared {scaffold_kind} "
                 f"range={stage_meta.start_idx}:{stage_meta.end_idx}",
             )
             leader_scaffold = build_direct_stage_bundle(
@@ -173,26 +336,43 @@ def load_stage_bundle_for_hybrid_rank(
                 end_idx=stage_meta.end_idx,
                 runtime_config=manifest.runtime_config,
                 include_text_weights=False,
+                mm_activate_frontend=(
+                    stage_meta.start_idx == 0 if runtime_modality == "multimodal" else None
+                ),
             )
         else:
             leader_scaffold = None
 
         startup_log(
             "hybrid-direct-loader",
-            f"rank={rank} stage_idx={rank_stage.stage_idx} waiting text scaffold broadcast from leader="
+            f"rank={rank} stage_idx={rank_stage.stage_idx} waiting {scaffold_kind} broadcast from leader="
             f"{rank_stage.leader_rank}",
         )
-        scaffold = broadcast_object_cpu(
-            leader_scaffold,
+        scaffold_meta = None
+        scaffold_tensors = None
+        if leader_scaffold is not None:
+            scaffold_meta, scaffold_tensors = pack_text_scaffold_transport(leader_scaffold)
+        scaffold_meta = broadcast_object_cpu(
+            scaffold_meta,
             src=rank_stage.leader_rank,
             group=rank_stage.stage_group,
-            label=f"text_scaffold stage_idx={rank_stage.stage_idx}",
+            label=f"{scaffold_label_prefix}_meta stage_idx={rank_stage.stage_idx}",
+        )
+        scaffold_tensors = broadcast_tensor_payload_cpu(
+            scaffold_tensors,
+            src=rank_stage.leader_rank,
+            group=rank_stage.stage_group,
+            label=f"{scaffold_label_prefix}_tensors stage_idx={rank_stage.stage_idx}",
+        )
+        scaffold = restore_text_scaffold_transport(
+            scaffold_meta,
+            scaffold_tensors,
         )
         compute_dtype_name = scaffold["save_dtype"] if compute_dtype_arg == "auto" else compute_dtype_arg
         compute_dtype = dtype_from_name(compute_dtype_name)
         startup_log(
             "hybrid-direct-loader",
-            f"rank={rank} stage_idx={rank_stage.stage_idx} materializing local text shard "
+            f"rank={rank} stage_idx={rank_stage.stage_idx} materializing local direct shard "
             f"tp_local_rank={rank_stage.local_rank}/{rank_stage.tp_degree} "
             f"compute_dtype={compute_dtype}",
         )
@@ -203,6 +383,7 @@ def load_stage_bundle_for_hybrid_rank(
             tp_shard_rank=rank_stage.local_rank,
             tp_shard_world_size=rank_stage.tp_degree,
         )
+        _validate_rank_local_sharded_bundle(bundle, rank_stage)
         startup_log("hybrid-direct-loader", f"rank={rank} entering post-load barrier")
         dist.barrier()
         startup_log(
@@ -223,6 +404,9 @@ def load_stage_bundle_for_hybrid_rank(
                 start_idx=stage_meta.start_idx,
                 end_idx=stage_meta.end_idx,
                 runtime_config=manifest.runtime_config,
+                mm_activate_frontend=(
+                    stage_meta.start_idx == 0 if runtime_modality == "multimodal" else None
+                ),
             )
         else:
             leader_bundle = None
@@ -231,26 +415,35 @@ def load_stage_bundle_for_hybrid_rank(
             "hybrid-direct-loader",
             f"rank={rank} stage_idx={rank_stage.stage_idx} waiting stage-group broadcast from leader={rank_stage.leader_rank}",
         )
-        bundle = broadcast_object_cpu(
+        bundle = _broadcast_stage_bundle_transport(
             leader_bundle,
             src=rank_stage.leader_rank,
             group=rank_stage.stage_group,
-            label=f"stage_bundle stage_idx={rank_stage.stage_idx}",
+            meta_label=f"stage_bundle_meta stage_idx={rank_stage.stage_idx}",
+            tensor_label=f"stage_bundle_tensors stage_idx={rank_stage.stage_idx}",
         )
         startup_log("hybrid-direct-loader", f"rank={rank} entering post-load barrier")
         dist.barrier()
     else:
+        replay_bundle_path = getattr(stage_meta, "replay_bundle_path", None) or getattr(
+            stage_meta,
+            "bundle_path",
+            None,
+        )
+        if replay_bundle_path is None:
+            raise RuntimeError(f"replay manifest 缺少 stage_idx={rank_stage.stage_idx} 的 bundle path。")
         if rank_stage.local_rank == 0:
             startup_log(
                 "hybrid-direct-loader",
-                f"rank={rank} stage_idx={rank_stage.stage_idx} leader loading bundle file {stage_meta.bundle_path}",
+                f"rank={rank} stage_idx={rank_stage.stage_idx} leader loading bundle file {replay_bundle_path}",
             )
-        leader_bundle = load_bundle(stage_meta.bundle_path) if rank_stage.local_rank == 0 else None
-        bundle = broadcast_object_cpu(
+        leader_bundle = load_bundle(replay_bundle_path) if rank_stage.local_rank == 0 else None
+        bundle = _broadcast_stage_bundle_transport(
             leader_bundle,
             src=rank_stage.leader_rank,
             group=rank_stage.stage_group,
-            label=f"bundle-file stage_idx={rank_stage.stage_idx}",
+            meta_label=f"bundle_file_meta stage_idx={rank_stage.stage_idx}",
+            tensor_label=f"bundle_file_tensors stage_idx={rank_stage.stage_idx}",
         )
 
     compute_dtype_name = bundle["save_dtype"] if compute_dtype_arg == "auto" else compute_dtype_arg
@@ -1213,6 +1406,7 @@ def _run_text_generate_hybrid_rank(
         "start_idx": stage_bundle["start_idx"],
         "end_idx": stage_bundle["end_idx"],
         "num_layers": len(stage_bundle["layers"]),
+        "weight_load": summarize_text_weight_load(stage_bundle),
         "device": str(device),
         "comm_dtype": str(comm_dtype),
         "tp_attn_math_mode": tp_attn_math_mode,
@@ -1245,10 +1439,7 @@ class TextHybridRunner:
         comm_dtype_arg: str,
         tp_attn_math_mode: str = "orig",
         tp_mlp_math_mode: str = "orig",
-        compare_direct: bool = False,
-        trace_layers: bool = False,
-        dump_layer: int | None = None,
-        dump_topk: int = 5,
+        debug_config: TpDebugConfig | None = None,
         return_tensors: bool = False,
     ) -> None:
         self.manifest = manifest
@@ -1257,10 +1448,7 @@ class TextHybridRunner:
         self.comm_dtype_arg = comm_dtype_arg
         self.tp_attn_math_mode = tp_attn_math_mode
         self.tp_mlp_math_mode = tp_mlp_math_mode
-        self.compare_direct = compare_direct
-        self.trace_layers = trace_layers
-        self.dump_layer = dump_layer
-        self.dump_topk = dump_topk
+        self.debug_config = debug_config or TpDebugConfig()
         self.return_tensors = return_tensors
 
     def run_rank(self, rank: int, world_size: int) -> dict:
@@ -1273,10 +1461,7 @@ class TextHybridRunner:
             comm_dtype_arg=self.comm_dtype_arg,
             tp_attn_math_mode=self.tp_attn_math_mode,
             tp_mlp_math_mode=self.tp_mlp_math_mode,
-            compare_direct=self.compare_direct,
-            trace_layers=self.trace_layers,
-            dump_layer=self.dump_layer,
-            dump_topk=self.dump_topk,
+            debug_config=self.debug_config,
             return_tensors=self.return_tensors,
         )
 
@@ -1291,12 +1476,10 @@ def run_text_hybrid_rank(
     comm_dtype_arg: str,
     tp_attn_math_mode: str = "orig",
     tp_mlp_math_mode: str = "orig",
-    compare_direct: bool = False,
-    trace_layers: bool = False,
-    dump_layer: int | None = None,
-    dump_topk: int = 5,
+    debug_config: TpDebugConfig | None = None,
     return_tensors: bool = False,
 ) -> dict:
+    debug_config = debug_config or TpDebugConfig()
     if manifest.pipeline_type in {"text_generate", "multimodal_generate"}:
         return _run_text_generate_hybrid_rank(
             rank=rank,
@@ -1374,10 +1557,7 @@ def run_text_hybrid_rank(
         leader_rank=rank_stage.leader_rank,
         tp_attn_math_mode=tp_attn_math_mode,
         tp_mlp_math_mode=tp_mlp_math_mode,
-        compare_direct=compare_direct,
-        trace_layers=trace_layers,
-        dump_layer=dump_layer,
-        dump_topk=dump_topk,
+        debug_config=debug_config,
     )
     stage_output = tp_stage_stats.pop("stage_output")
 
@@ -1413,6 +1593,7 @@ def run_text_hybrid_rank(
         "start_idx": bundle["start_idx"],
         "end_idx": bundle["end_idx"],
         "num_layers": len(bundle["layers"]),
+        "weight_load": summarize_text_weight_load(bundle),
         "device": str(device),
         "comm_dtype": str(comm_dtype),
         "tp_attn_math_mode": tp_attn_math_mode,
@@ -1446,9 +1627,16 @@ def run_text_hybrid_rank(
     return stats
 
 
-__all__ = [
+DIRECT_RUNTIME_EXPORTS = [
     "TextHybridManifest",
     "HybridRankContext",
+    "init_stage_groups",
+    "resolve_rank_stage",
+    "TextHybridRunner",
+    "run_text_hybrid_rank",
+]
+
+LEGACY_REPLAY_EXPORTS = [
     "prepare_text_hybrid",
     "prepare_multimodal_decode_hybrid",
     "prepare_multimodal_generate_hybrid",
@@ -1457,9 +1645,6 @@ __all__ = [
     "prepare_text_generate_hybrid",
     "prepare_text_prefill_hybrid",
     "load_hybrid_manifest",
-    "init_stage_groups",
-    "resolve_rank_stage",
-    "build_stage_traces",
-    "TextHybridRunner",
-    "run_text_hybrid_rank",
 ]
+
+__all__ = [*DIRECT_RUNTIME_EXPORTS]

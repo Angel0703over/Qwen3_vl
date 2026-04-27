@@ -8,18 +8,50 @@ Qwen3-VL runtime code for direct `pp` / `tp` / `hybrid` execution.
 - Preferred mode: `backend=pp|tp|hybrid`
 - Main path builds runtime state directly from `model_path`
 
+## Status
+
+This runtime started with two concrete goals:
+
+- `TP` should load only the local shard for each rank instead of loading full weights on every GPU and slicing at execution time.
+- `PP / TP / hybrid` main runs should build stage/rank runtime state directly from `model_path` at startup instead of depending on prepared `bundle` or manifest replay artifacts.
+
+Current state:
+
+- The main `pp / tp / hybrid` path is direct-first and builds runtime state from `model_path`.
+- The main text `TP` path no longer loads full decoder projection weights on every GPU and slices only during compute. Direct `tp_degree > 1` stages first broadcast a no-weight scaffold, then each rank materializes its local shard from `model_path`.
+- `backend=tp` text generate has passed real Jetson smoke with `weight_load.tp_weight_sharded=true` on both ranks, `tp_shard_rank=0/2` and `1/2`, and identical `loaded_weight_tensor_bytes`.
+- `backend=hybrid` text generate has passed real Jetson smoke with stage0 running rank-local TP shards and stage1 loading only its own PP stage weights.
+- Multimodal direct runtime for `pp / hybrid` has passed real Jetson smoke runs, including `token_match=true` on `multimodal generate`.
+- The current milestone is considered complete for the direct-from-`model_path`, rank-local text decoder shard path.
+
+Remaining tail work:
+
+- Multimodal is not yet in its final `stage-only / shard-only` end state.
+- Embedding and `lm_head` are still replicated where the current execution semantics require them. Vocab/embedding parallelism is a later optimization, not part of the completed milestone.
+- Startup time and peak-memory baselines are intentionally deferred; current acceptance is based on output tokens and `weight_load` shard evidence.
+- Some schema, legacy compatibility, and debug-only transport cleanup may still continue, but replay/capture paths are no longer considered the main runtime surface.
+
 ## Debug Path
 
 These paths are kept for replay, capture, and regression work only:
 
 - `--manifest-path` replay runs
+- `--compare-direct`
+- `--trace-layers`
+- `--dump-layer`
 
 They require `--allow-debug-paths`.
+`--compare-direct / --trace-layers / --dump-layer` are currently `backend=tp|hybrid` and non-generate only.
 
 ## Roadmap
 
 - Ordered next steps are tracked in `ROADMAP.md`.
 - Unless we explicitly realign, continue work in that document's order.
+
+## Baseline
+
+- Fixed regression commands are tracked in `BASELINE.md`.
+- Use those case ids as the default smoke/regression set before and after runtime changes.
 
 ## Directory Layout
 

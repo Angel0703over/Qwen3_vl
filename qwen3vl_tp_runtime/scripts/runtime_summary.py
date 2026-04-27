@@ -7,6 +7,7 @@ from functools import lru_cache
 
 import torch
 
+from qwen3vl_tp_runtime.hexgen_core.modules.tp_debug import TpDebugConfig
 from qwen3vl_tp_runtime.models.qwen3vl.processing import load_processor
 from qwen3vl_tp_runtime.scripts.common import summarize_last_token_topk
 
@@ -186,13 +187,12 @@ def _summarize_hybrid_run(
     *,
     backend: str,
     topk: int,
-    compare_direct: bool,
-    trace_layers: bool,
-    dump_layer: int | None,
+    debug_config: TpDebugConfig | None = None,
 ) -> dict:
     topk_fn = _runtime_dep("summarize_last_token_topk", summarize_last_token_topk)
     generate_pipeline_types = _runtime_dep("GENERATE_PIPELINE_TYPES", GENERATE_PIPELINE_TYPES)
-    debug_mode = compare_direct or trace_layers or dump_layer is not None
+    debug_config = debug_config or TpDebugConfig()
+    debug_fields = debug_config.to_summary_fields()
     if manifest.pipeline_type in generate_pipeline_types:
         summary = {
             "rank": stats["rank"],
@@ -204,11 +204,8 @@ def _summarize_hybrid_run(
             "tp_degree": stats["tp_degree"],
             "leader_rank": stats["leader_rank"],
             "current_pp_group": stats["current_pp_group"],
-            "debug_mode": debug_mode,
-            "compare_direct": compare_direct,
-            "trace_layers": trace_layers,
-            "dump_layer": dump_layer,
-            "dump_topk": topk,
+            "weight_load": stats.get("weight_load"),
+            **debug_fields,
             "prefill_seq_len": stats["prefill_seq_len"],
             "max_new_tokens": stats["max_new_tokens"],
             "prefill": _summarize_generate_phase_stats(stats["prefill"]),
@@ -239,13 +236,10 @@ def _summarize_hybrid_run(
         "tp_degree": stats["tp_degree"],
         "leader_rank": stats["leader_rank"],
         "current_pp_group": stats["current_pp_group"],
+        "weight_load": stats.get("weight_load"),
         "input_shape": list(stats["input_shape"]),
         "output_shape": list(stats["output_shape"]),
-        "debug_mode": debug_mode,
-        "compare_direct": compare_direct,
-        "trace_layers": trace_layers,
-        "dump_layer": dump_layer,
-        "dump_topk": topk,
+        **debug_fields,
         "received_payload_keys": stats["received_payload_keys"],
         "sent_payload_keys": stats["sent_payload_keys"],
         "sent_tensor_shapes": _tensor_shape_map_to_json(stats["sent_tensor_shapes"]),

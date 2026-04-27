@@ -6,7 +6,16 @@ from pathlib import Path
 import torch
 import torch.distributed as dist
 
-from qwen3vl_tp_runtime.hexgen_core.distributed import broadcast_object_cpu, startup_log, startup_timer
+from qwen3vl_tp_runtime.hexgen_core.distributed import (
+    broadcast_tensor_payload_cpu,
+    broadcast_object_cpu,
+    recv_tensor_payload_cpu,
+    recv_object_cpu,
+    send_tensor_payload_cpu,
+    send_object_cpu,
+    startup_log,
+    startup_timer,
+)
 from qwen3vl_tp_runtime.hexgen_core.schema import (
     BoundaryStats,
     StageHandoffPayload,
@@ -33,10 +42,11 @@ from qwen3vl_tp_runtime.models.qwen3vl.capture import (
     move_bundle,
 )
 from qwen3vl_tp_runtime.models.qwen3vl.runtime_builder import (
+    DirectStageBundleBuilder,
     build_direct_stage_bundle,
-    compact_text_prompt_meta,
     prepare_text_prompt_meta,
-    restore_text_prompt_meta,
+    restore_mm_startup_transport,
+    seed_mm_startup_runtime_config,
 )
 from qwen3vl_tp_runtime.models.qwen3vl.execution import (
     forward_text_embeddings,
@@ -652,14 +662,21 @@ def load_stage_bundle_by_index(
     compute_dtype_arg: str,
 ) -> tuple[dict, torch.dtype]:
     stage_meta = manifest.stages[stage_idx]
-    if stage_meta.bundle_path:
-        bundle = load_bundle(stage_meta.bundle_path)
+    runtime_modality = str(manifest.runtime_config.get("modality", "multimodal"))
+    replay_bundle_path = getattr(stage_meta, "replay_bundle_path", None)
+    if replay_bundle_path:
+        bundle = load_bundle(replay_bundle_path)
+    elif not manifest.is_direct:
+        raise RuntimeError(f"replay manifest 缺少 stage_idx={stage_idx} 的 bundle path。")
     else:
         bundle = build_direct_stage_bundle(
             stage_idx=stage_idx,
             start_idx=stage_meta.start_idx,
             end_idx=stage_meta.end_idx,
             runtime_config=manifest.runtime_config,
+            mm_activate_frontend=(
+                stage_meta.start_idx == 0 if runtime_modality == "multimodal" else None
+            ),
         )
     compute_dtype_name = bundle["save_dtype"] if compute_dtype_arg == "auto" else compute_dtype_arg
     compute_dtype = dtype_from_name(compute_dtype_name)
@@ -667,7 +684,13 @@ def load_stage_bundle_by_index(
 
 
 def _all_stages_are_direct(manifest: TextPipelineManifest) -> bool:
-    return manifest.is_direct
+    manifest_is_direct = getattr(manifest, "is_direct", None)
+    if manifest_is_direct is not None:
+        return bool(manifest_is_direct)
+    return all(
+        getattr(stage, "replay_bundle_path", getattr(stage, "bundle_path", None)) is None
+        for stage in getattr(manifest, "stages", [])
+    )
 
 
 def _need_text_prompt_meta(manifest: TextPipelineManifest) -> bool:
@@ -689,24 +712,96 @@ def _seed_text_prompt_meta(manifest: TextPipelineManifest, *, rank: int) -> None
     if rank == 0:
         with startup_timer("pp-direct-loader", "prepare runtime-only text prompt metadata"):
             prompt_metadata = prepare_text_prompt_meta(runtime_config)
-        prompt_metadata = compact_text_prompt_meta(prompt_metadata)
 
     startup_log(
         "pp-direct-loader",
         f"rank={rank} waiting runtime-only text prompt metadata broadcast from src=0",
     )
-    prompt_metadata = broadcast_object_cpu(
+    prompt_metadata = broadcast_tensor_payload_cpu(
         prompt_metadata,
         src=0,
         label="runtime_only_text_prompt_metadata",
     )
-    prompt_metadata = restore_text_prompt_meta(prompt_metadata)
+    if prompt_metadata is None or prompt_metadata.get("input_ids") is None:
+        raise RuntimeError("runtime-only text prompt metadata 广播后缺少 input_ids。")
     runtime_config["_runtime_only_input_ids"] = prompt_metadata["input_ids"]
     if prompt_metadata.get("attention_mask") is not None:
         runtime_config["_runtime_only_attention_mask"] = prompt_metadata["attention_mask"]
     else:
         runtime_config.pop("_runtime_only_attention_mask", None)
     runtime_config["_runtime_only_prompt_metadata_ready"] = True
+
+
+def _need_mm_startup_contract(manifest: TextPipelineManifest) -> bool:
+    runtime_config = manifest.runtime_config
+    return (
+        _all_stages_are_direct(manifest)
+        and str(runtime_config.get("modality", "multimodal")) == "multimodal"
+    )
+
+
+def _seed_mm_startup_contract(manifest: TextPipelineManifest, *, rank: int) -> None:
+    runtime_config = manifest.runtime_config
+    if runtime_config.get("_mm_startup_contract_ready") or not _need_mm_startup_contract(manifest):
+        return
+
+    stage_idx = int(manifest.stages[rank].stage_idx)
+    label = f"multimodal_startup_contract stage_idx={stage_idx}"
+    startup_contract = None
+    if rank == 0:
+        with startup_timer("pp-direct-loader", "prepare multimodal startup payloads"):
+            with DirectStageBundleBuilder(
+                stage_specs=manifest.stages,
+                runtime_config=dict(runtime_config),
+                include_text_weights=False,
+                mm_activate_frontend=True,
+            ) as builder:
+                startup_meta, startup_tensors = builder.export_mm_startup_transport(
+                    local_stage_indices=[stage_idx],
+                )
+                startup_contract = restore_mm_startup_transport(
+                    startup_meta,
+                    startup_tensors,
+                )
+                for dst_rank, stage_meta in enumerate(manifest.stages):
+                    if dst_rank == rank:
+                        continue
+                    dst_meta, dst_tensors = builder.export_mm_startup_transport(
+                        local_stage_indices=[int(stage_meta.stage_idx)],
+                    )
+                    send_object_cpu(
+                        dst_meta,
+                        dst=dst_rank,
+                        label=f"multimodal_startup_contract_meta stage_idx={stage_meta.stage_idx}",
+                    )
+                    send_tensor_payload_cpu(
+                        dst_tensors,
+                        dst=dst_rank,
+                        label=f"multimodal_startup_contract_tensors stage_idx={stage_meta.stage_idx}",
+                    )
+    else:
+        startup_log(
+            "pp-direct-loader",
+            f"rank={rank} waiting {label} from src=0",
+        )
+        startup_meta = recv_object_cpu(
+            src=0,
+            label=f"multimodal_startup_contract_meta stage_idx={stage_idx}",
+        )
+        startup_tensors = recv_tensor_payload_cpu(
+            src=0,
+            label=f"multimodal_startup_contract_tensors stage_idx={stage_idx}",
+        )
+        startup_contract = restore_mm_startup_transport(
+            startup_meta,
+            startup_tensors,
+        )
+
+    seed_mm_startup_runtime_config(
+        runtime_config,
+        startup_contract,
+        local_stage_indices=[stage_idx],
+    )
 
 
 def load_stage_bundle_for_rank(
@@ -717,6 +812,7 @@ def load_stage_bundle_for_rank(
 ) -> tuple[dict, torch.dtype]:
     if _all_stages_are_direct(manifest) and dist.is_available() and dist.is_initialized():
         _seed_text_prompt_meta(manifest, rank=rank)
+        _seed_mm_startup_contract(manifest, rank=rank)
         stage_meta = manifest.stages[rank]
         startup_log(
             "pp-direct-loader",
@@ -1348,7 +1444,7 @@ def run_text_pipeline_rank(
     return runner.run_rank(rank, world_size)
 
 
-__all__ = [
+DIRECT_RUNTIME_EXPORTS = [
     "StageSpec",
     "BoundaryStats",
     "TextPipelineManifest",
@@ -1357,6 +1453,13 @@ __all__ = [
     "tensor_diff_stats",
     "parse_stage_range",
     "parse_stage_ranges",
+    "load_stage_bundle_by_index",
+    "load_stage_bundle_for_rank",
+    "run_text_generate_pipeline_rank",
+    "run_text_pipeline_rank",
+]
+
+LEGACY_REPLAY_EXPORTS = [
     "build_stage_bundle_path",
     "prepare_multimodal_decode_pipeline",
     "prepare_multimodal_generate_pipeline",
@@ -1366,8 +1469,6 @@ __all__ = [
     "prepare_text_pipeline",
     "prepare_text_prefill_pipeline",
     "load_pipeline_manifest",
-    "load_stage_bundle_by_index",
-    "load_stage_bundle_for_rank",
-    "run_text_generate_pipeline_rank",
-    "run_text_pipeline_rank",
 ]
+
+__all__ = [*DIRECT_RUNTIME_EXPORTS]

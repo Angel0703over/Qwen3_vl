@@ -7,7 +7,10 @@ from qwen3vl_tp_runtime.models.qwen3vl.live.bundle import (
 )
 from qwen3vl_tp_runtime.models.qwen3vl.live.common import MultimodalRuntimeInputs
 from qwen3vl_tp_runtime.models.qwen3vl.live.inputs import (
+    prepare_multimodal_decode_runtime_inputs_from_state,
+    prepare_multimodal_decode_runtime_state,
     prepare_multimodal_decode_runtime_inputs,
+    prepare_multimodal_prefill_runtime_state,
     prepare_multimodal_prefill_runtime_inputs,
     prepare_text_decode_runtime_inputs,
     prepare_text_prefill_runtime_inputs,
@@ -17,7 +20,10 @@ __all__ = [
     "MultimodalRuntimeInputs",
     "prepare_text_prefill_runtime_inputs",
     "prepare_text_decode_runtime_inputs",
+    "prepare_multimodal_prefill_runtime_state",
     "prepare_multimodal_prefill_runtime_inputs",
+    "prepare_multimodal_decode_runtime_state",
+    "prepare_multimodal_decode_runtime_inputs_from_state",
     "prepare_multimodal_decode_runtime_inputs",
     "extract_decoder_layer_params_live",
     "build_cache_by_layer_from_past_key_values",

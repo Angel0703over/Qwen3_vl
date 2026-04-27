@@ -1,31 +1,74 @@
 """Runtime-facing exports for distributed execution, manifests, staging, and transport.
 
-This package uses lazy attribute loading to avoid circular imports during capture-time
-module initialization, especially for:
-
-capture.py -> hexgen_core.config -> hexgen_core.__init__ -> pipeline/hybrid modules -> capture.py
-
-Main direct-runtime helpers and legacy prepare/replay compatibility exports are
-all still available here, but they are resolved lazily.
+`__all__` is the direct-runtime surface. Replay/prepare helpers and bundle path
+constants are still available as lazy compatibility attributes, but they live in
+`LEGACY_REPLAY_EXPORTS` instead of the main export list.
 """
 
+from __future__ import annotations
+
 from importlib import import_module
+from typing import Any
 
-_LAZY_MODULES = (
-    "qwen3vl_tp_runtime.hexgen_core.config",
-    "qwen3vl_tp_runtime.hexgen_core.distributed",
-    "qwen3vl_tp_runtime.hexgen_core.gen_hetero_groups",
-    "qwen3vl_tp_runtime.hexgen_core.schema",
-    "qwen3vl_tp_runtime.hexgen_core.stage",
-    "qwen3vl_tp_runtime.hexgen_core.transport",
-    "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel",
-    "qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel",
-    "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel",
-)
-
-__all__ = [
+DIRECT_RUNTIME_EXPORTS = [
     "MODEL_PATH",
     "FRAME_DIR",
+    "getenv_int",
+    "init_dist",
+    "get_device",
+    "all_reduce_cpu",
+    "broadcast_cpu",
+    "parse_tp_degrees",
+    "build_stage_rank_groups",
+    "build_pp_rank_groups",
+    "build_p2p_lists",
+    "build_hybrid_layout",
+    "StageSpec",
+    "BoundaryStats",
+    "TextPipelineManifest",
+    "TextGeneratePipelineRunner",
+    "TextPipelineRunner",
+    "HybridLayout",
+    "TextHybridManifest",
+    "HybridRankContext",
+    "PayloadSummary",
+    "StageHandoffPayload",
+    "parse_stage_range",
+    "parse_stage_ranges",
+    "load_stage_bundle_by_index",
+    "load_stage_bundle_for_rank",
+    "run_text_generate_pipeline_rank",
+    "run_text_pipeline_rank",
+    "init_stage_groups",
+    "resolve_rank_stage",
+    "TextHybridRunner",
+    "run_text_hybrid_rank",
+    "StageBundleView",
+    "as_stage_bundle_view",
+    "get_stage_type",
+    "get_stage_input",
+    "get_stage_output",
+    "build_stage_bundle",
+    "build_stage_handoff_target_dtypes",
+    "build_stage_handoff_payload",
+    "apply_stage_handoff_payload",
+    "run_stage",
+    "run_stage_tp",
+    "trace_stage",
+    "trace_stage_tp",
+    "StageHandoffMessage",
+    "StageHandoffTransport",
+    "TensorPayload",
+    "send_payload",
+    "recv_payload",
+    "send_tensor",
+    "recv_tensor",
+    "send_hidden_states",
+    "recv_hidden_states",
+    "tensor_diff_stats",
+]
+
+LEGACY_REPLAY_EXPORTS = [
     "FULL_LAYER_BUNDLE_PATH",
     "LAYER_RANGE_BUNDLE_PATH",
     "MULTIMODAL_DECODE_BUNDLE_PATH",
@@ -58,30 +101,9 @@ __all__ = [
     "TEXT_PREFILL_PIPELINE_BUNDLE_DIR",
     "TEXT_PREFILL_PIPELINE_MANIFEST_PATH",
     "TEXT_STAGE_BUNDLE_PATH",
-    "getenv_int",
-    "init_dist",
-    "get_device",
-    "all_reduce_cpu",
-    "broadcast_cpu",
-    "parse_tp_degrees",
-    "build_stage_rank_groups",
-    "build_pp_rank_groups",
-    "build_p2p_lists",
-    "build_hybrid_layout",
-    "StageSpec",
-    "BoundaryStats",
-    "TextPipelineManifest",
-    "TextGeneratePipelineRunner",
-    "TextPipelineRunner",
-    "TextTensorParallelRunner",
-    "HybridLayout",
-    "TextHybridManifest",
-    "HybridRankContext",
-    "PayloadSummary",
-    "StageHandoffPayload",
+    "StageReplaySpec",
+    "ManifestReplaySpec",
     "build_stage_bundle_path",
-    "parse_stage_range",
-    "parse_stage_ranges",
     "prepare_multimodal_decode_pipeline",
     "prepare_multimodal_generate_pipeline",
     "prepare_multimodal_prefill_pipeline",
@@ -90,10 +112,7 @@ __all__ = [
     "prepare_text_prefill_pipeline",
     "prepare_text_pipeline",
     "load_pipeline_manifest",
-    "load_stage_bundle_by_index",
-    "load_stage_bundle_for_rank",
-    "run_text_generate_pipeline_rank",
-    "run_text_pipeline_rank",
+    "TextTensorParallelRunner",
     "load_text_stage_bundle",
     "run_text_tensor_parallel_rank",
     "prepare_multimodal_decode_hybrid",
@@ -104,45 +123,162 @@ __all__ = [
     "prepare_text_prefill_hybrid",
     "prepare_text_hybrid",
     "load_hybrid_manifest",
-    "init_stage_groups",
-    "resolve_rank_stage",
-    "TextHybridRunner",
-    "run_text_hybrid_rank",
-    "StageBundleView",
-    "as_stage_bundle_view",
-    "get_stage_type",
-    "get_stage_input",
-    "get_stage_output",
-    "build_stage_bundle",
-    "build_stage_handoff_target_dtypes",
-    "build_stage_handoff_payload",
-    "apply_stage_handoff_payload",
-    "run_stage",
-    "run_stage_tp",
-    "trace_stage",
-    "trace_stage_tp",
-    "StageHandoffMessage",
-    "StageHandoffTransport",
-    "TensorPayload",
-    "send_payload",
-    "recv_payload",
-    "send_tensor",
-    "recv_tensor",
-    "send_hidden_states",
-    "recv_hidden_states",
-    "tensor_diff_stats",
 ]
 
+__all__ = [*DIRECT_RUNTIME_EXPORTS]
 
-def __getattr__(name: str):
-    for module_name in _LAZY_MODULES:
-        module = import_module(module_name)
-        if hasattr(module, name):
-            value = getattr(module, name)
-            globals()[name] = value
-            return value
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+_MODULE_EXPORTS = {
+    "qwen3vl_tp_runtime.hexgen_core.config": [
+        "MODEL_PATH",
+        "FRAME_DIR",
+        "FULL_LAYER_BUNDLE_PATH",
+        "LAYER_RANGE_BUNDLE_PATH",
+        "TEXT_STAGE_BUNDLE_PATH",
+        "MULTIMODAL_PREFILL_BUNDLE_PATH",
+        "MULTIMODAL_DECODE_BUNDLE_PATH",
+        "TEXT_DECODE_BUNDLE_PATH",
+        "TEXT_GENERATE_BUNDLE_PATH",
+        "TEXT_PREFILL_BUNDLE_PATH",
+        "TEXT_DECODE_PIPELINE_BUNDLE_DIR",
+        "TEXT_DECODE_PIPELINE_MANIFEST_PATH",
+        "TEXT_GENERATE_PIPELINE_BUNDLE_DIR",
+        "TEXT_GENERATE_PIPELINE_MANIFEST_PATH",
+        "MULTIMODAL_PREFILL_PIPELINE_BUNDLE_DIR",
+        "MULTIMODAL_PREFILL_PIPELINE_MANIFEST_PATH",
+        "MULTIMODAL_DECODE_PIPELINE_BUNDLE_DIR",
+        "MULTIMODAL_DECODE_PIPELINE_MANIFEST_PATH",
+        "MULTIMODAL_GENERATE_PIPELINE_BUNDLE_DIR",
+        "MULTIMODAL_GENERATE_PIPELINE_MANIFEST_PATH",
+        "TEXT_GENERATE_HYBRID_BUNDLE_DIR",
+        "TEXT_GENERATE_HYBRID_MANIFEST_PATH",
+        "MULTIMODAL_PREFILL_HYBRID_BUNDLE_DIR",
+        "MULTIMODAL_PREFILL_HYBRID_MANIFEST_PATH",
+        "MULTIMODAL_DECODE_HYBRID_BUNDLE_DIR",
+        "MULTIMODAL_DECODE_HYBRID_MANIFEST_PATH",
+        "MULTIMODAL_GENERATE_HYBRID_BUNDLE_DIR",
+        "MULTIMODAL_GENERATE_HYBRID_MANIFEST_PATH",
+        "TEXT_DECODE_HYBRID_BUNDLE_DIR",
+        "TEXT_DECODE_HYBRID_MANIFEST_PATH",
+        "TEXT_PREFILL_PIPELINE_BUNDLE_DIR",
+        "TEXT_PREFILL_PIPELINE_MANIFEST_PATH",
+        "TEXT_PREFILL_HYBRID_BUNDLE_DIR",
+        "TEXT_PREFILL_HYBRID_MANIFEST_PATH",
+    ],
+    "qwen3vl_tp_runtime.hexgen_core.distributed": [
+        "getenv_int",
+        "init_dist",
+        "get_device",
+        "all_reduce_cpu",
+        "broadcast_cpu",
+    ],
+    "qwen3vl_tp_runtime.hexgen_core.gen_hetero_groups": [
+        "parse_tp_degrees",
+        "build_stage_rank_groups",
+        "build_pp_rank_groups",
+        "build_p2p_lists",
+        "build_hybrid_layout",
+    ],
+    "qwen3vl_tp_runtime.hexgen_core.schema": [
+        "StageReplaySpec",
+        "ManifestReplaySpec",
+        "StageSpec",
+        "BoundaryStats",
+        "TextPipelineManifest",
+        "HybridLayout",
+        "TextHybridManifest",
+        "HybridRankContext",
+        "PayloadSummary",
+        "StageHandoffPayload",
+    ],
+    "qwen3vl_tp_runtime.hexgen_core.stage": [
+        "StageBundleView",
+        "as_stage_bundle_view",
+        "get_stage_type",
+        "get_stage_input",
+        "get_stage_output",
+        "build_stage_bundle",
+        "build_stage_handoff_target_dtypes",
+        "build_stage_handoff_payload",
+        "apply_stage_handoff_payload",
+        "run_stage",
+        "run_stage_tp",
+        "trace_stage",
+        "trace_stage_tp",
+    ],
+    "qwen3vl_tp_runtime.hexgen_core.transport": [
+        "StageHandoffMessage",
+        "StageHandoffTransport",
+        "TensorPayload",
+        "send_payload",
+        "recv_payload",
+        "send_tensor",
+        "recv_tensor",
+        "send_hidden_states",
+        "recv_hidden_states",
+    ],
+    "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel": [
+        "TextGeneratePipelineRunner",
+        "TextPipelineRunner",
+        "build_stage_bundle_path",
+        "parse_stage_range",
+        "parse_stage_ranges",
+        "prepare_multimodal_decode_pipeline",
+        "prepare_multimodal_generate_pipeline",
+        "prepare_multimodal_prefill_pipeline",
+        "prepare_text_decode_pipeline",
+        "prepare_text_generate_pipeline",
+        "prepare_text_prefill_pipeline",
+        "prepare_text_pipeline",
+        "load_pipeline_manifest",
+        "load_stage_bundle_by_index",
+        "load_stage_bundle_for_rank",
+        "run_text_generate_pipeline_rank",
+        "run_text_pipeline_rank",
+        "tensor_diff_stats",
+    ],
+    "qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel": [
+        "TextTensorParallelRunner",
+        "load_text_stage_bundle",
+        "run_text_tensor_parallel_rank",
+    ],
+    "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel": [
+        "prepare_multimodal_decode_hybrid",
+        "prepare_multimodal_generate_hybrid",
+        "prepare_multimodal_prefill_hybrid",
+        "prepare_text_decode_hybrid",
+        "prepare_text_generate_hybrid",
+        "prepare_text_prefill_hybrid",
+        "prepare_text_hybrid",
+        "load_hybrid_manifest",
+        "init_stage_groups",
+        "resolve_rank_stage",
+        "TextHybridRunner",
+        "run_text_hybrid_rank",
+    ],
+}
+
+_NAME_TO_MODULE = {
+    name: module_name
+    for module_name, names in _MODULE_EXPORTS.items()
+    for name in names
+}
+_EXPORT_GROUP_BY_NAME = {
+    **{name: "direct" for name in DIRECT_RUNTIME_EXPORTS},
+    **{name: "legacy_replay" for name in LEGACY_REPLAY_EXPORTS},
+}
+
+
+def __getattr__(name: str) -> Any:
+    if name not in _EXPORT_GROUP_BY_NAME:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module_name = _NAME_TO_MODULE.get(name)
+    if module_name is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module = import_module(module_name)
+    value = getattr(module, name)
+    globals()[name] = value
+    return value
 
 
 def __dir__() -> list[str]:
-    return sorted(set(globals()) | set(__all__))
+    return sorted(set(globals()) | set(DIRECT_RUNTIME_EXPORTS) | set(LEGACY_REPLAY_EXPORTS))

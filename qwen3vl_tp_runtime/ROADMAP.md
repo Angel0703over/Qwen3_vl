@@ -1,187 +1,23 @@
 # qwen3vl_tp_runtime Roadmap
 
-这份文档用于固定我们已经对齐的推进顺序。
-
-默认规则：
-
-- 后续工作按这里的顺序推进。
-- 如果没有新的明确讨论，不随意换顺序。
-- 当前先不做 KV cache manager。
-
-## 当前快照
-
-已基本完成：
-
-- `text` 的 `pp/tp/hybrid` 主运行路径已经 direct-first，不再默认依赖磁盘 bundle。
-- `text` 权重索引层已经有了：`weights/index.py`、`weights/loader.py`、`weights/planner.py`。
-- `text` 的 `PP stage-only load` 已经基本成型。
-- `text` 的 `TP local-shard load + local-shard kernel` 已经基本成型。
-- `--manifest-path replay` 已经降级为 debug-only，用法上不再是主路径。
-
-部分完成：
-
-- `schema` 和 loader 里仍然保留 `bundle_path / bundle_dir` 兼容字段和兼容分支。
-- `multimodal` 已经开始从 `runtime_builder.py` 里拆边界，新增了 `models/qwen3vl/runtime_mm.py`。
-- `hybrid multimodal` 已经不会误走 text prompt metadata 路径，但还没有自己的 frontend metadata/runtime contract。
-- `legacy/debug` 兼容层仍然大量保留在 `capture/`、`tensor_parallel.py`、`prepare_*`、`__init__` 导出面里。
-
-尚未完成：
-
-- `multimodal direct/stage-only load`
-- `hybrid multimodal` 的本地 shard/stage 构建
-- 主 schema 的最终瘦身
-- legacy/debug 最后一波下沉
-- 基线验收矩阵
-- 系统化性能验收
-
-## 约定顺序
-
-### 1. 冻结最小基线验收
-
-目标：
-
-- 固定一组 `hf/live/pp/tp/hybrid` 的 `text/multimodal generate` 回归命令。
-- 每次回归统一比较 `generated_token_ids`、`generated_text`、启动时间。
-
-主要文件：
-
-- `scripts/runtime.py`
-- `scripts/runtime_summary.py`
-- `README.md`
-
-说明：
-
-- 峰值显存统计也要纳入，但可以在最后补齐；当前先把命令矩阵固定下来。
-
-### 2. 立起 multimodal 的显式状态边界
-
-目标：
-
-- 把 `multimodal` 的 `frontend state`、`decode state`、`stage state` 从当前的大一统对象里拆出来。
-- 新增明确边界模块，例如 `models/qwen3vl/runtime_mm_stage.py`。
-
-主要文件：
-
-- `models/qwen3vl/runtime_mm.py`
-- `models/qwen3vl/live/common.py`
-- `models/qwen3vl/live/inputs.py`
-
-说明：
-
-- 这是当前最优先的一步。
-- 这一步先做边界，不要求一次把 vision shard-only 全部做完。
-
-### 3. 让 multimodal decode 只依赖显式状态
-
-目标：
-
-- `decode` 不再从 `model.model.rope_deltas` 读取隐式状态。
-- `rope_deltas`、`position_ids`、`visual_pos_masks`、`deepstack_by_layer` 全部来自显式 runtime state。
-
-主要文件：
-
-- `models/qwen3vl/live/inputs.py`
-- `models/qwen3vl/runtime_mm.py`
-- `models/qwen3vl/runtime_mm_stage.py`
-
-### 4. 把 runtime_builder 接到新的 multimodal state 边界
-
-目标：
-
-- 收掉 `runtime_builder.py` 里 multimodal 相关的裸 `dict` 状态和临时拼装逻辑。
-- 让 builder 明确消费新的 `frontend state / stage state`。
-
-主要文件：
-
-- `models/qwen3vl/runtime_builder.py`
-
-### 5. 给 pp/hybrid 接上 multimodal direct loader 协议
-
-目标：
-
-- 给 multimodal 定义自己的 frontend metadata / runtime metadata / scaffold 约定。
-- 不再只是“跳过 text prompt metadata”，而是真正有自己的 direct contract。
-
-主要文件：
-
-- `hexgen_core/modules/pipeline_parallel.py`
-- `hexgen_core/modules/hybrid_parallel.py`
-
-### 6. 做 multimodal 的 stage-only load
-
-目标：
-
-- `stage0` 负责 vision/frontend。
-- 非 `stage0` 只负责 decoder stage。
-- 主 direct runtime 分支里不再整模 `load_model()`。
-
-主要文件：
-
-- `models/qwen3vl/runtime_mm.py`
-- `models/qwen3vl/runtime_mm_stage.py`
-- `models/qwen3vl/vision/encoder.py`
-- `models/qwen3vl/vision/deepstack.py`
-- 可能新增 `models/qwen3vl/weights/vision.py`
-
-### 7. 收 hybrid multimodal
-
-目标：
-
-- `hybrid` 的每个 rank 按 `(stage_idx, tp_rank)` 本地构建自己的 multimodal runtime。
-- stage leader 只广播轻量元数据，不再广播完整 multimodal stage bundle。
-
-主要文件：
-
-- `hexgen_core/modules/hybrid_parallel.py`
-
-### 8. 收 schema 和主 CLI
-
-目标：
-
-- manifest 只保留 direct runtime 所需最小信息。
-- 主路径不再显式暴露 bundle/replay 语义。
-- `bundle_path is None` 这类主路径分叉继续减少。
-
-主要文件：
-
-- `hexgen_core/schema.py`
-- `scripts/runtime.py`
-- `scripts/runtime_cli.py`
-
-### 9. 清理 legacy/debug 兼容层
-
-目标：
-
-- `capture/*`
-- `prepare_*`
-- `tensor_parallel.py`
-- compatibility `__init__` 导出
-
-这些都进一步下沉为 debug-only，不再污染主运行面。
-
-主要文件：
-
-- `hexgen_core/modules/tensor_parallel.py`
-- `hexgen_core/modules/__init__.py`
-- `models/qwen3vl/__init__.py`
-- `models/qwen3vl/capture/*`
-- `hexgen_core/modules/pipeline_parallel.py`
-- `hexgen_core/modules/hybrid_parallel.py`
-
-### 10. 做最终性能验收
-
-目标：
-
-- 验证启动时间下降。
-- 验证峰值显存下降。
-- 验证 `PP` rank 不再加载无关层。
-- 验证 `TP` rank 不再持有完整层权重。
-- 验证 `PP/TP/hybrid` 输出一致性。
-
-## 当前默认下一步
-
-当前默认下一步是：
-
-`步骤 2：立起 multimodal 的显式状态边界`
-
-只有当这一步稳定后，后面的 `multimodal direct loader`、`stage-only load`、`hybrid multimodal` 才会顺下来。
+## 目标
+
+- `TP` 不能再是“每张卡先拿完整权重，再在计算时按 rank 切一刀”，而要改成“每张卡只拿自己那份权重”。
+- `PP / TP / hybrid` 主运行路径不能再默认依赖 `bundle / manifest replay` 这类准备物，而要在启动时直接从 `model_path` 构建每个 `stage/rank` 的运行参数。
+- 在上面两条主目标基础上，继续把 multimodal direct runtime 收口到更彻底的 `stage-only / shard-only` 形态。
+- 当前主线已经完成 `direct schema` 与 `replay schema` 的初步分离，并把 package-level compat exports 收紧成：`__all__` 只代表 direct 主路径，legacy replay/capture 入口单独挂在 `LEGACY_*_EXPORTS` 下。
+- 当前已继续把 concrete runtime modules 的导出面收紧：`pipeline_parallel / hybrid_parallel` 的 `__all__` 只保留 direct runner/loader，`prepare_* / load_*_manifest` 进入 `LEGACY_REPLAY_EXPORTS`；纯 bundle TP replay 进入 `DEBUG_REPLAY_EXPORTS`。
+- 当前已把 `load_pipeline_manifest / load_hybrid_manifest` 从主 runtime import 面移出，`--manifest-path` 只通过 `runtime_replay` debug helper 进入 manifest replay。
+- 当前 `pp / hybrid multimodal generate` 真实 smoke 已通过，`token_match=true`，可以把这轮 `schema / legacy / debug-only transport` cleanup 判定为过线。
+- 当前已开始 `TP` 本地分片加载收口：`TextDecoderStageWeightPlan / load_text_decoder_stage_weight_bundle` 已经明确区分 TP 必须分片读取的 q/k/v/o、MLP 投影参数，以及仍需复制的 embedding、norm、bias、lm_head 等参数；TP 分片模式下缺少必要 `tensor_slices` 会直接报错。
+- 当前已确认 `materialize_text_stage_bundle -> backend=tp|hybrid` direct runtime 链路：`backend=tp` 走 hybrid-family direct manifest；所有 direct `tp_degree > 1` stage 先广播无权重 scaffold，再由每个 rank 用本地 `tp_shard_rank/tp_shard_world_size` materialize 自己的 shard。若 materialize 出来的 bundle 不是 `tp_weight_sharded=True`，会直接报错。
+- 当前 `backend=tp` 与 `backend=hybrid` 的真实 text generate smoke 已通过，确认 shard-only 权重路径可以稳定跑通。
+- 当前 hybrid-family runtime summary 已输出 `weight_load`，用于记录每个 rank 的 `tp_weight_sharded / tp_shard_rank / tp_shard_world_size`、本地权重 tensor 数量/字节数，以及 TP 分片参数与复制参数计数，后续 smoke 不再只依赖启动日志肉眼判断。
+- 当前 `backend=hybrid` text generate 新版 summary smoke 已通过：stage0 的两个 TP rank 分别显示 `tp_shard_rank=0/2` 和 `1/2`，stage1 单卡显示 `tp_weight_sharded=false` 且只加载 `18:35 + final_norm/lm_head`。
+- 当前 `backend=tp` text generate 新版 summary smoke 已通过：两个 TP rank 分别显示 `tp_shard_rank=0/2` 和 `1/2`，`loaded_weight_tensor_bytes` 完全一致，确认整段 text decoder 在 TP 模式下走 rank-local shard materialize。
+
+## 下一步
+
+- 保持 `pp / hybrid multimodal` smoke 作为回归门槛，确保 multimodal direct 路径仍然 `token_match=true`。
+- 补一轮启动时间 / 峰值显存记录，确认 TP rank 不再持有完整 decoder 大矩阵，PP rank 不再加载无关 stage 权重。
+- 之后再考虑 embedding / lm_head 的进一步并行化；在实现 vocab/embedding parallel 前，这两类权重仍按执行语义复制。
