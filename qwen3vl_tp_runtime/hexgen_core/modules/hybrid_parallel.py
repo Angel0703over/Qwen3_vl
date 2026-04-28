@@ -369,7 +369,11 @@ def load_stage_state_for_hybrid_rank(
         compute_dtype_name = stage_state["save_dtype"] if compute_dtype_arg == "auto" else compute_dtype_arg
         compute_dtype = dtype_from_name(compute_dtype_name)
         startup_log("hybrid-direct-loader", f"rank={rank} entering post-load barrier")
-        dist.barrier()
+        with startup_timer(
+            "hybrid-direct-loader",
+            f"post-load barrier rank={rank} stage_idx={rank_stage.stage_idx}",
+        ):
+            dist.barrier()
         startup_log(
             "hybrid-direct-loader",
             f"rank={rank} stage_idx={rank_stage.stage_idx} moving local direct StageState "
@@ -432,17 +436,26 @@ def load_stage_state_for_hybrid_rank(
             f"tp_local_rank={rank_stage.local_rank}/{rank_stage.tp_degree} "
             f"compute_dtype={compute_dtype}",
         )
-        stage_state = materialize_text_stage_state(
-            stage_state_scaffold=scaffold,
-            runtime_config=manifest.runtime_config,
-            compute_dtype=compute_dtype,
-            tp_shard_rank=rank_stage.local_rank,
-            tp_shard_world_size=rank_stage.tp_degree,
-        )
+        with startup_timer(
+            "hybrid-direct-loader",
+            f"materialize local direct shard rank={rank} stage_idx={rank_stage.stage_idx} "
+            f"tp_local_rank={rank_stage.local_rank}/{rank_stage.tp_degree}",
+        ):
+            stage_state = materialize_text_stage_state(
+                stage_state_scaffold=scaffold,
+                runtime_config=manifest.runtime_config,
+                compute_dtype=compute_dtype,
+                tp_shard_rank=rank_stage.local_rank,
+                tp_shard_world_size=rank_stage.tp_degree,
+            )
         _validate_rank_local_sharded_state(stage_state, rank_stage)
         _record_tp_stage_weight_load_consistency(stage_state, rank_stage)
         startup_log("hybrid-direct-loader", f"rank={rank} entering post-load barrier")
-        dist.barrier()
+        with startup_timer(
+            "hybrid-direct-loader",
+            f"post-load barrier rank={rank} stage_idx={rank_stage.stage_idx}",
+        ):
+            dist.barrier()
         startup_log(
             "hybrid-direct-loader",
             f"rank={rank} stage_idx={rank_stage.stage_idx} moving materialized local StageState "
@@ -480,7 +493,11 @@ def load_stage_state_for_hybrid_rank(
             tensor_label=f"stage_state_tensors stage_idx={rank_stage.stage_idx}",
         )
         startup_log("hybrid-direct-loader", f"rank={rank} entering post-load barrier")
-        dist.barrier()
+        with startup_timer(
+            "hybrid-direct-loader",
+            f"post-load barrier rank={rank} stage_idx={rank_stage.stage_idx}",
+        ):
+            dist.barrier()
     else:
         replay_bundle_path = getattr(stage_meta, "replay_bundle_path", None) or getattr(
             stage_meta,

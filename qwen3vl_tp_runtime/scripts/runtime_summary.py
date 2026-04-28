@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
+import resource
 import sys
+import time
+from collections import defaultdict
 from functools import lru_cache
+from typing import Any
 
 import torch
 
 from qwen3vl_tp_runtime.debug.tp_debug import TpDebugConfig
+from qwen3vl_tp_runtime.hexgen_core.distributed import (
+    get_startup_timing_events,
+    reset_startup_timing_events,
+)
 from qwen3vl_tp_runtime.models.qwen3vl.processing import load_processor
 from qwen3vl_tp_runtime.scripts.common import summarize_last_token_topk
 
@@ -28,6 +36,175 @@ def _tensor_shape_map_to_json(payload: dict[str, tuple[int, ...] | None]) -> dic
         key: (None if value is None else list(value))
         for key, value in payload.items()
     }
+
+
+def reset_runtime_metrics() -> None:
+    reset_startup_timing_events()
+    if not torch.cuda.is_available():
+        return
+    try:
+        for device_idx in range(torch.cuda.device_count()):
+            with torch.cuda.device(device_idx):
+                torch.cuda.reset_peak_memory_stats(device_idx)
+    except Exception:
+        return
+
+
+def _round_seconds(value: float) -> float:
+    return round(float(value), 6)
+
+
+def _classify_startup_event(event: dict[str, Any]) -> str:
+    component = str(event.get("component", ""))
+    message = str(event.get("message", "")).lower()
+    if "post-load barrier" in message:
+        return "post_load_barrier_seconds"
+    if "startup_contract" in message:
+        if component in {"object-send", "object-recv", "tensor-send", "tensor-recv"}:
+            return "startup_contract_transport_seconds"
+        return "startup_contract_prepare_seconds"
+    if "prepare " in message and " session" in message:
+        return "prepare_session_seconds"
+    if message.startswith("materialize ") or "materialize local direct shard" in message:
+        return "materialize_stage_seconds"
+    if "stage_scaffold" in message or "text_scaffold" in message or "stage_state_" in message:
+        return "scaffold_transport_seconds"
+    return "other_seconds"
+
+
+def _summarize_startup_events(events: list[dict[str, Any]]) -> dict[str, Any]:
+    totals_by_component: defaultdict[str, float] = defaultdict(float)
+    totals_by_kind: defaultdict[str, float] = defaultdict(float)
+    normalized_events: list[dict[str, Any]] = []
+    for event in events:
+        elapsed = float(event.get("elapsed_seconds") or 0.0)
+        component = str(event.get("component", "unknown"))
+        kind = _classify_startup_event(event)
+        totals_by_component[component] += elapsed
+        totals_by_kind[kind] += elapsed
+        normalized = dict(event)
+        normalized["kind"] = kind
+        normalized["elapsed_seconds"] = _round_seconds(elapsed)
+        normalized_events.append(normalized)
+
+    startup_contract_seconds = (
+        totals_by_kind["startup_contract_prepare_seconds"]
+        + totals_by_kind["startup_contract_transport_seconds"]
+    )
+    for key in (
+        "prepare_session_seconds",
+        "startup_contract_prepare_seconds",
+        "startup_contract_transport_seconds",
+        "materialize_stage_seconds",
+        "post_load_barrier_seconds",
+        "scaffold_transport_seconds",
+        "other_seconds",
+    ):
+        totals_by_kind.setdefault(key, 0.0)
+    totals_by_kind["startup_contract_seconds"] = startup_contract_seconds
+
+    return {
+        "event_count": len(normalized_events),
+        "events": normalized_events,
+        "totals_by_component": {
+            key: _round_seconds(value)
+            for key, value in sorted(totals_by_component.items())
+        },
+        "totals_by_kind": {
+            key: _round_seconds(value)
+            for key, value in sorted(totals_by_kind.items())
+        },
+    }
+
+
+def _maxrss_bytes() -> int | None:
+    try:
+        maxrss = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+    except Exception:
+        return None
+    if sys.platform == "darwin":
+        return maxrss
+    return maxrss * 1024
+
+
+def _collect_cuda_memory() -> dict[str, Any]:
+    try:
+        cuda_available = torch.cuda.is_available()
+    except Exception as exc:
+        return {
+            "cuda_available": False,
+            "cuda_error": f"{type(exc).__name__}: {exc}",
+            "devices": [],
+            "peak_allocated_bytes": None,
+            "peak_reserved_bytes": None,
+        }
+    if not cuda_available:
+        return {
+            "cuda_available": False,
+            "devices": [],
+            "peak_allocated_bytes": None,
+            "peak_reserved_bytes": None,
+        }
+
+    devices: list[dict[str, Any]] = []
+    peak_allocated = 0
+    peak_reserved = 0
+    try:
+        device_count = torch.cuda.device_count()
+        for device_idx in range(device_count):
+            allocated = int(torch.cuda.memory_allocated(device_idx))
+            reserved = int(torch.cuda.memory_reserved(device_idx))
+            max_allocated = int(torch.cuda.max_memory_allocated(device_idx))
+            max_reserved = int(torch.cuda.max_memory_reserved(device_idx))
+            peak_allocated = max(peak_allocated, max_allocated)
+            peak_reserved = max(peak_reserved, max_reserved)
+            devices.append(
+                {
+                    "device": f"cuda:{device_idx}",
+                    "memory_allocated_bytes": allocated,
+                    "memory_reserved_bytes": reserved,
+                    "max_memory_allocated_bytes": max_allocated,
+                    "max_memory_reserved_bytes": max_reserved,
+                }
+            )
+    except Exception as exc:
+        return {
+            "cuda_available": True,
+            "cuda_error": f"{type(exc).__name__}: {exc}",
+            "devices": devices,
+            "peak_allocated_bytes": None,
+            "peak_reserved_bytes": None,
+        }
+
+    return {
+        "cuda_available": True,
+        "devices": devices,
+        "peak_allocated_bytes": peak_allocated,
+        "peak_reserved_bytes": peak_reserved,
+    }
+
+
+def _attach_runtime_metrics(
+    summary: dict[str, Any],
+    *,
+    started_at: float,
+    extra_timings: dict[str, float] | None = None,
+) -> dict[str, Any]:
+    timing = {
+        "runtime_total_seconds": _round_seconds(time.perf_counter() - started_at),
+    }
+    for key, value in (extra_timings or {}).items():
+        timing[key] = _round_seconds(value)
+
+    summary["runtime_metrics"] = {
+        "timing": timing,
+        "startup": _summarize_startup_events(get_startup_timing_events()),
+        "memory": {
+            "cpu_max_rss_bytes": _maxrss_bytes(),
+            **_collect_cuda_memory(),
+        },
+    }
+    return summary
 
 
 @lru_cache(maxsize=4)
@@ -270,7 +447,9 @@ def _summarize_hybrid_run(
 
 __all__ = [
     "_attach_generated_texts",
+    "_attach_runtime_metrics",
     "_summarize_hybrid_run",
     "_summarize_pipeline_generate_run",
     "_summarize_pipeline_run",
+    "reset_runtime_metrics",
 ]

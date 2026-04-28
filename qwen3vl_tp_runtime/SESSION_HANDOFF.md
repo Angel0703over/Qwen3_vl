@@ -458,6 +458,20 @@ PYTHONPATH=. /mnt/ssd/miniconda3/envs/vlm/bin/python \
 - `test/test_check_baseline_logs.py`
 - `test/test_runtime_builder_handoffs.py`
 
+runtime core 最小回归矩阵已固化为：
+
+```bash
+bash qwen3vl_tp_runtime/scripts/helpers/run-runtime-core-regression.sh
+```
+
+权重加载相关改动额外加：
+
+```bash
+bash qwen3vl_tp_runtime/scripts/helpers/run-runtime-core-regression.sh --include-weight-loader
+```
+
+默认矩阵会跑核心 direct loader / CLI / summary / compat 单测，并检查 `baseline_runs/20260428` 下 6 个 distributed case 的 frozen rank logs。
+
 本轮 runtime smoke wrapper 固化后已运行并通过：
 
 ```bash
@@ -1218,6 +1232,42 @@ PYTHONPATH=. /mnt/ssd/miniconda3/envs/vlm/bin/python test/test_compat_package_ex
 - 用户有时要求“不要设置环境变量，完整命令给我”，这种情况下要给完整命令，不要只给变量模板。
 - 用户希望代码结构“函数名和功能一致、简洁”，类名可以添加，但要真的有意义。
 - 用户希望 import 尽量相对路径；但 `scripts/runtime.py` 因直接执行保留绝对 import 是可以解释的。
+
+## P3 性能 / 显存记录状态
+
+ROADMAP step 9 已落地。
+
+新增或更新：
+
+- `qwen3vl_tp_runtime/scripts/collect_runtime_perf.py`
+- `test/test_collect_runtime_perf.py`
+- `runtime_metrics` 写入 runtime JSON summary
+- `baseline_runs/20260428/runtime-perf-records.json`
+- `baseline_runs/20260428/runtime-perf-table.md`
+
+`runtime_metrics` 字段：
+
+- `runtime_metrics.timing.runtime_total_seconds`
+- `runtime_metrics.startup.events`
+- `runtime_metrics.startup.totals_by_kind.prepare_session_seconds`
+- `runtime_metrics.startup.totals_by_kind.startup_contract_transport_seconds`
+- `runtime_metrics.startup.totals_by_kind.materialize_stage_seconds`
+- `runtime_metrics.startup.totals_by_kind.post_load_barrier_seconds`
+- `runtime_metrics.memory.cpu_max_rss_bytes`
+- `runtime_metrics.memory.peak_allocated_bytes`
+- `runtime_metrics.memory.peak_reserved_bytes`
+
+收集命令：
+
+```bash
+PYTHONPATH=. /mnt/ssd/miniconda3/envs/vlm/bin/python \
+  qwen3vl_tp_runtime/scripts/collect_runtime_perf.py \
+  --baseline-dir baseline_runs/20260428 \
+  --output-json baseline_runs/20260428/runtime-perf-records.json \
+  --output-md baseline_runs/20260428/runtime-perf-table.md
+```
+
+当前 `baseline_runs/20260428` 是旧 correctness log：能解析已有 startup timer、`/usr/bin/time -p real` 和 loaded weight bytes，但没有 CUDA peak memory 字段；新代码重跑任意 runtime case 后会在 JSON summary 中直接出现 peak allocated/reserved。
 
 ## 继续工作时的默认流程
 

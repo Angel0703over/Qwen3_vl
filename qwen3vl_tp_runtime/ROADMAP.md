@@ -287,7 +287,7 @@ rg -n "stage_bundle|bundle" qwen3vl_tp_runtime -g'*.py' -g'*.md'
 - `BASELINE.md` 更新实际日期、log 路径、generated ids、generated text。
 - distributed case 用新的 baseline checker 自动检查，结果保存为 `baseline_runs/20260428/check-baseline-logs.txt`。
 
-### 8. 每次 runtime core 变更后的最小回归矩阵
+### 8. 已完成：每次 runtime core 变更后的最小回归矩阵
 
 如果改到这些文件：
 
@@ -300,20 +300,29 @@ rg -n "stage_bundle|bundle" qwen3vl_tp_runtime -g'*.py' -g'*.md'
 - `transport.py`
 - `schema.py`
 
-至少跑：
+固定入口：
 
 ```bash
-PYTHONPATH=. /mnt/ssd/miniconda3/envs/vlm/bin/python test/test_tensor_parallel_direct.py
-PYTHONPATH=. /mnt/ssd/miniconda3/envs/vlm/bin/python test/test_pipeline_direct_loader.py
-PYTHONPATH=. /mnt/ssd/miniconda3/envs/vlm/bin/python test/test_hybrid_direct_loader.py
-PYTHONPATH=. /mnt/ssd/miniconda3/envs/vlm/bin/python test/test_runtime_cli_modes.py
-PYTHONPATH=. /mnt/ssd/miniconda3/envs/vlm/bin/python test/test_compat_package_exports.py
+bash qwen3vl_tp_runtime/scripts/helpers/run-runtime-core-regression.sh
 ```
+
+该脚本会跑：
+
+- `test/test_check_baseline_logs.py`
+- `test/test_collect_runtime_perf.py`
+- `test/test_runtime_builder_handoffs.py`
+- `test/test_tensor_parallel_direct.py`
+- `test/test_pipeline_direct_loader.py`
+- `test/test_hybrid_direct_loader.py`
+- `test/test_runtime_cli_modes.py`
+- `test/test_runtime_summary.py`
+- `test/test_compat_package_exports.py`
+- `baseline_runs/20260428` 下 6 个 distributed case 的 baseline checker
 
 如果改到权重加载：
 
 ```bash
-PYTHONPATH=. /mnt/ssd/miniconda3/envs/vlm/bin/python test/test_model_weight_loader.py
+bash qwen3vl_tp_runtime/scripts/helpers/run-runtime-core-regression.sh --include-weight-loader
 ```
 
 如果改到真实 generate 路径，额外在 Jetson 跑：
@@ -322,35 +331,65 @@ PYTHONPATH=. /mnt/ssd/miniconda3/envs/vlm/bin/python test/test_model_weight_load
 - `pp-mm-generate`
 - `hybrid-mm-generate`
 
+可选项：
+
+- `--baseline-dir PATH`：切换冻结 baseline log 目录。
+- `--skip-baseline-checks`：只跑本地单测，不检查冻结 rank log。
+
+验收：
+
+- `bash -n qwen3vl_tp_runtime/scripts/helpers/run-runtime-core-regression.sh` 通过。
+- 默认矩阵已通过。
+
 ## P3：性能和显存基线
 
-### 9. 建立启动耗时和显存记录
+### 9. 已完成：建立启动耗时和显存记录
 
-背景：
+已落地：
 
-- 当前验收重点是 correctness 和 shard/stage scope。
-- 启动时间和峰值显存还没有系统记录。
+- runtime JSON summary 增加 `runtime_metrics`：
+  - `runtime_metrics.timing.runtime_total_seconds`
+  - `runtime_metrics.startup.events`
+  - `runtime_metrics.startup.totals_by_kind.prepare_session_seconds`
+  - `runtime_metrics.startup.totals_by_kind.startup_contract_transport_seconds`
+  - `runtime_metrics.startup.totals_by_kind.materialize_stage_seconds`
+  - `runtime_metrics.startup.totals_by_kind.post_load_barrier_seconds`
+  - `runtime_metrics.memory.cpu_max_rss_bytes`
+  - `runtime_metrics.memory.peak_allocated_bytes`
+  - `runtime_metrics.memory.peak_reserved_bytes`
+- `startup_timer` 现在会记录机器可读事件。
+- object/tensor send/recv/broadcast 会记录 transport timing。
+- PP/HYBRID post-load barrier 已纳入 timing。
+- TP/HYBRID rank-local shard materialize 已纳入 timing。
+- HF/live summary 也会带 runtime/memory metrics。
 
-目标：
+收集入口：
 
-- 给每个 baseline case 记录：
-  - prepare session 时间
-  - startup contract broadcast 时间
-  - materialize stage 时间
-  - post-load barrier 时间
-  - generate 总时间
-  - 峰值显存
+```bash
+PYTHONPATH=. /mnt/ssd/miniconda3/envs/vlm/bin/python \
+  qwen3vl_tp_runtime/scripts/collect_runtime_perf.py \
+  --baseline-dir baseline_runs/20260428 \
+  --output-json baseline_runs/20260428/runtime-perf-records.json \
+  --output-md baseline_runs/20260428/runtime-perf-table.md
+```
 
-建议：
+当前 20260428 correctness baseline 已生成兼容旧日志的性能表：
 
-- 继续使用 `HEXGEN_STARTUP_LOG=1`。
-- 在 runner summary 增加可机器读取的 timing 字段，而不仅是 stdout log。
-- 如果可行，记录 `torch.cuda.max_memory_allocated()` 和 `torch.cuda.max_memory_reserved()`。
+- `baseline_runs/20260428/runtime-perf-records.json`
+- `baseline_runs/20260428/runtime-perf-table.md`
+
+注意：
+
+- 旧 log 没有 `runtime_metrics.memory.*`，所以当前表里 CUDA peak 显存为空。
+- 新代码重跑 baseline 后，summary 会直接写入 peak allocated/reserved。
+- 旧 multimodal wrapper log 没有 `/usr/bin/time real`，新代码重跑后用 `runtime_total_seconds` 补齐。
 
 验收：
 
 - `BASELINE.md` 增加性能/显存表。
-- 每个 rank 的 timing/memory 可以从 JSON summary 或 log checker 读出。
+- 每个 rank 的 timing/memory 可以从 JSON summary 或 `collect_runtime_perf.py` 读出。
+- `test/test_collect_runtime_perf.py` 通过。
+- `test/test_runtime_summary.py` 通过。
 
 ### 10. 性能优化候选
 

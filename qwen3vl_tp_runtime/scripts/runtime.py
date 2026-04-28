@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 
 import torch
@@ -51,9 +52,11 @@ from qwen3vl_tp_runtime.scripts.runtime_cli import (
 )
 from qwen3vl_tp_runtime.scripts.runtime_summary import (
     _attach_generated_texts,
+    _attach_runtime_metrics,
     _summarize_hybrid_run,
     _summarize_pipeline_generate_run,
     _summarize_pipeline_run,
+    reset_runtime_metrics,
 )
 from qwen3vl_tp_runtime.scripts.live import live_multimodal_runtime
 
@@ -110,6 +113,8 @@ def _trim_generated_ids(
 
 
 def _run_hf_generate(args: argparse.Namespace) -> None:
+    started_at = time.perf_counter()
+    reset_runtime_metrics()
     model = load_model(
         args.model_path,
         attn_implementation=args.attn_implementation,
@@ -135,11 +140,13 @@ def _run_hf_generate(args: argparse.Namespace) -> None:
         )
 
     inputs = inputs.to(device)
+    generate_started_at = time.perf_counter()
     with torch.inference_mode():
         generated_ids = model.generate(
             **inputs,
             **_build_hf_generation_kwargs(args),
         )
+    generate_seconds = time.perf_counter() - generate_started_at
 
     input_ids = inputs["input_ids"]
     trimmed_ids = _trim_generated_ids(input_ids, generated_ids)
@@ -172,6 +179,11 @@ def _run_hf_generate(args: argparse.Namespace) -> None:
         summary["frame_paths"] = frame_paths
         summary["sample_fps"] = args.sample_fps
 
+    summary = _attach_runtime_metrics(
+        summary,
+        started_at=started_at,
+        extra_timings={"hf_generate_seconds": generate_seconds},
+    )
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
 
@@ -180,8 +192,10 @@ def _run_live(args: argparse.Namespace) -> None:
 
 
 def _run_pp(args: argparse.Namespace) -> None:
+    started_at = time.perf_counter()
     rank, world_size = init_dist()
     device = get_device(args.device)
+    reset_runtime_metrics()
     manifest = _load_pipeline_manifest_for_args(args)
     if manifest.pipeline_type in GENERATE_PIPELINE_TYPES:
         stats = run_text_generate_pipeline_rank(
@@ -206,14 +220,17 @@ def _run_pp(args: argparse.Namespace) -> None:
         )
         summary = _summarize_pipeline_run(stats, manifest, args.topk)
     summary = _attach_generated_texts(summary, args)
+    summary = _attach_runtime_metrics(summary, started_at=started_at)
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     dist.barrier()
 
 
 def _run_hybrid_family(args: argparse.Namespace, *, backend: str) -> None:
+    started_at = time.perf_counter()
     manifest = _load_hybrid_manifest_for_args(args, backend=backend)
     rank, world_size = init_dist()
     device = get_device(args.device)
+    reset_runtime_metrics()
     debug_config = TpDebugConfig(
         compare_direct=args.compare_direct,
         trace_layers=args.trace_layers,
@@ -239,6 +256,7 @@ def _run_hybrid_family(args: argparse.Namespace, *, backend: str) -> None:
         debug_config=debug_config,
     )
     summary = _attach_generated_texts(summary, args)
+    summary = _attach_runtime_metrics(summary, started_at=started_at)
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     dist.barrier()
 
@@ -248,9 +266,11 @@ def _run_hybrid(args: argparse.Namespace) -> None:
 
 
 def _run_tp(args: argparse.Namespace) -> None:
+    started_at = time.perf_counter()
     manifest = _load_tp_manifest_for_args(args)
     rank, world_size = init_dist()
     device = get_device(args.device)
+    reset_runtime_metrics()
     debug_config = TpDebugConfig(
         compare_direct=args.compare_direct,
         trace_layers=args.trace_layers,
@@ -277,6 +297,7 @@ def _run_tp(args: argparse.Namespace) -> None:
         debug_config=debug_config,
     )
     summary = _attach_generated_texts(summary, args)
+    summary = _attach_runtime_metrics(summary, started_at=started_at)
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     dist.barrier()
 

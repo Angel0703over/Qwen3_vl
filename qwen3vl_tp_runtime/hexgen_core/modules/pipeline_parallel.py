@@ -842,7 +842,8 @@ def load_stage_state_for_rank(
             compute_dtype_arg,
         )
         startup_log("pp-direct-loader", f"rank={rank} entering post-load barrier")
-        dist.barrier()
+        with startup_timer("pp-direct-loader", f"post-load barrier rank={rank}"):
+            dist.barrier()
         startup_log("pp-direct-loader", f"rank={rank} local stage ready compute_dtype={compute_dtype}")
         return stage_state, compute_dtype
 

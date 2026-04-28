@@ -14,6 +14,7 @@ import torch.distributed as dist
 
 _PICKLE_WIRE_FORMAT_MAGIC = b"HXPK1"
 _TORCH_WIRE_FORMAT_MAGIC = b"HXTS1"
+_STARTUP_TIMING_EVENTS: list[dict[str, Any]] = []
 
 
 def getenv_int(name: str, default: int) -> int:
@@ -38,6 +39,31 @@ def startup_log(component: str, message: str) -> None:
     )
 
 
+def reset_startup_timing_events() -> None:
+    _STARTUP_TIMING_EVENTS.clear()
+
+
+def get_startup_timing_events() -> list[dict[str, Any]]:
+    return [dict(event) for event in _STARTUP_TIMING_EVENTS]
+
+
+def _record_startup_timing(
+    component: str,
+    message: str,
+    elapsed_seconds: float,
+    *,
+    status: str = "done",
+) -> None:
+    _STARTUP_TIMING_EVENTS.append(
+        {
+            "component": component,
+            "message": message,
+            "status": status,
+            "elapsed_seconds": round(float(elapsed_seconds), 6),
+        }
+    )
+
+
 @contextmanager
 def startup_timer(component: str, message: str):
     start = time.perf_counter()
@@ -46,10 +72,12 @@ def startup_timer(component: str, message: str):
         yield
     except Exception as exc:
         elapsed = time.perf_counter() - start
+        _record_startup_timing(component, message, elapsed, status="fail")
         startup_log(component, f"fail {message} after {elapsed:.2f}s: {exc!r}")
         raise
     else:
         elapsed = time.perf_counter() - start
+        _record_startup_timing(component, message, elapsed)
         startup_log(component, f"done {message} in {elapsed:.2f}s")
 
 
@@ -172,15 +200,22 @@ def _deserialize_object_from_uint8(payload: torch.Tensor) -> Any:
 
 
 def send_object_cpu(payload: Any, dst: int, label: str | None = None) -> None:
+    message = f"send {label or 'payload'} to dst={dst}"
+    start = time.perf_counter()
     serialized = _serialize_object_to_uint8(payload)
     size = torch.tensor([serialized.numel()], dtype=torch.int64)
     startup_log(
         "object-send",
         f"sending {label or 'payload'} to dst={dst} bytes={int(size.item())}",
     )
-    dist.send(size, dst=dst)
-    if serialized.numel() > 0:
-        dist.send(serialized.contiguous(), dst=dst)
+    try:
+        dist.send(size, dst=dst)
+        if serialized.numel() > 0:
+            dist.send(serialized.contiguous(), dst=dst)
+    except Exception:
+        _record_startup_timing("object-send", message, time.perf_counter() - start, status="fail")
+        raise
+    _record_startup_timing("object-send", message, time.perf_counter() - start)
     startup_log(
         "object-send",
         f"sent {label or 'payload'} to dst={dst} bytes={int(size.item())}",
@@ -188,12 +223,19 @@ def send_object_cpu(payload: Any, dst: int, label: str | None = None) -> None:
 
 
 def recv_object_cpu(src: int, label: str | None = None) -> Any:
+    message = f"recv {label or 'payload'} from src={src}"
+    start = time.perf_counter()
     startup_log("object-recv", f"waiting {label or 'payload'} from src={src}")
     size = torch.empty(1, dtype=torch.int64)
-    dist.recv(size, src=src)
-    payload = torch.empty(int(size.item()), dtype=torch.uint8)
-    if payload.numel() > 0:
-        dist.recv(payload, src=src)
+    try:
+        dist.recv(size, src=src)
+        payload = torch.empty(int(size.item()), dtype=torch.uint8)
+        if payload.numel() > 0:
+            dist.recv(payload, src=src)
+    except Exception:
+        _record_startup_timing("object-recv", message, time.perf_counter() - start, status="fail")
+        raise
+    _record_startup_timing("object-recv", message, time.perf_counter() - start)
     startup_log(
         "object-recv",
         f"received {label or 'payload'} from src={src} bytes={int(size.item())}",
@@ -210,11 +252,18 @@ def send_tensor_payload_cpu(
 ):
     from .transport import send_payload
 
+    message = f"send {label or 'payload'} to dst={dst}"
+    start = time.perf_counter()
     startup_log(
         "tensor-send",
         f"sending {label or 'payload'} to dst={dst} tensors={0 if payload is None else len(payload)}",
     )
-    summary = send_payload(payload, dst=dst, comm_dtype=comm_dtype)
+    try:
+        summary = send_payload(payload, dst=dst, comm_dtype=comm_dtype)
+    except Exception:
+        _record_startup_timing("tensor-send", message, time.perf_counter() - start, status="fail")
+        raise
+    _record_startup_timing("tensor-send", message, time.perf_counter() - start)
     startup_log(
         "tensor-send",
         f"sent {label or 'payload'} to dst={dst} tensors={summary.num_tensors}",
@@ -230,12 +279,19 @@ def recv_tensor_payload_cpu(
 ) -> dict[str, torch.Tensor | None] | None:
     from .transport import recv_payload
 
+    message = f"recv {label or 'payload'} from src={src}"
+    start = time.perf_counter()
     startup_log("tensor-recv", f"waiting {label or 'payload'} from src={src}")
-    payload = recv_payload(
-        src=src,
-        device=torch.device("cpu"),
-        target_dtypes=target_dtypes,
-    )
+    try:
+        payload = recv_payload(
+            src=src,
+            device=torch.device("cpu"),
+            target_dtypes=target_dtypes,
+        )
+    except Exception:
+        _record_startup_timing("tensor-recv", message, time.perf_counter() - start, status="fail")
+        raise
+    _record_startup_timing("tensor-recv", message, time.perf_counter() - start)
     startup_log(
         "tensor-recv",
         f"received {label or 'payload'} from src={src} tensors={0 if payload is None else len(payload)}",
@@ -254,18 +310,25 @@ def broadcast_tensor_payload_cpu(
 ) -> dict[str, torch.Tensor | None] | None:
     from .transport import broadcast_payload
 
+    message = f"broadcast {label or 'payload'} src={src}"
+    start = time.perf_counter()
     startup_log(
         "tensor-bcast",
         f"broadcasting {label or 'payload'} src={src} local_has_payload={payload is not None}",
     )
-    restored = broadcast_payload(
-        payload,
-        src=src,
-        device=torch.device("cpu"),
-        group=group,
-        target_dtypes=target_dtypes,
-        comm_dtype=comm_dtype,
-    )
+    try:
+        restored = broadcast_payload(
+            payload,
+            src=src,
+            device=torch.device("cpu"),
+            group=group,
+            target_dtypes=target_dtypes,
+            comm_dtype=comm_dtype,
+        )
+    except Exception:
+        _record_startup_timing("tensor-bcast", message, time.perf_counter() - start, status="fail")
+        raise
+    _record_startup_timing("tensor-bcast", message, time.perf_counter() - start)
     startup_log(
         "tensor-bcast",
         f"broadcast done for {label or 'payload'} src={src} tensors={0 if restored is None else len(restored)}",
@@ -274,6 +337,8 @@ def broadcast_tensor_payload_cpu(
 
 
 def broadcast_object_cpu(payload: Any | None, src: int, group=None, label: str | None = None) -> Any:
+    message = f"broadcast {label or 'payload'} src={src}"
+    start = time.perf_counter()
     if payload is None:
         serialized = None
         size = torch.tensor([0], dtype=torch.int64)
@@ -285,17 +350,22 @@ def broadcast_object_cpu(payload: Any | None, src: int, group=None, label: str |
         "object-bcast",
         f"broadcasting {label or 'payload'} src={src} local_has_payload={payload is not None}",
     )
-    dist.broadcast(size, src=src, group=group)
+    try:
+        dist.broadcast(size, src=src, group=group)
 
-    if serialized is None:
-        serialized = torch.empty(int(size.item()), dtype=torch.uint8)
-    elif serialized.numel() != int(size.item()):
-        raise RuntimeError(
-            f"broadcast_object_cpu size mismatch: local={serialized.numel()} expected={int(size.item())}"
-        )
+        if serialized is None:
+            serialized = torch.empty(int(size.item()), dtype=torch.uint8)
+        elif serialized.numel() != int(size.item()):
+            raise RuntimeError(
+                f"broadcast_object_cpu size mismatch: local={serialized.numel()} expected={int(size.item())}"
+            )
 
-    if serialized.numel() > 0:
-        dist.broadcast(serialized, src=src, group=group)
+        if serialized.numel() > 0:
+            dist.broadcast(serialized, src=src, group=group)
+    except Exception:
+        _record_startup_timing("object-bcast", message, time.perf_counter() - start, status="fail")
+        raise
+    _record_startup_timing("object-bcast", message, time.perf_counter() - start)
     startup_log(
         "object-bcast",
         f"broadcast done for {label or 'payload'} src={src} bytes={int(size.item())}",

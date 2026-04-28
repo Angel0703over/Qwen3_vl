@@ -3,7 +3,7 @@
 import torch
 import torch.distributed as dist
 
-from ..distributed import broadcast_cpu
+from ..distributed import broadcast_cpu, startup_log, startup_timer
 from ..schema import StageState, TensorParallelManifest
 from ...debug.tp_debug import (
     TpDebugConfig,
@@ -79,6 +79,11 @@ def load_stage_state_for_tp_rank(
     runtime_modality = str(manifest.runtime_config.get("modality", "multimodal"))
 
     if _all_tp_stages_are_direct(manifest):
+        startup_log(
+            "tp-direct-loader",
+            f"rank={rank} building shared direct scaffold stage_idx={stage_meta.stage_idx} "
+            f"range={stage_meta.start_idx}:{stage_meta.end_idx}",
+        )
         scaffold = build_direct_stage_state(
             stage_idx=stage_meta.stage_idx,
             start_idx=stage_meta.start_idx,
@@ -91,13 +96,18 @@ def load_stage_state_for_tp_rank(
         )
         compute_dtype_name = scaffold["save_dtype"] if compute_dtype_arg == "auto" else compute_dtype_arg
         compute_dtype = dtype_from_name(compute_dtype_name)
-        stage_state = materialize_text_stage_state(
-            stage_state_scaffold=scaffold,
-            runtime_config=manifest.runtime_config,
-            compute_dtype=compute_dtype,
-            tp_shard_rank=rank,
-            tp_shard_world_size=world_size,
-        )
+        with startup_timer(
+            "tp-direct-loader",
+            f"materialize local direct shard rank={rank} stage_idx={stage_meta.stage_idx} "
+            f"tp_local_rank={rank}/{world_size}",
+        ):
+            stage_state = materialize_text_stage_state(
+                stage_state_scaffold=scaffold,
+                runtime_config=manifest.runtime_config,
+                compute_dtype=compute_dtype,
+                tp_shard_rank=rank,
+                tp_shard_world_size=world_size,
+            )
     else:
         replay_bundle_path = getattr(stage_meta, "replay_bundle_path", None) or getattr(
             stage_meta,

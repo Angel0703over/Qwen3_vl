@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 
 import torch
@@ -31,6 +32,7 @@ from qwen3vl_tp_runtime.models.qwen3vl.processing import (
     load_processor,
 )
 from qwen3vl_tp_runtime.scripts.common import summarize_last_token_topk, tensor_diff_stats
+from qwen3vl_tp_runtime.scripts.runtime_summary import _attach_runtime_metrics, reset_runtime_metrics
 
 
 def ensure_attention_mask_2d(inputs: dict[str, torch.Tensor]) -> torch.Tensor:
@@ -79,6 +81,8 @@ def build_prefill_runtime(
 
 
 def run_prefill(args) -> None:
+    started_at = time.perf_counter()
+    reset_runtime_metrics()
     model, frame_paths, inputs = load_live_multimodal_case(
         model_path=args.model_path,
         frame_dir=args.frame_dir,
@@ -120,10 +124,13 @@ def run_prefill(args) -> None:
         "runtime_token_id": int(runtime_logits[0, -1].argmax().item()),
         "reference_token_id": int(reference_outputs.logits[0, -1].argmax().item()),
     }
+    summary = _attach_runtime_metrics(summary, started_at=started_at)
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
 
 def run_decode(args) -> None:
+    started_at = time.perf_counter()
+    reset_runtime_metrics()
     model, frame_paths, inputs = load_live_multimodal_case(
         model_path=args.model_path,
         frame_dir=args.frame_dir,
@@ -223,10 +230,13 @@ def run_decode(args) -> None:
         "runtime_token_id": int(runtime_logits[0, -1].argmax().item()),
         "reference_token_id": int(reference_outputs.logits[0, -1].argmax().item()),
     }
+    summary = _attach_runtime_metrics(summary, started_at=started_at)
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
 
 def run_generate(args) -> None:
+    started_at = time.perf_counter()
+    reset_runtime_metrics()
     model, frame_paths, inputs = load_live_multimodal_case(
         model_path=args.model_path,
         frame_dir=args.frame_dir,
@@ -360,6 +370,7 @@ def run_generate(args) -> None:
         "token_match": runtime_generated_token_ids == reference_generated_token_ids,
         "steps": step_summaries,
     }
+    summary = _attach_runtime_metrics(summary, started_at=started_at)
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
 

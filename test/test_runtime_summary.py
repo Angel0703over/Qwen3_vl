@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import time
 import unittest
+from unittest import mock
 
 import torch
 
+from qwen3vl_tp_runtime.hexgen_core.distributed import startup_timer
 from qwen3vl_tp_runtime.hexgen_core.schema import StageSpec, TextHybridManifest, TextPipelineManifest
 from qwen3vl_tp_runtime.debug.tp_debug import TpDebugConfig
 from qwen3vl_tp_runtime.scripts.runtime_summary import (
+    _attach_runtime_metrics,
     _summarize_hybrid_run,
     _summarize_pipeline_generate_run,
+    reset_runtime_metrics,
 )
 
 
@@ -177,6 +182,20 @@ class RuntimeSummaryTest(unittest.TestCase):
         self.assertEqual(len(summary["step_topks"]), 2)
         self.assertNotIn("reference_topk", summary["step_topks"][0])
         self.assertEqual(summary["weight_load"]["loaded_weight_tensor_bytes"], 128)
+
+    def test_attach_runtime_metrics_records_startup_events(self) -> None:
+        with mock.patch("qwen3vl_tp_runtime.scripts.runtime_summary.torch.cuda.is_available", return_value=False):
+            reset_runtime_metrics()
+            started_at = time.perf_counter()
+            with startup_timer("direct-builder:text_generate", "prepare runtime-only text session stages=[0:0-0]"):
+                pass
+            summary = _attach_runtime_metrics({"backend": "tp"}, started_at=started_at)
+
+        metrics = summary["runtime_metrics"]
+        self.assertIn("runtime_total_seconds", metrics["timing"])
+        self.assertEqual(metrics["startup"]["event_count"], 1)
+        self.assertIn("prepare_session_seconds", metrics["startup"]["totals_by_kind"])
+        self.assertIn("cpu_max_rss_bytes", metrics["memory"])
 
 
 if __name__ == "__main__":

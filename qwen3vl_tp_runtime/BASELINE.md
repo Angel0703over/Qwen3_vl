@@ -231,6 +231,54 @@ distributed case 额外建议保留但暂不强制比较：
   - rank2 stage1 local0 `tp_weight_sharded=false`, `loaded_top_level_weight_names=["final_norm_weight", "lm_head_weight"]`, `loaded_weight_tensor_bytes=4411426816`
   - all ranks `stage_weight_scope_ok=true`
 
+## 20260428 性能 / 显存记录
+
+收集入口：
+
+```bash
+PYTHONPATH=. /mnt/ssd/miniconda3/envs/vlm/bin/python \
+  qwen3vl_tp_runtime/scripts/collect_runtime_perf.py \
+  --baseline-dir baseline_runs/20260428 \
+  --output-json baseline_runs/20260428/runtime-perf-records.json \
+  --output-md baseline_runs/20260428/runtime-perf-table.md
+```
+
+输出文件：
+
+- `baseline_runs/20260428/runtime-perf-records.json`
+- `baseline_runs/20260428/runtime-perf-table.md`
+
+当前 20260428 correctness baseline 是旧日志：有 startup timer 和部分 `/usr/bin/time -p real`，但没有新加的 `runtime_metrics.memory.*` 字段；所以 CUDA peak alloc/reserved 当前为空。新代码重跑任意 case 后，JSON summary 会直接写：
+
+- `runtime_metrics.timing.runtime_total_seconds`
+- `runtime_metrics.startup.events`
+- `runtime_metrics.startup.totals_by_kind.*`
+- `runtime_metrics.memory.cpu_max_rss_bytes`
+- `runtime_metrics.memory.peak_allocated_bytes`
+- `runtime_metrics.memory.peak_reserved_bytes`
+
+当前从旧 log 解析到的表：
+
+| case | rank | total s | prepare s | startup contract s | transport s | materialize s | barrier s | cuda peak alloc | cuda peak reserved | loaded weights |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| hf-mm-generate | - | 20.03 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | - | - | - |
+| hf-text-generate | - | 18.89 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | - | - | - |
+| hybrid-mm-generate | 0 | - | 19.16 | 0.00 | 0.00 | 0.00 | 0.00 | - | - | 2.42 GiB |
+| hybrid-mm-generate | 1 | - | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | - | - | 2.42 GiB |
+| hybrid-mm-generate | 2 | - | 0.11 | 0.00 | 0.00 | 0.04 | 0.00 | - | - | 4.11 GiB |
+| hybrid-text-generate | 0 | 21.13 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | - | - | 2.42 GiB |
+| hybrid-text-generate | 1 | 20.97 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | - | - | 2.42 GiB |
+| hybrid-text-generate | 2 | 21.01 | 0.00 | 0.00 | 0.00 | 0.03 | 0.00 | - | - | 4.11 GiB |
+| live-mm-generate | - | 25.03 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | - | - | - |
+| pp-mm-generate | 0 | - | 19.26 | 0.00 | 0.00 | 0.03 | 0.00 | - | - | 4.11 GiB |
+| pp-mm-generate | 1 | - | 0.35 | 0.00 | 0.00 | 0.03 | 0.00 | - | - | 4.11 GiB |
+| pp-text-generate | 0 | 18.24 | 0.00 | 0.00 | 0.00 | 0.03 | 0.00 | - | - | 4.11 GiB |
+| pp-text-generate | 1 | 18.28 | 0.01 | 0.00 | 0.00 | 0.06 | 0.00 | - | - | 4.11 GiB |
+| tp-mm-generate | 0 | - | 19.52 | 0.00 | 0.00 | 0.00 | 0.00 | - | - | 4.83 GiB |
+| tp-mm-generate | 1 | - | 19.12 | 0.00 | 0.00 | 0.00 | 0.00 | - | - | 4.83 GiB |
+| tp-text-generate | 0 | 23.05 | 0.58 | 0.00 | 0.00 | 0.00 | 0.00 | - | - | 4.83 GiB |
+| tp-text-generate | 1 | 23.02 | 0.58 | 0.00 | 0.00 | 0.00 | 0.00 | - | - | 4.83 GiB |
+
 ## 固定 case
 
 ### 1. `hf-text-generate`
@@ -475,18 +523,29 @@ HEXGEN_STARTUP_LOG=1 /usr/bin/time -p "${TORCHRUN}" \
 - `tp / hybrid` case 的 `weight_load` shard shape、stage scope 与 rank-local loaded bytes 证据不回退。
 - `pp / hybrid multimodal` case 的 startup contract 不回退到 root/full/replay payload，且 non-stage0 不重新激活 frontend。
 
-当前还不在这份基线里强制比较：
+runtime core 变更后的最小固定入口：
 
-- 启动时间
-- 峰值显存
+```bash
+bash qwen3vl_tp_runtime/scripts/helpers/run-runtime-core-regression.sh
+```
+
+如果改到权重加载，使用：
+
+```bash
+bash qwen3vl_tp_runtime/scripts/helpers/run-runtime-core-regression.sh --include-weight-loader
+```
+
+性能字段目前只记录，不作为 correctness gate 强制比较：
+
 - 更细粒度的 per-rank 常驻显存
 - KV cache 占用
 
-这些放到最后一轮性能验收统一做。
+启动时间和 CUDA peak allocated/reserved 已经进入 `runtime_metrics` 和 `runtime-perf-*` 输出；后续性能优化前后都要保留这张表做对比。
 
 ## 下一步
 
 这份文档当前已经记录 20260428 完整 correctness baseline。后续动作是：
 
 - 后续改动统一拿这份结果做对比
-- 启动时间和峰值显存留到性能验收阶段再收
+- 新代码重跑 baseline 后补齐 CUDA peak alloc/reserved
+- P3 后续进入性能优化候选项
