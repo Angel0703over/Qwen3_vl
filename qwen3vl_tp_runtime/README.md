@@ -94,7 +94,7 @@
 - `scripts/`
   面向用户的 runtime 入口和辅助脚本。
 - `scripts/helpers/`
-  稳定 shell wrapper，例如 `run-runtime.sh` 和 `generate.sh`。
+  稳定 shell wrapper，例如 `run-runtime.sh`、`generate.sh`、`run-pp-mm-generate.sh`、`run-tp-mm-generate.sh` 和 `run-hybrid-mm-generate.sh`。
 - `scripts/runtime_cli.py`
   runtime CLI 默认值、参数校验和 debug-path gating helper。
 - `scripts/runtime_summary.py`

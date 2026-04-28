@@ -89,6 +89,56 @@ mkdir -p "${BASELINE_OUT}"
 
 distributed case 因为通常分多个终端/节点执行，建议按 `rank` 分文件保存。
 
+## 分布式 smoke wrapper
+
+常用 multimodal distributed case 已固化成 wrapper。每台机器运行同一个脚本，只改 `NODE_RANK`；默认日志写到 `${REPO_ROOT}/baseline_runs/$(date -u +%Y%m%d)/case-rankN.log`。
+
+PP/TP wrapper 的 2 节点只是默认值，不是上限。更多 Jetson 时设置 `NNODES=N`，每台机器设置对应的 `NODE_RANK=0..N-1`。pure PP 当前要求 `PP == NNODES`，pure TP 当前要求 `TP == NNODES`；两个 wrapper 都默认把 degree 设成 `NNODES`，并会提前拒绝不一致的配置。
+
+```bash
+# PP multimodal generate, 2 nodes.
+NODE_RANK=0 MASTER_ADDR="<rank0-host>" bash "${RUNTIME_ROOT}/scripts/helpers/run-pp-mm-generate.sh"
+NODE_RANK=1 MASTER_ADDR="<rank0-host>" bash "${RUNTIME_ROOT}/scripts/helpers/run-pp-mm-generate.sh"
+
+# TP multimodal generate, 2 nodes.
+NODE_RANK=0 MASTER_ADDR="<rank0-host>" bash "${RUNTIME_ROOT}/scripts/helpers/run-tp-mm-generate.sh"
+NODE_RANK=1 MASTER_ADDR="<rank0-host>" bash "${RUNTIME_ROOT}/scripts/helpers/run-tp-mm-generate.sh"
+
+# HYBRID multimodal generate, 3 nodes.
+NODE_RANK=0 MASTER_ADDR="<rank0-host>" bash "${RUNTIME_ROOT}/scripts/helpers/run-hybrid-mm-generate.sh"
+NODE_RANK=1 MASTER_ADDR="<rank0-host>" bash "${RUNTIME_ROOT}/scripts/helpers/run-hybrid-mm-generate.sh"
+NODE_RANK=2 MASTER_ADDR="<rank0-host>" bash "${RUNTIME_ROOT}/scripts/helpers/run-hybrid-mm-generate.sh"
+
+# PP multimodal generate, 4 nodes.
+NNODES=4 NODE_RANK=0 MASTER_ADDR="<rank0-host>" bash "${RUNTIME_ROOT}/scripts/helpers/run-pp-mm-generate.sh"
+NNODES=4 NODE_RANK=1 MASTER_ADDR="<rank0-host>" bash "${RUNTIME_ROOT}/scripts/helpers/run-pp-mm-generate.sh"
+NNODES=4 NODE_RANK=2 MASTER_ADDR="<rank0-host>" bash "${RUNTIME_ROOT}/scripts/helpers/run-pp-mm-generate.sh"
+NNODES=4 NODE_RANK=3 MASTER_ADDR="<rank0-host>" bash "${RUNTIME_ROOT}/scripts/helpers/run-pp-mm-generate.sh"
+
+# TP multimodal generate, 4 nodes.
+NNODES=4 NODE_RANK=0 MASTER_ADDR="<rank0-host>" bash "${RUNTIME_ROOT}/scripts/helpers/run-tp-mm-generate.sh"
+NNODES=4 NODE_RANK=1 MASTER_ADDR="<rank0-host>" bash "${RUNTIME_ROOT}/scripts/helpers/run-tp-mm-generate.sh"
+NNODES=4 NODE_RANK=2 MASTER_ADDR="<rank0-host>" bash "${RUNTIME_ROOT}/scripts/helpers/run-tp-mm-generate.sh"
+NNODES=4 NODE_RANK=3 MASTER_ADDR="<rank0-host>" bash "${RUNTIME_ROOT}/scripts/helpers/run-tp-mm-generate.sh"
+```
+
+常用覆盖项：
+
+- `MASTER_PORT=...`
+- `OUT=...`
+- `MODEL_PATH=...`
+- `FRAME_DIR=...`
+- `MM_PROMPT=...`
+- `MAX_NEW_TOKENS=...`
+- `DRY_RUN=1` 只打印最终命令
+
+wrapper 后面追加的参数会原样传给 `runtime.py`，例如：
+
+```bash
+NODE_RANK=0 MASTER_ADDR="<rank0-host>" \
+  bash "${RUNTIME_ROOT}/scripts/helpers/run-pp-mm-generate.sh" --save-dtype bfloat16
+```
+
 ## 验收字段
 
 每个 case 都至少看下面三项：
@@ -97,14 +147,14 @@ distributed case 因为通常分多个终端/节点执行，建议按 `rank` 分
 - `generated_text`
 - 是否成功完成所有 rank
 
-`tp-text-generate` 额外看：
+`tp-text-generate` / `tp-mm-generate` 额外看：
 
 - rank0 和 rank1 都是 `weight_load.tp_weight_sharded=true`
 - rank0 是 `weight_load.tp_shard_rank=0`，rank1 是 `weight_load.tp_shard_rank=1`
 - 两个 rank 的 `weight_load.tp_shard_world_size=2`
 - 两个 rank 的 `weight_load.tp_shard_shape_ok=true`，`tp_sharded_projection_examples` 中 q/k/v/o 和 MLP projection 是 shard 后形状
 - 两个 rank 的 `weight_load.loaded_weight_tensor_bytes` 完全一致
-- 两个 rank 的 `weight_load.tp_stage_loaded_weight_tensor_bytes_equal=true`
+- 如果 summary 带 `weight_load.tp_stage_loaded_weight_tensor_bytes_equal`，该字段必须为 `true`
 
 `hybrid-text-generate` 额外看：
 
@@ -129,45 +179,57 @@ distributed case 额外建议保留但暂不强制比较：
 - `HEXGEN_STARTUP_LOG=1` 中的 prepare / materialize / broadcast / barrier 时间
 - `/usr/bin/time -p` 的端到端 wall-clock 时间
 
-## 已确认的 shard-only smoke
+## 20260428 冻结记录
 
-### `tp-text-generate`
+本轮完整 baseline 输出目录：
 
-- `rank0`: `tp_weight_sharded=true`, `tp_shard_rank=0`, `tp_shard_world_size=2`
-- `rank1`: `tp_weight_sharded=true`, `tp_shard_rank=1`, `tp_shard_world_size=2`
-- `rank0/rank1 loaded_weight_tensor_bytes`: `5189532672`
-- `generated_token_ids`: `[104455, 9909, 9286, 16488]`
-- `generated_text`: `人工智能（Artificial`
+- `baseline_runs/20260428/`
 
-### `hybrid-text-generate`
+单进程 case：
 
-- stage0 rank0/rank1: `tp_weight_sharded=true`, `tp_shard_rank=0/2` and `1/2`
-- stage0 rank0/rank1 `loaded_weight_tensor_bytes`: `2594763776`
-- stage1 rank2: `tp_weight_sharded=false`, `loaded_weight_tensor_bytes=4411426816`
-- `generated_token_ids`: `[104455, 9909, 9286, 16488]`
-- `generated_text`: `人工智能（Artificial`
+| case_id | stdout / stderr | generated_token_ids | generated_text |
+| --- | --- | --- | --- |
+| `hf-text-generate` | `baseline_runs/20260428/hf-text-generate.stdout`, `baseline_runs/20260428/hf-text-generate.stderr` | `[104455, 9909, 9286, 16488]` | `人工智能（Artificial` |
+| `hf-mm-generate` | `baseline_runs/20260428/hf-mm-generate.stdout`, `baseline_runs/20260428/hf-mm-generate.stderr` | `[104455, 9909, 9286, 16488]` | `人工智能（Artificial` |
+| `live-mm-generate` | `baseline_runs/20260428/live-mm-generate.stdout`, `baseline_runs/20260428/live-mm-generate.stderr` | `[87140, 15946, 3837, 101177]` | `视频中，一名` |
 
-## 已确认的 multimodal direct smoke
+`live-mm-generate` 同时记录 `reference_generated_token_ids=[87140, 15946, 3837, 101177]`、`reference_generated_text="视频中，一名"`、`token_match=true`。
 
-### `pp-mm-generate`
+分布式 case：
 
-- baseline logs: `baseline_runs/20260427/pp-mm-generate-rank0.log`, `baseline_runs/20260427/pp-mm-generate-rank1.log`
-- rank0 / stage0: `multimodal_frontend_mode=active`, loaded layers `0..17`, `loaded_top_level_weight_names=["embed_tokens_weight"]`, `stage_weight_scope_ok=true`
-- rank1 / stage1: `multimodal_frontend_mode=consume-only`, loaded layers `18..35`, `loaded_top_level_weight_names=["final_norm_weight", "lm_head_weight"]`, `stage_weight_scope_ok=true`
-- all ranks `generated_token_ids`: `[87140, 15946, 3837, 101177]`
-- all ranks `generated_text`: `视频中，一名`
+| case_id | rank logs | generated_token_ids | generated_text |
+| --- | --- | --- | --- |
+| `pp-text-generate` | `baseline_runs/20260428/pp-text-generate-rank0.log`, `baseline_runs/20260428/pp-text-generate-rank1.log` | `[104455, 9909, 9286, 16488]` | `人工智能（Artificial` |
+| `pp-mm-generate` | `baseline_runs/20260428/pp-mm-generate-rank0.log`, `baseline_runs/20260428/pp-mm-generate-rank1.log` | `[87140, 15946, 3837, 101177]` | `视频中，一名` |
+| `tp-text-generate` | `baseline_runs/20260428/tp-text-generate-rank0.log`, `baseline_runs/20260428/tp-text-generate-rank1.log` | `[104455, 9909, 9286, 16488]` | `人工智能（Artificial` |
+| `tp-mm-generate` | `baseline_runs/20260428/tp-mm-generate-rank0.log`, `baseline_runs/20260428/tp-mm-generate-rank1.log` | `[87140, 15946, 3837, 101177]` | `视频中，一名` |
+| `hybrid-text-generate` | `baseline_runs/20260428/hybrid-text-generate-rank0.log`, `baseline_runs/20260428/hybrid-text-generate-rank1.log`, `baseline_runs/20260428/hybrid-text-generate-rank2.log` | `[104455, 9909, 9286, 16488]` | `人工智能（Artificial` |
+| `hybrid-mm-generate` | `baseline_runs/20260428/hybrid-mm-generate-rank0.log`, `baseline_runs/20260428/hybrid-mm-generate-rank1.log`, `baseline_runs/20260428/hybrid-mm-generate-rank2.log` | `[87140, 15946, 3837, 101177]` | `视频中，一名` |
 
-### `hybrid-mm-generate`
+自动检查结果：
 
-- baseline logs: `baseline_runs/20260427/hybrid-mm-generate-rank0.log`, `baseline_runs/20260427/hybrid-mm-generate-rank1.log`, `baseline_runs/20260427/hybrid-mm-generate-rank2.log`
-- stage0 rank0: `tp_weight_sharded=true`, `tp_shard_rank=0`, `tp_shard_world_size=2`, `loaded_weight_tensor_bytes=2594763776`
-- stage0 rank1: `tp_weight_sharded=true`, `tp_shard_rank=1`, `tp_shard_world_size=2`, `loaded_weight_tensor_bytes=2594763776`
-- stage0 TP bytes equality: `tp_stage_loaded_weight_tensor_bytes_equal=true`, `tp_stage_loaded_weight_tensor_bytes=[2594763776, 2594763776]`
-- stage0 scope: loaded layers `0..17`, `loaded_top_level_weight_names=["embed_tokens_weight"]`, `stage_weight_scope_ok=true`
-- stage1 rank2: `multimodal_frontend_mode=consume-only`, `tp_weight_sharded=false`, loaded layers `18..35`, `loaded_top_level_weight_names=["final_norm_weight", "lm_head_weight"]`, `loaded_weight_tensor_bytes=4411426816`, `stage_weight_scope_ok=true`
-- all ranks `generated_token_ids`: `[87140, 15946, 3837, 101177]`
-- all ranks `generated_text`: `视频中，一名`
-- runtime-only main path uses `include_runtime_reference=false`, so this smoke does not require `reference_generated_token_ids` / `token_match` in summary.
+- `baseline_runs/20260428/check-baseline-logs.txt`
+- `pp-text-generate`: PASS
+- `pp-mm-generate`: PASS
+- `tp-text-generate`: PASS
+- `tp-mm-generate`: PASS
+- `hybrid-text-generate`: PASS
+- `hybrid-mm-generate`: PASS
+
+分布式 weight/stage scope 证据：
+
+- `pp-text-generate` / `pp-mm-generate`
+  - rank0 stage0 range `0:17`, `loaded_top_level_weight_names=["embed_tokens_weight"]`, `loaded_weight_tensor_bytes=4411421696`
+  - rank1 stage1 range `18:35`, `loaded_top_level_weight_names=["final_norm_weight", "lm_head_weight"]`, `loaded_weight_tensor_bytes=4411426816`
+- `tp-text-generate` / `tp-mm-generate`
+  - rank0 `tp_weight_sharded=true`, `tp_shard_rank=0/2`, `loaded_weight_tensor_bytes=5189532672`
+  - rank1 `tp_weight_sharded=true`, `tp_shard_rank=1/2`, `loaded_weight_tensor_bytes=5189532672`
+  - both ranks `tp_shard_shape_ok=true`
+- `hybrid-text-generate` / `hybrid-mm-generate`
+  - rank0 stage0 local0 `tp_weight_sharded=true`, `tp_shard_rank=0/2`, `loaded_weight_tensor_bytes=2594763776`
+  - rank1 stage0 local1 `tp_weight_sharded=true`, `tp_shard_rank=1/2`, `loaded_weight_tensor_bytes=2594763776`
+  - rank2 stage1 local0 `tp_weight_sharded=false`, `loaded_top_level_weight_names=["final_norm_weight", "lm_head_weight"]`, `loaded_weight_tensor_bytes=4411426816`
+  - all ranks `stage_weight_scope_ok=true`
 
 ## 固定 case
 
@@ -410,7 +472,7 @@ HEXGEN_STARTUP_LOG=1 /usr/bin/time -p "${TORCHRUN}" \
 - 同一个 case，在改动前后，`generated_token_ids` 一致。
 - 同一个 case，在改动前后，`generated_text` 一致。
 - distributed case 中，不同 rank 打印出的 `generated_token_ids` / `generated_text` 一致。
-- `tp / hybrid` case 的 `weight_load` shard shape、stage scope 与 TP stage bytes equality 证据不回退。
+- `tp / hybrid` case 的 `weight_load` shard shape、stage scope 与 rank-local loaded bytes 证据不回退。
 - `pp / hybrid multimodal` case 的 startup contract 不回退到 root/full/replay payload，且 non-stage0 不重新激活 frontend。
 
 当前还不在这份基线里强制比较：
@@ -424,7 +486,7 @@ HEXGEN_STARTUP_LOG=1 /usr/bin/time -p "${TORCHRUN}" \
 
 ## 下一步
 
-这份文档当前已经记录了 `tp-text-generate`、`hybrid-text-generate`、`pp-mm-generate` 和 `hybrid-mm-generate` 的通过结果。后续动作是：
+这份文档当前已经记录 20260428 完整 correctness baseline。后续动作是：
 
 - 后续改动统一拿这份结果做对比
 - 启动时间和峰值显存留到性能验收阶段再收

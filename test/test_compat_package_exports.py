@@ -9,6 +9,7 @@ import qwen3vl_tp_runtime.models.qwen3vl as qwen3vl_pkg
 import qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel as hybrid_module
 import qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel as pipeline_module
 import qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel as tensor_module
+import qwen3vl_tp_runtime.debug.tensor_parallel_replay as tp_replay_module
 from qwen3vl_tp_runtime.hexgen_core.schema import StageState
 from qwen3vl_tp_runtime.hexgen_core.transport import StageCommunicator, StageHandoffTransport
 from qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel import prepare_text_generate_hybrid
@@ -159,7 +160,38 @@ class CompatPackageExportsTest(unittest.TestCase):
         self.assertFalse(hasattr(tensor_module, "GenerateWorker"))
         self.assertFalse(hasattr(tensor_module, "DecodeWorker"))
         self.assertTrue(issubclass(tensor_module.TensorParallelRunner, tensor_module.StageRunner))
-        self.assertIn("run_text_tensor_parallel_rank", tensor_module.DEBUG_REPLAY_EXPORTS)
+        hybrid_tp_helpers = [
+            "broadcast_token_id",
+            "build_generate_cache_map",
+            "build_generate_phase_state",
+            "build_runtime_only_stage_input_template",
+            "infer_runtime_tensor_device",
+            "infer_runtime_tensor_dtype",
+            "infer_runtime_token_dtype",
+            "is_runtime_only_generate_state",
+            "strip_runtime_layer_cache",
+            "token_tensor_to_list",
+        ]
+        for helper_name in hybrid_tp_helpers:
+            self.assertTrue(hasattr(tensor_module, helper_name))
+            self.assertIs(getattr(hybrid_module, helper_name), getattr(tensor_module, helper_name))
+            self.assertNotIn(helper_name, tensor_module.__all__)
+            self.assertNotIn(helper_name, core_modules_pkg.__all__)
+            self.assertNotIn(helper_name, core_modules_pkg.DIRECT_RUNTIME_EXPORTS)
+        self.assertFalse(hasattr(tensor_module, "DEBUG_REPLAY_EXPORTS"))
+        self.assertFalse(hasattr(tensor_module, "load_text_stage_bundle"))
+        self.assertFalse(hasattr(tensor_module, "run_text_tensor_parallel_stage"))
+        self.assertFalse(hasattr(tensor_module, "TextTensorParallelRunner"))
+        self.assertFalse(hasattr(tensor_module, "run_text_tensor_parallel_rank"))
+        self.assertIn("run_text_tensor_parallel_rank", tp_replay_module.DEBUG_REPLAY_EXPORTS)
+        self.assertIn("load_text_stage_bundle", core_modules_pkg.LEGACY_REPLAY_EXPORTS)
+        self.assertIn("run_text_tensor_parallel_stage", core_modules_pkg.LEGACY_REPLAY_EXPORTS)
+        self.assertIn("TextTensorParallelRunner", core_modules_pkg.LEGACY_REPLAY_EXPORTS)
+        self.assertIn("run_text_tensor_parallel_rank", core_modules_pkg.LEGACY_REPLAY_EXPORTS)
+        self.assertIs(core_modules_pkg.load_text_stage_bundle, tp_replay_module.load_text_stage_bundle)
+        self.assertIs(core_modules_pkg.run_text_tensor_parallel_stage, tp_replay_module.run_text_tensor_parallel_stage)
+        self.assertIs(core_modules_pkg.TextTensorParallelRunner, tp_replay_module.TextTensorParallelRunner)
+        self.assertIs(core_modules_pkg.run_text_tensor_parallel_rank, tp_replay_module.run_text_tensor_parallel_rank)
 
 
 if __name__ == "__main__":

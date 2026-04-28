@@ -330,6 +330,18 @@ def run_generate(args) -> None:
             }
         )
 
+    processor = load_processor(args.model_path)
+    runtime_generated_text = processor.post_process_image_text_to_text(
+        [torch.tensor(runtime_generated_token_ids, dtype=torch.long)],
+        skip_special_tokens=True,
+        clean_up_tokenization_spaces=False,
+    )[0]
+    reference_generated_text = processor.post_process_image_text_to_text(
+        [torch.tensor(reference_generated_token_ids, dtype=torch.long)],
+        skip_special_tokens=True,
+        clean_up_tokenization_spaces=False,
+    )[0]
+
     summary = {
         "mode": "generate",
         "num_frames": len(frame_paths),
@@ -341,7 +353,10 @@ def run_generate(args) -> None:
         "prefill_topk": summarize_last_token_topk(runtime_prefill_logits, args.topk),
         "reference_prefill_topk": summarize_last_token_topk(prefill_outputs.logits, args.topk),
         "runtime_generated_token_ids": runtime_generated_token_ids,
+        "generated_token_ids": runtime_generated_token_ids,
+        "generated_text": runtime_generated_text,
         "reference_generated_token_ids": reference_generated_token_ids,
+        "reference_generated_text": reference_generated_text,
         "token_match": runtime_generated_token_ids == reference_generated_token_ids,
         "steps": step_summaries,
     }

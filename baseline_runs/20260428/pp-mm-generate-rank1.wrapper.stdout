@@ -1,0 +1,384 @@
+[smoke] case=pp-mm-generate rank=1/2 pp=2 log=/mnt/ssd/code/Qwen3_vl/baseline_runs/20260428/pp-mm-generate-rank1.log
+[smoke] command: HEXGEN_STARTUP_LOG=1 /mnt/ssd/miniconda3/envs/vlm/bin/torchrun --nnodes 2 --nproc-per-node 1 --node-rank 1 --master-addr 10.126.126.3 --master-port 29625 /mnt/ssd/code/Qwen3_vl/qwen3vl_tp_runtime/scripts/runtime.py --backend pp --modality multimodal --mode generate --model-path /mnt/ssd/models/Qwen/Qwen3-VL-4B-Instruct --frame-dir /mnt/ssd/code/Qwen3_vl/frames --num-frames 8 --pp 2 --prompt 请用中文简要介绍一下人工智能。 --max-new-tokens 4
+[pre-init] host=jetson3 rank=1 world_size=2 master=10.126.126.3:29625
+[Gloo] Rank 1 is connected to 1 peer ranks. Expected number of connected peer ranks is : 1
+[startup][pp-direct-loader] host=jetson3 rank=1 local_rank=0 rank=1 waiting multimodal_startup_contract stage_idx=1 from src=0
+[startup][object-recv] host=jetson3 rank=1 local_rank=0 waiting multimodal_startup_contract_meta stage_idx=1 from src=0
+[startup][object-recv] host=jetson3 rank=1 local_rank=0 received multimodal_startup_contract_meta stage_idx=1 from src=0 bytes=422
+[startup][tensor-recv] host=jetson3 rank=1 local_rank=0 waiting multimodal_startup_contract_tensors stage_idx=1 from src=0
+[startup][tensor-recv] host=jetson3 rank=1 local_rank=0 received multimodal_startup_contract_tensors stage_idx=1 from src=0 tensors=13
+[startup][pp-direct-loader] host=jetson3 rank=1 local_rank=0 rank=1 locally building stage_idx=1 range=18:35
+[startup][direct-builder:multimodal_generate] host=jetson3 rank=1 local_rank=0 begin prepare multimodal direct session stages=[1:18-35]
+[startup][direct-builder:multimodal_generate] host=jetson3 rank=1 local_rank=0 done prepare multimodal direct session stages=[1:18-35] in 0.35s
+[startup][direct-builder:multimodal_generate] host=jetson3 rank=1 local_rank=0 builder session ready session_kind=mm-direct device=cuda:0 state_device=cpu compute_dtype=torch.bfloat16 num_layers=36 tp_shard_rank=None tp_shard_world_size=None include_text_weights=True include_runtime_reference=False
+[startup][direct-builder:multimodal_generate] host=jetson3 rank=1 local_rank=0 multimodal_frontend_mode=consume-only seed_ready=True startup_contract_ready=True
+[startup][direct-builder:multimodal_generate] host=jetson3 rank=1 local_rank=0 reuse multimodal startup contract stages=[1:18-35]
+[startup][direct-builder:multimodal_generate] host=jetson3 rank=1 local_rank=0 begin materialize stage_idx=1 range=18:35
+[startup][direct-builder:multimodal_generate] host=jetson3 rank=1 local_rank=0 begin load text stage weights stage_idx=1 range=18:35
+[startup][direct-builder:multimodal_generate] host=jetson3 rank=1 local_rank=0 done load text stage weights stage_idx=1 range=18:35 in 0.03s
+[startup][direct-builder:multimodal_generate] host=jetson3 rank=1 local_rank=0 done materialize stage_idx=1 range=18:35 in 0.03s
+[startup][direct-builder:multimodal_generate] host=jetson3 rank=1 local_rank=0 releasing builder session session_kind=mm-direct
+[startup][pp-direct-loader] host=jetson3 rank=1 local_rank=0 rank=1 entering post-load barrier
+[startup][pp-direct-loader] host=jetson3 rank=1 local_rank=0 rank=1 local stage ready compute_dtype=torch.bfloat16
+{
+  "rank": 1,
+  "backend": "pp",
+  "pipeline_type": "multimodal_generate",
+  "stage_idx": 1,
+  "num_stages": 2,
+  "start_idx": 18,
+  "end_idx": 35,
+  "num_layers": 18,
+  "weight_load": {
+    "tp_weight_sharded": false,
+    "tp_shard_rank": null,
+    "tp_shard_world_size": null,
+    "tp_local_dims": {
+      "local_attention_hidden_size": null,
+      "local_kv_hidden_size": null,
+      "local_intermediate_size": null
+    },
+    "tp_shard_shape_ok": true,
+    "tp_sharded_projection_check_count": 0,
+    "tp_shard_shape_mismatches": [],
+    "tp_sharded_projection_examples": [],
+    "tp_stage_loaded_weight_tensor_bytes": null,
+    "tp_stage_loaded_weight_tensor_bytes_equal": null,
+    "tp_stage_loaded_weight_tensor_bytes_checked": null,
+    "stage_start_idx": 18,
+    "stage_end_idx": 35,
+    "loaded_layer_indices": [
+      18,
+      19,
+      20,
+      21,
+      22,
+      23,
+      24,
+      25,
+      26,
+      27,
+      28,
+      29,
+      30,
+      31,
+      32,
+      33,
+      34,
+      35
+    ],
+    "loaded_layer_count": 18,
+    "loaded_top_level_weight_names": [
+      "final_norm_weight",
+      "lm_head_weight"
+    ],
+    "unexpected_layer_indices": [],
+    "stage_weight_scope_ok": true,
+    "loaded_weight_tensor_count": 200,
+    "loaded_weight_tensor_bytes": 4411426816,
+    "loaded_weight_tensor_mib": 4207.064,
+    "loaded_weight_tensor_examples": [
+      {
+        "name": "final_norm_weight",
+        "shape": [
+          2560
+        ],
+        "dtype": "torch.bfloat16",
+        "bytes": 5120
+      },
+      {
+        "name": "lm_head_weight",
+        "shape": [
+          151936,
+          2560
+        ],
+        "dtype": "torch.bfloat16",
+        "bytes": 777912320
+      },
+      {
+        "name": "layers.18.q_weight",
+        "shape": [
+          4096,
+          2560
+        ],
+        "dtype": "torch.bfloat16",
+        "bytes": 20971520
+      },
+      {
+        "name": "layers.18.k_weight",
+        "shape": [
+          1024,
+          2560
+        ],
+        "dtype": "torch.bfloat16",
+        "bytes": 5242880
+      },
+      {
+        "name": "layers.18.v_weight",
+        "shape": [
+          1024,
+          2560
+        ],
+        "dtype": "torch.bfloat16",
+        "bytes": 5242880
+      },
+      {
+        "name": "layers.18.o_weight",
+        "shape": [
+          2560,
+          4096
+        ],
+        "dtype": "torch.bfloat16",
+        "bytes": 20971520
+      },
+      {
+        "name": "layers.18.q_norm_weight",
+        "shape": [
+          128
+        ],
+        "dtype": "torch.bfloat16",
+        "bytes": 256
+      },
+      {
+        "name": "layers.18.k_norm_weight",
+        "shape": [
+          128
+        ],
+        "dtype": "torch.bfloat16",
+        "bytes": 256
+      }
+    ],
+    "tp_sharded_parameter_count": 0,
+    "tp_replicated_parameter_count": 0,
+    "tp_sharded_parameter_examples": [],
+    "tp_replicated_parameter_examples": []
+  },
+  "device": "cuda:0",
+  "comm_dtype": "torch.float32",
+  "prefill_seq_len": 627,
+  "max_new_tokens": 4,
+  "prefill": {
+    "input_shape": [
+      1,
+      627,
+      2560
+    ],
+    "output_shape": [
+      1,
+      627,
+      151936
+    ],
+    "received_payload_keys": [
+      "hidden_states"
+    ],
+    "sent_payload_keys": [],
+    "sent_tensor_shapes": {},
+    "boundary_max_diff": 0.0,
+    "boundary_mean_diff": 0.0,
+    "embedding_max_diff": null,
+    "embedding_mean_diff": null,
+    "hidden_stage_max_diff": null,
+    "hidden_stage_mean_diff": null,
+    "norm_max_diff": null,
+    "norm_mean_diff": null,
+    "stage_max_diff": null,
+    "stage_mean_diff": null,
+    "predicted_token_id": 87140,
+    "reference_token_id": null
+  },
+  "steps": [
+    {
+      "input_shape": [
+        1,
+        1,
+        2560
+      ],
+      "output_shape": [
+        1,
+        1,
+        151936
+      ],
+      "received_payload_keys": [
+        "hidden_states"
+      ],
+      "sent_payload_keys": [],
+      "sent_tensor_shapes": {},
+      "boundary_max_diff": null,
+      "boundary_mean_diff": null,
+      "embedding_max_diff": null,
+      "embedding_mean_diff": null,
+      "hidden_stage_max_diff": null,
+      "hidden_stage_mean_diff": null,
+      "norm_max_diff": null,
+      "norm_mean_diff": null,
+      "stage_max_diff": null,
+      "stage_mean_diff": null,
+      "predicted_token_id": 15946,
+      "reference_token_id": null
+    },
+    {
+      "input_shape": [
+        1,
+        1,
+        2560
+      ],
+      "output_shape": [
+        1,
+        1,
+        151936
+      ],
+      "received_payload_keys": [
+        "hidden_states"
+      ],
+      "sent_payload_keys": [],
+      "sent_tensor_shapes": {},
+      "boundary_max_diff": null,
+      "boundary_mean_diff": null,
+      "embedding_max_diff": null,
+      "embedding_mean_diff": null,
+      "hidden_stage_max_diff": null,
+      "hidden_stage_mean_diff": null,
+      "norm_max_diff": null,
+      "norm_mean_diff": null,
+      "stage_max_diff": null,
+      "stage_mean_diff": null,
+      "predicted_token_id": 3837,
+      "reference_token_id": null
+    },
+    {
+      "input_shape": [
+        1,
+        1,
+        2560
+      ],
+      "output_shape": [
+        1,
+        1,
+        151936
+      ],
+      "received_payload_keys": [
+        "hidden_states"
+      ],
+      "sent_payload_keys": [],
+      "sent_tensor_shapes": {},
+      "boundary_max_diff": null,
+      "boundary_mean_diff": null,
+      "embedding_max_diff": null,
+      "embedding_mean_diff": null,
+      "hidden_stage_max_diff": null,
+      "hidden_stage_mean_diff": null,
+      "norm_max_diff": null,
+      "norm_mean_diff": null,
+      "stage_max_diff": null,
+      "stage_mean_diff": null,
+      "predicted_token_id": 101177,
+      "reference_token_id": null
+    }
+  ],
+  "generated_token_ids": [
+    87140,
+    15946,
+    3837,
+    101177
+  ],
+  "prefill_topk": [
+    {
+      "token_id": 87140,
+      "logit": 37.5
+    },
+    {
+      "token_id": 106568,
+      "logit": 36.0
+    },
+    {
+      "token_id": 101961,
+      "logit": 36.0
+    },
+    {
+      "token_id": 101177,
+      "logit": 35.25
+    },
+    {
+      "token_id": 46944,
+      "logit": 34.75
+    }
+  ],
+  "step_topks": [
+    {
+      "step_idx": 0,
+      "topk": [
+        {
+          "token_id": 15946,
+          "logit": 35.5
+        },
+        {
+          "token_id": 101987,
+          "logit": 34.0
+        },
+        {
+          "token_id": 54021,
+          "logit": 31.0
+        },
+        {
+          "token_id": 101047,
+          "logit": 29.125
+        },
+        {
+          "token_id": 69249,
+          "logit": 27.75
+        }
+      ]
+    },
+    {
+      "step_idx": 1,
+      "topk": [
+        {
+          "token_id": 3837,
+          "logit": 36.5
+        },
+        {
+          "token_id": 101961,
+          "logit": 34.25
+        },
+        {
+          "token_id": 101177,
+          "logit": 34.25
+        },
+        {
+          "token_id": 46944,
+          "logit": 30.625
+        },
+        {
+          "token_id": 114082,
+          "logit": 30.125
+        }
+      ]
+    },
+    {
+      "step_idx": 2,
+      "topk": [
+        {
+          "token_id": 101177,
+          "logit": 35.5
+        },
+        {
+          "token_id": 101961,
+          "logit": 35.5
+        },
+        {
+          "token_id": 46944,
+          "logit": 31.375
+        },
+        {
+          "token_id": 101977,
+          "logit": 26.875
+        },
+        {
+          "token_id": 114082,
+          "logit": 25.875
+        }
+      ]
+    }
+  ],
+  "generated_text": "视频中，一名"
+}

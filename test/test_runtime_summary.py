@@ -5,7 +5,7 @@ import unittest
 import torch
 
 from qwen3vl_tp_runtime.hexgen_core.schema import StageSpec, TextHybridManifest, TextPipelineManifest
-from qwen3vl_tp_runtime.hexgen_core.modules.tp_debug import TpDebugConfig
+from qwen3vl_tp_runtime.debug.tp_debug import TpDebugConfig
 from qwen3vl_tp_runtime.scripts.runtime_summary import (
     _summarize_hybrid_run,
     _summarize_pipeline_generate_run,

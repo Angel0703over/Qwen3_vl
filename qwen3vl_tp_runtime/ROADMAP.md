@@ -28,6 +28,7 @@
 - `pipeline_parallel.py` 是纯 PP 基础后端。
 - `tensor_parallel.py` 是纯 TP 基础后端。
 - `hybrid_parallel.py` 是 PP+TP 组合后端。
+- `hexgen_core/modules/` 目录只放三种并行后端文件和 `__init__.py`：`pipeline_parallel.py`、`tensor_parallel.py`、`hybrid_parallel.py`。
 - HYBRID 可以调用 PP/TP 的函数。
 - TP 不能反向依赖 HYBRID。
 - PP 不应为了复用少量 helper 反向依赖 TP，除非后续明确引入新的公共基础模块。
@@ -61,11 +62,11 @@
 - `test/test_tensor_parallel_direct.py` 通过。
 - `test/test_compat_package_exports.py` 已同步导出面预期。
 
-### 2. 移出 TP 文件里的旧 replay/debug TP 路径
+### 2. 已完成：移出 TP 文件里的旧 replay/debug TP 路径
 
 背景：
 
-- `tensor_parallel.py` 当前同时包含主路径 TP 和旧 replay/debug TP。
+- `tensor_parallel.py` 之前同时包含主路径 TP 和旧 replay/debug TP。
 - 旧路径包括：
   - `load_text_stage_bundle`
   - `run_text_tensor_parallel_stage`
@@ -75,57 +76,64 @@
 
 目标：
 
-- 让 `tensor_parallel.py` 更像纯主路径 TP 文件。
+- 让 `tensor_parallel.py` 成为纯主路径 TP 文件。
 - 旧 replay/debug 仍然可用，但移动到更明确的位置。
 
-建议位置：
+已采用方案：
 
-- `hexgen_core/modules/tp_debug.py`，如果继续视作 debug helper。
+- 新增顶层 debug 包 `qwen3vl_tp_runtime/debug/`。
+- TP trace/debug helper 放到 `qwen3vl_tp_runtime/debug/tp_debug.py`。
+- 旧 captured-bundle TP replay 入口放到 `qwen3vl_tp_runtime/debug/tensor_parallel_replay.py`。
+- `hexgen_core/modules/` 下只保留三种并行后端，不再放 debug/replay 文件。
+- `hexgen_core.modules` 继续用 lazy compat export 暴露旧 replay 名字，但实际实现来自顶层 `debug/`。
 
 验收：
 
 - `tensor_parallel.py.__all__` 只保留 direct TP 主路径。
-- 旧 replay/debug import 仍能通过 `DEBUG_REPLAY_EXPORTS` 或明确 compat 路径访问。
-- `test/test_compat_package_exports.py` 覆盖新的位置。
+- `tensor_parallel.py` 不再包含 `DEBUG_REPLAY_EXPORTS` 或旧 captured-bundle replay runner。
+- 旧 replay/debug import 通过 `qwen3vl_tp_runtime.debug.tensor_parallel_replay.DEBUG_REPLAY_EXPORTS` 或 `hexgen_core.modules` compat 路径访问。
+- `test/test_compat_package_exports.py` 覆盖新的位置和兼容路径。
 - `test/test_tensor_parallel_direct.py` 通过。
 
-### 3. 规范 HYBRID 调用 TP helper 的方式
+### 3. 已完成：规范 HYBRID 调用 TP helper 的方式
 
 背景：
 
 - HYBRID 依赖 TP，因此 HYBRID 直接复用 TP helper 是正确方向。
-- 当前 `hybrid_parallel.py` 从 `tensor_parallel.py` import 了若干 `_` 开头 helper：
-  - `_build_generate_phase_state`
-  - `_strip_runtime_layer_cache`
-  - `_build_generate_cache_map`
-  - `_is_runtime_only_generate_state`
-  - `_infer_runtime_tensor_device`
-  - `_infer_runtime_tensor_dtype`
-  - `_infer_runtime_token_dtype`
-  - `_build_runtime_only_stage_input_template`
-  - `_token_tensor_to_list`
-  - `_broadcast_token_id`
+- `hybrid_parallel.py` 之前从 `tensor_parallel.py` import 了若干 `_` 开头 helper。
 
 目标：
 
 - 保持依赖方向正确，同时让代码风格更清楚。
 
-可选方案：
+已采用方案：
 
-- 方案 A：保留私有 helper import，并在 `hybrid_parallel.py` 注释说明 HYBRID 是组合层，允许复用 TP internal helper。
-- 方案 B：把这些 helper 改成无下划线的 module-level helper，但不放入 package-level public `__all__`。
+- 采用方案 B：把 HYBRID 复用的 TP generate helper 改成无下划线的 module-level helper。
+- 这些 helper 不放入 `tensor_parallel.py.__all__`，也不进入 `hexgen_core.modules.__all__` / `DIRECT_RUNTIME_EXPORTS`。
+- `hybrid_parallel.py` 加注释说明：HYBRID 是组合层，可以复用 pure TP backend 的 backend-level helper。
 
-建议：
+当前 helper 名：
 
-不要新建 `generate_common.py`，除非后续用户重新确认。
+- `build_generate_phase_state`
+- `strip_runtime_layer_cache`
+- `build_generate_cache_map`
+- `is_runtime_only_generate_state`
+- `infer_runtime_tensor_device`
+- `infer_runtime_tensor_dtype`
+- `infer_runtime_token_dtype`
+- `build_runtime_only_stage_input_template`
+- `token_tensor_to_list`
+- `broadcast_token_id`
 
 验收：
 
 - `tensor_parallel.py` 仍不依赖 HYBRID。
 - `hybrid_parallel.py` 不再复制这些 helper。
+- `hybrid_parallel.py` 不再 import TP 的 `_` 私有 helper。
+- `test/test_compat_package_exports.py` 覆盖这些 helper 只作为 TP module-level 复用点，不进入 package-level public API。
 - `test/test_hybrid_direct_loader.py` 和 `test/test_tensor_parallel_direct.py` 通过。
 
-### 4. 收紧 StageState / bundle 命名残留
+### 4. 已完成：收紧 StageState / bundle 命名残留
 
 背景：
 
@@ -142,20 +150,31 @@
 rg -n "stage_bundle|bundle" qwen3vl_tp_runtime -g'*.py' -g'*.md'
 ```
 
-处理规则：
+已采用规则：
 
 - capture/replay/debug/file-backed reference：可以保留。
-- weight loader 内部的 `layer_bundle`：可以暂时保留，因为表示层参数集合，不是 stage runtime object。
+- weight loader / execution 层内部的 `layer_bundle` 或 `bundle`：可以保留，因为表示层参数集合，不是 stage runtime object。
+- schema 里的 `bundle_path` / `bundle_dir`：只作为 legacy replay 兼容属性保留；主路径 direct manifest 不序列化这些字段。
+- `build_stage_bundle` / `DirectStageBundleBuilder` / `build_direct_stage_bundle`：只作为 legacy alias 保留，不进入 direct public `__all__`。
 - direct 主路径 public API / summary / README 主路径说明：不应该继续叫 bundle。
+
+本轮清理：
+
+- `pipeline_parallel.py` 文件说明改为 direct `StageState` 主路径，captured-bundle prepare/replay 是 legacy 入口。
+- `debug.tp_debug.build_stage_traces()` 参数从 `bundle` 改为 `stage_state`。
+- `runtime_builder.py` 内部 file-backed reference / trace 临时变量和 helper 从 `stage_bundle` 收口为 `stage_state`。
+- 删除未使用的 `_restore_text_prompt_bundle` 旧名 helper。
+- legacy alias 加说明，明确不属于 direct-runtime export surface。
 
 验收：
 
 - 新增或修改的主路径代码不引入新的 `stage_bundle` 命名。
 - `README.md` / `ROADMAP.md` / `BASELINE.md` 术语保持一致。
+- `test/test_compat_package_exports.py` 继续确认 legacy bundle API 不在 direct `__all__`。
 
 ## P1：自动化回归
 
-### 5. 增加 baseline log 检查脚本
+### 5. 已完成：增加 baseline log 检查脚本
 
 背景：
 
@@ -166,37 +185,38 @@ rg -n "stage_bundle|bundle" qwen3vl_tp_runtime -g'*.py' -g'*.md'
 
 - 增加一个脚本读取 rank log，自动检查关键字段。
 
-建议文件：
+已采用文件：
 
 - `qwen3vl_tp_runtime/scripts/check_baseline_logs.py`
+- `test/test_check_baseline_logs.py`
 
-建议支持：
+支持：
 
 - 输入一个 case id 和多个 rank log。
 - 自动提取最后一个 JSON summary。
 - 检查 `generated_token_ids` / `generated_text` 是否一致。
-- 对 `tp-text-generate` 检查：
+- 对 `tp-text-generate` / `tp-mm-generate` 检查：
   - `tp_weight_sharded=true`
   - `tp_shard_rank`
   - `tp_shard_world_size`
   - `tp_shard_shape_ok`
-  - `tp_stage_loaded_weight_tensor_bytes_equal`
-- 对 `pp-mm-generate` 检查：
-  - stage0 frontend active
-  - stage1 consume-only
+  - 各 rank `loaded_weight_tensor_bytes` 一致
+  - 如果存在 `tp_stage_loaded_weight_tensor_bytes_equal`，该字段必须为 `true`
+- 对 `pp-text-generate` / `pp-mm-generate` 检查：
   - stage scope
-- 对 `hybrid-mm-generate` 检查：
+  - `pp-mm-generate` 额外检查 stage0 frontend active / stage1 consume-only
+- 对 `hybrid-text-generate` / `hybrid-mm-generate` 检查：
   - stage0 TP ranks shard-local
   - stage1 stage-local
   - all ranks generated ids 一致
 
 验收：
 
-- 能检查 `baseline_runs/20260427/pp-mm-generate-rank*.log`。
-- 能检查 `baseline_runs/20260427/hybrid-mm-generate-rank*.log`。
+- 能检查 `baseline_runs/20260428/*-rank*.log`。
 - 检查失败时错误信息指向具体 rank 和字段。
+- `test/test_check_baseline_logs.py` 通过。
 
-### 6. 固化 runtime smoke wrapper
+### 6. 已完成：固化 runtime smoke wrapper
 
 背景：
 
@@ -206,49 +226,66 @@ rg -n "stage_bundle|bundle" qwen3vl_tp_runtime -g'*.py' -g'*.md'
 
 - 给常用 case 增加稳定 shell wrapper，减少手动出错。
 
-建议：
+已采用方案：
 
 - 保留 `scripts/helpers/run-runtime.sh`。
-- 新增或扩展：
+- 新增：
   - `scripts/helpers/run-pp-mm-generate.sh`
-  - `scripts/helpers/run-tp-text-generate.sh`
+  - `scripts/helpers/run-tp-mm-generate.sh`
   - `scripts/helpers/run-hybrid-mm-generate.sh`
 
-要求：
+支持：
 
 - 支持传 `NODE_RANK`、`MASTER_ADDR`、`MASTER_PORT`。
+- pure PP/TP 支持 `NNODES>=2`；2 节点只是默认值。
+- pure PP 默认 `PP=NNODES`，pure TP 默认 `TP=NNODES`。
+- pure PP/TP wrapper 会提前校验当前 degree 必须等于 torchrun world size。
 - 默认 `OUT=baseline_runs/$(date -u +%Y%m%d)`。
 - 默认使用 `--pp` / `--tp` 参数，不再默认写 `--stage-ranges`。
+- 支持 `DRY_RUN=1` 只打印最终命令。
+- 支持把额外 runtime 参数直接追加到 wrapper 后面。
 
 验收：
 
 - 每个 wrapper 打印最终命令。
 - 用户可以直接在 rank0/rank1/rank2 机器上运行。
+- `bash -n` 和 `DRY_RUN=1` 命令展开已通过。
 
 ## P2：真实分布式回归补齐
 
-### 7. 重跑并冻结完整 baseline
+### 7. 已完成：重跑并冻结完整 baseline
 
-当前已知 smoke 记录：
+本轮冻结日期：
 
-- `tp-text-generate` 已通过。
-- `pp-mm-generate` 已通过。
-- `hybrid-mm-generate` 已通过。
-- `hybrid-text-generate` 已通过。
+- `20260428`
 
-建议补齐或重跑：
+输出目录：
 
-- `pp-text-generate`
-- `tp-mm-generate`
+- `baseline_runs/20260428/`
+
+已重跑并冻结：
+
 - `hf-text-generate`
 - `hf-mm-generate`
 - `live-mm-generate`
+- `pp-text-generate`
+- `pp-mm-generate`
+- `tp-text-generate`
+- `tp-mm-generate`
+- `hybrid-text-generate`
+- `hybrid-mm-generate`
+
+本轮顺手修复：
+
+- `live-mm-generate` decode/generate 路径缺少 `MmVisualState` import。
+- `live-mm-generate` summary 补齐标准 `generated_token_ids` / `generated_text` 字段。
+- pure TP multimodal full-stage prefill reference 不再按 layer boundary 构造单 stage handoff，避免 `0:35` full stage 越界。
 
 验收：
 
 - 每个 case 都有 rank log 或 stdout/stderr 文件。
 - `BASELINE.md` 更新实际日期、log 路径、generated ids、generated text。
-- distributed case 用新的 baseline checker 自动检查。
+- distributed case 用新的 baseline checker 自动检查，结果保存为 `baseline_runs/20260428/check-baseline-logs.txt`。
 
 ### 8. 每次 runtime core 变更后的最小回归矩阵
 

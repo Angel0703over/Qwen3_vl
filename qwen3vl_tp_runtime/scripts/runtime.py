@@ -25,7 +25,7 @@ from qwen3vl_tp_runtime.hexgen_core import (
 )
 from qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel import TextHybridRunner
 from qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel import run_tensor_parallel_rank
-from qwen3vl_tp_runtime.hexgen_core.modules.tp_debug import TpDebugConfig
+from qwen3vl_tp_runtime.debug.tp_debug import TpDebugConfig
 from qwen3vl_tp_runtime.models.qwen3vl import (
     build_direct_hybrid_manifest,
     build_direct_pipeline_manifest,

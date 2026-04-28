@@ -236,14 +236,6 @@ def _restore_text_prompt_stage_state(
     return restored
 
 
-def _restore_text_prompt_bundle(
-    bundle: dict[str, Any],
-    *,
-    runtime_config: dict[str, Any],
-) -> dict[str, Any]:
-    return _restore_text_prompt_stage_state(bundle, runtime_config=runtime_config)
-
-
 def _prep_rt_text_session(
     weight_index,
     runtime_config: dict[str, Any],

@@ -1312,7 +1312,7 @@ class DirectStageStateBuilder:
         self._text_reference_layer_static_bundles[layer_idx] = layer_bundle
         return layer_bundle
 
-    def _build_text_reference_single_layer_stage_bundle(
+    def _build_text_reference_single_layer_stage_state(
         self,
         layer_idx: int,
         runtime_inputs: MmStateLike,
@@ -1384,7 +1384,7 @@ class DirectStageStateBuilder:
             compute_dtype=self.compute_dtype,
         )
         if runtime_hidden_stage_output is None:
-            stage_bundle = {
+            reference_stage_state = {
                 "module_name": f"{self.modality}_prefill_stage_reference",
                 "stage_type": "text_prefill_last",
                 "start_idx": 0,
@@ -1435,7 +1435,7 @@ class DirectStageStateBuilder:
                     device=self.device,
                     compute_dtype=self.compute_dtype,
                 ),
-                stage_bundle,
+                reference_stage_state,
             )
             runtime_hidden_stage_output = trace["hidden_stage_output"].detach().clone()
             norm_output = trace["norm_output"].detach().clone()
@@ -1459,7 +1459,7 @@ class DirectStageStateBuilder:
             return None
         return spec
 
-    def _build_local_stage_trace_bundle(
+    def _build_local_stage_trace_state(
         self,
         *,
         module_name: str,
@@ -1541,7 +1541,7 @@ class DirectStageStateBuilder:
             device=self.device,
         )
         layer_bundles = self._build_layers_for_stage(spec)
-        stage_bundle = self._build_local_stage_trace_bundle(
+        trace_stage_state = self._build_local_stage_trace_state(
             module_name=f"{self.modality}_prefill_stage_reference",
             stage_type="text_prefill_last",
             start_idx=spec.start_idx,
@@ -1555,7 +1555,7 @@ class DirectStageStateBuilder:
                 device=self.device,
                 compute_dtype=self.compute_dtype,
             ),
-            stage_bundle,
+            trace_stage_state,
             cache_by_layer={},
         )
 
@@ -1575,13 +1575,31 @@ class DirectStageStateBuilder:
             for layer_trace in trace["layer_traces"]
         )
         hidden_stage_output = trace["stage_output"].detach().clone()
+        if len(hidden_state_list) <= spec.end_idx + 1:
+            hidden_state_list.append(
+                _runtime_tensor(
+                    hidden_stage_output,
+                    device=self.stage_state_device,
+                    compute_dtype=self.compute_dtype,
+                )
+            )
         final_norm_weight, lm_head_weight, lm_head_bias, final_norm_eps = self._get_text_final_runtime_weights()
         norm_output = rms_norm(hidden_stage_output, final_norm_weight, final_norm_eps)
         logits = F.linear(norm_output, lm_head_weight, lm_head_bias)
-        stage_handoffs = self._build_stage_handoffs_from_hidden_states(
-            hidden_state_list,
-            device=self.stage_state_device,
-        )
+        stage_handoffs = {
+            int(spec.stage_idx): {
+                "stage_input": _runtime_tensor(
+                    stage_input,
+                    device=self.stage_state_device,
+                    compute_dtype=self.compute_dtype,
+                ),
+                "stage_output": _runtime_tensor(
+                    hidden_stage_output,
+                    device=self.stage_state_device,
+                    compute_dtype=self.compute_dtype,
+                ),
+            }
+        }
         return self._build_file_backed_prefill_state(
             runtime_state=prefill_runtime_state,
             stage_handoffs=stage_handoffs,
@@ -1601,6 +1619,13 @@ class DirectStageStateBuilder:
         if not hidden_state_list:
             return {}
         target_device = hidden_state_list[0].device if device is None else device
+        for spec in self.stage_specs:
+            if spec.start_idx >= len(hidden_state_list) or spec.end_idx + 1 >= len(hidden_state_list):
+                raise RuntimeError(
+                    "hidden_states 缺少 stage handoff 边界，"
+                    f"stage_idx={spec.stage_idx} range={spec.start_idx}:{spec.end_idx} "
+                    f"hidden_state_count={len(hidden_state_list)}"
+                )
         return {
             int(spec.stage_idx): {
                 "stage_input": _runtime_tensor(
@@ -1851,13 +1876,13 @@ class DirectStageStateBuilder:
             stage_handoffs[stage_idx]["stage_input"] = hidden_states.detach().clone()
 
         for layer_idx in range(self.num_layers):
-            layer_stage_bundle = self._build_text_reference_single_layer_stage_bundle(
+            layer_stage_state = self._build_text_reference_single_layer_stage_state(
                 layer_idx,
                 runtime_inputs,
             )
             trace = trace_text_decode_stage_with_runtime_cache(
                 hidden_states,
-                layer_stage_bundle,
+                layer_stage_state,
                 cache_by_layer=cache_by_layer_runtime,
             )
             hidden_states = trace["stage_output"].detach().clone()
@@ -1940,13 +1965,13 @@ class DirectStageStateBuilder:
             stage_handoffs[stage_idx]["stage_input"] = hidden_states.detach().clone()
 
         for layer_idx in range(self.num_layers):
-            layer_stage_bundle = self._build_text_reference_single_layer_stage_bundle(
+            layer_stage_state = self._build_text_reference_single_layer_stage_state(
                 layer_idx,
                 decode_runtime_inputs,
             )
             trace = trace_text_decode_stage_with_runtime_cache(
                 hidden_states,
-                layer_stage_bundle,
+                layer_stage_state,
                 cache_by_layer=cache_by_layer_runtime,
             )
             hidden_states = trace["stage_output"].detach().clone()
@@ -3119,9 +3144,11 @@ class DirectStageStateBuilder:
             return stage_state
 
     def build_stage_bundle(self, stage_idx: int) -> dict[str, Any]:
+        """Legacy alias for callers that still use the old bundle name."""
         return self.build_stage_state(stage_idx)
 
 
+# Legacy class alias kept out of the direct-runtime export surface.
 DirectStageBundleBuilder = DirectStageStateBuilder
 
 

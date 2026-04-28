@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import torch
 
-from ..stage import trace_stage, trace_stage_tp
+from ..hexgen_core.stage import trace_stage, trace_stage_tp
 
 
 @dataclass(frozen=True)
@@ -343,10 +343,11 @@ def build_stage_traces(
     *,
     reference_input: torch.Tensor,
     stage_input: torch.Tensor,
-    bundle: dict,
     local_rank: int,
     tp_degree: int,
     comm_dtype: torch.dtype,
+    stage_state: dict | None = None,
+    bundle: dict | None = None,
     tp_group=None,
     leader_rank: int = 0,
     tp_attn_math_mode: str = "orig",
@@ -356,11 +357,16 @@ def build_stage_traces(
 ) -> tuple[list[dict], dict | None, dict]:
     """Build layer-wise direct-vs-reference and TP-vs-direct trace summaries for one text stage."""
 
-    reference_traces = trace_stage(reference_input, bundle)
-    direct_traces = trace_stage(stage_input, bundle)
+    if stage_state is None:
+        if bundle is None:
+            raise ValueError("build_stage_traces 需要 stage_state。")
+        stage_state = bundle
+
+    reference_traces = trace_stage(reference_input, stage_state)
+    direct_traces = trace_stage(stage_input, stage_state)
     tp_traces = trace_stage_tp(
         stage_input,
-        bundle,
+        stage_state,
         rank=local_rank,
         world_size=tp_degree,
         comm_dtype=comm_dtype,

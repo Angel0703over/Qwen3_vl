@@ -66,8 +66,8 @@ def as_stage_state_view(stage_state: StageState | StageStateView) -> StageStateV
     return StageStateView(stage_state)
 
 
-def as_stage_bundle_view(stage_bundle: dict[str, Any] | StageBundleView) -> StageBundleView:
-    return as_stage_state_view(stage_bundle)
+def as_stage_bundle_view(stage_state: dict[str, Any] | StageBundleView) -> StageBundleView:
+    return as_stage_state_view(stage_state)
 
 
 def get_stage_type(stage_state: StageState | StageStateView) -> str:
@@ -86,8 +86,8 @@ def build_stage_state(stage_type: str, stage_state: StageState) -> StageState:
     return as_stage_state_view(stage_state).with_stage_type(stage_type).payload
 
 
-def build_stage_bundle(stage_type: str, bundle: dict[str, Any]) -> dict[str, Any]:
-    return build_stage_state(stage_type, bundle)
+def build_stage_bundle(stage_type: str, stage_state: dict[str, Any]) -> dict[str, Any]:
+    return build_stage_state(stage_type, stage_state)
 
 
 def _infer_hidden_states_dtype(stage_state: StageState) -> torch.dtype:

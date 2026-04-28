@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from qwen3vl_tp_runtime.hexgen_core.modules.tp_debug import TpDebugConfig
+from qwen3vl_tp_runtime.debug.tp_debug import TpDebugConfig
 
 
 class TpDebugConfigTest(unittest.TestCase):

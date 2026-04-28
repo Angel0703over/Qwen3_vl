@@ -1,0 +1,230 @@
+{
+  "mode": "generate",
+  "num_frames": 8,
+  "compute_dtype": "torch.bfloat16",
+  "max_new_tokens": 4,
+  "prefill_visual_tokens": 576,
+  "prefill_topk": [
+    {
+      "token_id": 87140,
+      "logit": 37.75
+    },
+    {
+      "token_id": 106568,
+      "logit": 36.25
+    },
+    {
+      "token_id": 101961,
+      "logit": 36.25
+    },
+    {
+      "token_id": 101177,
+      "logit": 35.25
+    },
+    {
+      "token_id": 46944,
+      "logit": 34.75
+    }
+  ],
+  "reference_prefill_topk": [
+    {
+      "token_id": 87140,
+      "logit": 37.75
+    },
+    {
+      "token_id": 106568,
+      "logit": 36.25
+    },
+    {
+      "token_id": 101961,
+      "logit": 36.25
+    },
+    {
+      "token_id": 101177,
+      "logit": 35.25
+    },
+    {
+      "token_id": 46944,
+      "logit": 34.75
+    }
+  ],
+  "runtime_generated_token_ids": [
+    87140,
+    15946,
+    3837,
+    101177
+  ],
+  "generated_token_ids": [
+    87140,
+    15946,
+    3837,
+    101177
+  ],
+  "generated_text": "视频中，一名",
+  "reference_generated_token_ids": [
+    87140,
+    15946,
+    3837,
+    101177
+  ],
+  "reference_generated_text": "视频中，一名",
+  "token_match": true,
+  "steps": [
+    {
+      "step_idx": 0,
+      "decode_token_id": 87140,
+      "stage_max_diff": 0.0,
+      "stage_mean_diff": 0.0,
+      "runtime_topk": [
+        {
+          "token_id": 15946,
+          "logit": 35.5
+        },
+        {
+          "token_id": 101987,
+          "logit": 33.75
+        },
+        {
+          "token_id": 54021,
+          "logit": 30.875
+        },
+        {
+          "token_id": 101047,
+          "logit": 29.125
+        },
+        {
+          "token_id": 108869,
+          "logit": 27.875
+        }
+      ],
+      "reference_topk": [
+        {
+          "token_id": 15946,
+          "logit": 35.5
+        },
+        {
+          "token_id": 101987,
+          "logit": 33.75
+        },
+        {
+          "token_id": 54021,
+          "logit": 30.875
+        },
+        {
+          "token_id": 101047,
+          "logit": 29.125
+        },
+        {
+          "token_id": 108869,
+          "logit": 27.875
+        }
+      ],
+      "runtime_token_id": 15946,
+      "reference_token_id": 15946
+    },
+    {
+      "step_idx": 1,
+      "decode_token_id": 15946,
+      "stage_max_diff": 0.0,
+      "stage_mean_diff": 0.0,
+      "runtime_topk": [
+        {
+          "token_id": 3837,
+          "logit": 36.0
+        },
+        {
+          "token_id": 101961,
+          "logit": 34.0
+        },
+        {
+          "token_id": 101177,
+          "logit": 34.0
+        },
+        {
+          "token_id": 46944,
+          "logit": 30.5
+        },
+        {
+          "token_id": 114082,
+          "logit": 29.875
+        }
+      ],
+      "reference_topk": [
+        {
+          "token_id": 3837,
+          "logit": 36.0
+        },
+        {
+          "token_id": 101961,
+          "logit": 34.0
+        },
+        {
+          "token_id": 101177,
+          "logit": 34.0
+        },
+        {
+          "token_id": 46944,
+          "logit": 30.5
+        },
+        {
+          "token_id": 114082,
+          "logit": 29.875
+        }
+      ],
+      "runtime_token_id": 3837,
+      "reference_token_id": 3837
+    },
+    {
+      "step_idx": 2,
+      "decode_token_id": 3837,
+      "stage_max_diff": 0.0,
+      "stage_mean_diff": 0.0,
+      "runtime_topk": [
+        {
+          "token_id": 101177,
+          "logit": 35.75
+        },
+        {
+          "token_id": 101961,
+          "logit": 35.75
+        },
+        {
+          "token_id": 46944,
+          "logit": 31.625
+        },
+        {
+          "token_id": 101977,
+          "logit": 27.125
+        },
+        {
+          "token_id": 114082,
+          "logit": 26.0
+        }
+      ],
+      "reference_topk": [
+        {
+          "token_id": 101177,
+          "logit": 35.75
+        },
+        {
+          "token_id": 101961,
+          "logit": 35.75
+        },
+        {
+          "token_id": 46944,
+          "logit": 31.625
+        },
+        {
+          "token_id": 101977,
+          "logit": 27.125
+        },
+        {
+          "token_id": 114082,
+          "logit": 26.0
+        }
+      ],
+      "runtime_token_id": 101177,
+      "reference_token_id": 101177
+    }
+  ]
+}

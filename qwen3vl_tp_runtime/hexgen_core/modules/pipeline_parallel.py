@@ -1,4 +1,8 @@
-"""Dedicated pipeline-parallel runtime for direct or captured stage bundles."""
+"""Dedicated pipeline-parallel runtime for direct StageState execution.
+
+Captured-bundle prepare/replay helpers remain in this module as legacy
+compatibility entrypoints, outside the direct-runtime export surface.
+"""
 
 import gc
 from pathlib import Path

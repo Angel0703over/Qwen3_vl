@@ -1,0 +1,35 @@
+{
+  "backend": "hf",
+  "mode": "generate",
+  "modality": "multimodal",
+  "model_path": "/mnt/ssd/models/Qwen/Qwen3-VL-4B-Instruct",
+  "prompt": "请用中文简要介绍一下人工智能。",
+  "max_new_tokens": 4,
+  "do_sample": false,
+  "temperature": null,
+  "top_p": null,
+  "top_k": null,
+  "repetition_penalty": 1.0,
+  "attn_implementation": "eager",
+  "input_token_count": 624,
+  "generated_token_count": 4,
+  "generated_token_ids": [
+    104455,
+    9909,
+    9286,
+    16488
+  ],
+  "generated_text": "人工智能（Artificial",
+  "num_frames": 8,
+  "frame_paths": [
+    "/mnt/ssd/code/Qwen3_vl/frames/frame_001.jpg",
+    "/mnt/ssd/code/Qwen3_vl/frames/frame_002.jpg",
+    "/mnt/ssd/code/Qwen3_vl/frames/frame_003.jpg",
+    "/mnt/ssd/code/Qwen3_vl/frames/frame_004.jpg",
+    "/mnt/ssd/code/Qwen3_vl/frames/frame_005.jpg",
+    "/mnt/ssd/code/Qwen3_vl/frames/frame_006.jpg",
+    "/mnt/ssd/code/Qwen3_vl/frames/frame_007.jpg",
+    "/mnt/ssd/code/Qwen3_vl/frames/frame_008.jpg"
+  ],
+  "sample_fps": 1
+}

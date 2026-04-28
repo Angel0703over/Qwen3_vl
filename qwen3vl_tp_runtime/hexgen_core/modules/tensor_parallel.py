@@ -1,15 +1,11 @@
-"""Tensor-parallel runtime entrypoints.
-
-The direct backend=tp path owns its public entrypoint here. Captured-bundle TP
-replay helpers are kept in this file only as debug/legacy compatibility.
-"""
+"""Tensor-parallel runtime entrypoints for direct StageState execution."""
 
 import torch
 import torch.distributed as dist
 
 from ..distributed import broadcast_cpu
 from ..schema import StageState, TensorParallelManifest
-from .tp_debug import (
+from ...debug.tp_debug import (
     TpDebugConfig,
     build_stage_traces,
 )
@@ -41,19 +37,6 @@ from ...models.qwen3vl.weights import (
 def tensor_diff_stats(lhs: torch.Tensor, rhs: torch.Tensor) -> tuple[float, float]:
     diff = (lhs - rhs).abs()
     return diff.max().item(), diff.mean().item()
-
-
-def load_text_stage_bundle(
-    bundle_path: str,
-    device: torch.device,
-    compute_dtype_arg: str,
-) -> tuple[dict, torch.dtype]:
-    """Load one captured text-stage bundle and move it into the requested runtime dtype."""
-
-    bundle = load_bundle(bundle_path)
-    compute_dtype_name = bundle["save_dtype"] if compute_dtype_arg == "auto" else compute_dtype_arg
-    compute_dtype = dtype_from_name(compute_dtype_name)
-    return move_bundle(bundle, device, compute_dtype), compute_dtype
 
 
 def _all_tp_stages_are_direct(manifest: TensorParallelManifest) -> bool:
@@ -141,7 +124,7 @@ def load_tp_manifest(manifest_path: str) -> TensorParallelManifest:
     return TensorParallelManifest.from_dict(manifest_dict)
 
 
-def _build_generate_phase_state(
+def build_generate_phase_state(
     stage_state: StageState,
     phase_payload: dict,
     *,
@@ -163,7 +146,7 @@ def _build_generate_phase_state(
     return runtime_state
 
 
-def _strip_runtime_layer_cache(stage_state: StageState) -> StageState:
+def strip_runtime_layer_cache(stage_state: StageState) -> StageState:
     stripped_state = dict(stage_state)
     stripped_state["layers"] = [
         {
@@ -176,7 +159,7 @@ def _strip_runtime_layer_cache(stage_state: StageState) -> StageState:
     return stripped_state
 
 
-def _build_generate_cache_map(stage_state: StageState) -> dict[int, tuple[torch.Tensor | None, torch.Tensor | None]]:
+def build_generate_cache_map(stage_state: StageState) -> dict[int, tuple[torch.Tensor | None, torch.Tensor | None]]:
     return {
         int(layer_state["layer_idx"]): (
             layer_state.get("past_key"),
@@ -186,11 +169,11 @@ def _build_generate_cache_map(stage_state: StageState) -> dict[int, tuple[torch.
     }
 
 
-def _is_runtime_only_generate_state(stage_state: StageState) -> bool:
+def is_runtime_only_generate_state(stage_state: StageState) -> bool:
     return bool(stage_state.get("runtime_only_generate"))
 
 
-def _infer_runtime_tensor_device(stage_state: StageState) -> torch.device:
+def infer_runtime_tensor_device(stage_state: StageState) -> torch.device:
     if stage_state.get("embed_tokens_weight") is not None:
         return stage_state["embed_tokens_weight"].device
     if stage_state.get("layers"):
@@ -202,7 +185,7 @@ def _infer_runtime_tensor_device(stage_state: StageState) -> torch.device:
     return stage_state["prefill_attention_mask_2d"].device
 
 
-def _infer_runtime_tensor_dtype(stage_state: StageState) -> torch.dtype:
+def infer_runtime_tensor_dtype(stage_state: StageState) -> torch.dtype:
     if stage_state.get("embed_tokens_weight") is not None:
         return stage_state["embed_tokens_weight"].dtype
     if stage_state.get("layers"):
@@ -212,7 +195,7 @@ def _infer_runtime_tensor_dtype(stage_state: StageState) -> torch.dtype:
     return torch.float32
 
 
-def _infer_runtime_token_dtype(stage_state: StageState) -> torch.dtype:
+def infer_runtime_token_dtype(stage_state: StageState) -> torch.dtype:
     if stage_state.get("input_ids") is not None:
         return stage_state["input_ids"].dtype
     token_id_dtype = stage_state.get("token_id_dtype")
@@ -221,11 +204,11 @@ def _infer_runtime_token_dtype(stage_state: StageState) -> torch.dtype:
     return torch.int64
 
 
-def _build_runtime_only_stage_input_template(stage_state: StageState, *, query_len: int) -> torch.Tensor:
+def build_runtime_only_stage_input_template(stage_state: StageState, *, query_len: int) -> torch.Tensor:
     return torch.empty(
         (int(stage_state["batch_size"]), query_len, int(stage_state["hidden_size"])),
-        device=_infer_runtime_tensor_device(stage_state),
-        dtype=_infer_runtime_tensor_dtype(stage_state),
+        device=infer_runtime_tensor_device(stage_state),
+        dtype=infer_runtime_tensor_dtype(stage_state),
     )
 
 
@@ -261,13 +244,13 @@ def _build_runtime_only_generate_phase_state(
     elif str(stage_state.get("modality", "text")) == "multimodal":
         decode_input_ids = torch.zeros(
             (int(stage_state["batch_size"]), 1),
-            device=_infer_runtime_tensor_device(stage_state),
-            dtype=_infer_runtime_token_dtype(stage_state),
+            device=infer_runtime_tensor_device(stage_state),
+            dtype=infer_runtime_token_dtype(stage_state),
         )
         dummy_embed_tokens_weight = torch.zeros(
             (1, int(config_spec.hidden_size)),
-            device=_infer_runtime_tensor_device(stage_state),
-            dtype=_infer_runtime_tensor_dtype(stage_state),
+            device=infer_runtime_tensor_device(stage_state),
+            dtype=infer_runtime_tensor_dtype(stage_state),
         )
         decode_state = build_mm_decode_state_from_weights(
             decode_input_ids=decode_input_ids,
@@ -276,8 +259,8 @@ def _build_runtime_only_generate_phase_state(
             rope_deltas=stage_state["rope_deltas"],
             embed_tokens_weight=dummy_embed_tokens_weight,
             config_spec=config_spec,
-            device=_infer_runtime_tensor_device(stage_state),
-            compute_dtype=_infer_runtime_tensor_dtype(stage_state),
+            device=infer_runtime_tensor_device(stage_state),
+            compute_dtype=infer_runtime_tensor_dtype(stage_state),
             rotary_emb=rotary_emb,
         )
         runtime_state["attention_mask"] = decode_state.attention_mask
@@ -294,8 +277,8 @@ def _build_runtime_only_generate_phase_state(
             seq_len=query_len,
             past_length=int(attention_mask_2d.shape[-1]) - query_len,
             config_spec=config_spec,
-            device=_infer_runtime_tensor_device(stage_state),
-            compute_dtype=_infer_runtime_tensor_dtype(stage_state),
+            device=infer_runtime_tensor_device(stage_state),
+            compute_dtype=infer_runtime_tensor_dtype(stage_state),
             rotary_emb=rotary_emb,
         )
         runtime_state["attention_mask"] = runtime_aux["attention_mask"]
@@ -307,19 +290,19 @@ def _build_runtime_only_generate_phase_state(
     if phase_kind == "decode":
         runtime_state["decode_input_ids"] = torch.zeros(
             (int(stage_state["batch_size"]), 1),
-            device=_infer_runtime_tensor_device(stage_state),
-            dtype=_infer_runtime_token_dtype(stage_state),
+            device=infer_runtime_tensor_device(stage_state),
+            dtype=infer_runtime_token_dtype(stage_state),
         )
     return runtime_state
 
 
-def _token_tensor_to_list(token_tensor: torch.Tensor) -> list[int]:
+def token_tensor_to_list(token_tensor: torch.Tensor) -> list[int]:
     if token_tensor.dim() == 2:
         token_tensor = token_tensor[0]
     return [int(token_id) for token_id in token_tensor.tolist()]
 
 
-def _broadcast_token_id(token_id: int | None, *, src: int) -> int:
+def broadcast_token_id(token_id: int | None, *, src: int) -> int:
     token_tensor = torch.tensor([-1 if token_id is None else token_id], dtype=torch.int64)
     dist.broadcast(token_tensor, src=src)
     return int(token_tensor.item())
@@ -353,7 +336,7 @@ def _run_generate_phase_tp(
                 raise ValueError("decode phase 需要 current_token_id，但当前拿到 None。")
             decode_input_ids = torch.tensor(
                 [[current_token_id]],
-                device=_infer_runtime_tensor_device(runtime_state),
+                device=infer_runtime_tensor_device(runtime_state),
                 dtype=runtime_state["decode_input_ids"].dtype,
             )
             leader_input = forward_text_embeddings(decode_input_ids, runtime_state)
@@ -367,7 +350,7 @@ def _run_generate_phase_tp(
         reference_tensor=(
             reference_input
             if reference_input is not None
-            else _build_runtime_only_stage_input_template(runtime_state, query_len=query_len)
+            else build_runtime_only_stage_input_template(runtime_state, query_len=query_len)
         ),
         tensor=leader_input,
         src=0,
@@ -379,7 +362,7 @@ def _run_generate_phase_tp(
         embedding_max, embedding_mean = tensor_diff_stats(stage_input, reference_input)
 
     if phase_kind == "prefill":
-        trace_state = _strip_runtime_layer_cache(runtime_state)
+        trace_state = strip_runtime_layer_cache(runtime_state)
         trace = trace_text_decode_logits_tp_with_runtime_cache(
             stage_input,
             trace_state,
@@ -568,7 +551,7 @@ class StageRunner:
         stage_state: StageState,
         comm_dtype: torch.dtype,
     ) -> dict:
-        runtime_only_generate = _is_runtime_only_generate_state(stage_state)
+        runtime_only_generate = is_runtime_only_generate_state(stage_state)
         runtime_only_context = None
         if runtime_only_generate:
             config_spec = load_text_model_config_spec(self.manifest.runtime_config["model_path"])
@@ -586,7 +569,7 @@ class StageRunner:
                 rotary_emb=runtime_only_context["rotary_emb"],
             )
         else:
-            prefill_state = _build_generate_phase_state(
+            prefill_state = build_generate_phase_state(
                 stage_state,
                 stage_state["prefill"],
                 stage_type="text_prefill_last",
@@ -603,12 +586,12 @@ class StageRunner:
             tp_mlp_math_mode=self.tp_mlp_math_mode,
             return_tensor=self.return_tensors,
         )
-        current_token_id = _broadcast_token_id(
+        current_token_id = broadcast_token_id(
             prefill_stats["predicted_token_id"] if rank == 0 else None,
             src=0,
         )
         generated_token_ids = [current_token_id]
-        cache_by_layer = prefill_cache if prefill_cache is not None else _build_generate_cache_map(stage_state)
+        cache_by_layer = prefill_cache if prefill_cache is not None else build_generate_cache_map(stage_state)
         step_stats = []
         step_output_tensors = []
         current_attention_mask_2d = stage_state["prefill_attention_mask_2d"]
@@ -638,7 +621,7 @@ class StageRunner:
                     rotary_emb=runtime_only_context["rotary_emb"],
                 )
             else:
-                decode_state = _build_generate_phase_state(
+                decode_state = build_generate_phase_state(
                     stage_state,
                     step_payload,
                     stage_type="text_decode_last",
@@ -655,7 +638,7 @@ class StageRunner:
                 tp_mlp_math_mode=self.tp_mlp_math_mode,
                 return_tensor=self.return_tensors,
             )
-            current_token_id = _broadcast_token_id(
+            current_token_id = broadcast_token_id(
                 current_step_stats["predicted_token_id"] if rank == 0 else None,
                 src=0,
             )
@@ -680,7 +663,7 @@ class StageRunner:
                 "reference_generated_token_ids": (
                     None
                     if runtime_only_generate or stage_state.get("generated_token_ids") is None
-                    else _token_tensor_to_list(stage_state["generated_token_ids"])
+                    else token_tensor_to_list(stage_state["generated_token_ids"])
                 ),
             }
         )
@@ -803,7 +786,7 @@ def run_stage_state_tp(
         traces, outlier_dump, trace_summary = build_stage_traces(
             reference_input=reference_input,
             stage_input=stage_input,
-            bundle=stage_state,
+            stage_state=stage_state,
             local_rank=local_rank,
             tp_degree=tp_degree,
             comm_dtype=comm_dtype,
@@ -832,142 +815,6 @@ def run_stage_state_tp(
         "stage_output": stage_output,
     }
 
-
-def run_text_tensor_parallel_stage(
-    *,
-    stage_input: torch.Tensor,
-    bundle: dict | None = None,
-    stage_state: dict | None = None,
-    reference_input_override: torch.Tensor | None = None,
-    local_rank: int,
-    tp_degree: int,
-    comm_dtype: torch.dtype,
-    tp_group=None,
-    leader_rank: int = 0,
-    tp_attn_math_mode: str = "orig",
-    tp_mlp_math_mode: str = "orig",
-    debug_config: TpDebugConfig | None = None,
-) -> dict:
-    if stage_state is None:
-        if bundle is None:
-            raise ValueError("run_text_tensor_parallel_stage 需要 stage_state。")
-        stage_state = bundle
-    return run_stage_state_tp(
-        stage_input=stage_input,
-        stage_state=stage_state,
-        reference_input_override=reference_input_override,
-        local_rank=local_rank,
-        tp_degree=tp_degree,
-        comm_dtype=comm_dtype,
-        tp_group=tp_group,
-        leader_rank=leader_rank,
-        tp_attn_math_mode=tp_attn_math_mode,
-        tp_mlp_math_mode=tp_mlp_math_mode,
-        debug_config=debug_config,
-    )
-
-
-class TextTensorParallelRunner:
-    """Stateful rank runner for one captured text stage executed under pure TP."""
-
-    def __init__(
-        self,
-        bundle_path: str,
-        device: torch.device,
-        compute_dtype_arg: str,
-        comm_dtype_arg: str,
-        tp_attn_math_mode: str = "orig",
-        tp_mlp_math_mode: str = "orig",
-        debug_config: TpDebugConfig | None = None,
-    ) -> None:
-        self.bundle_path = bundle_path
-        self.device = device
-        self.compute_dtype_arg = compute_dtype_arg
-        self.comm_dtype_arg = comm_dtype_arg
-        self.tp_attn_math_mode = tp_attn_math_mode
-        self.tp_mlp_math_mode = tp_mlp_math_mode
-        self.debug_config = debug_config or TpDebugConfig()
-
-    def run_rank(self, rank: int, world_size: int) -> dict:
-        bundle, compute_dtype = load_text_stage_bundle(
-            self.bundle_path,
-            self.device,
-            self.compute_dtype_arg,
-        )
-        comm_dtype = resolve_comm_dtype(self.comm_dtype_arg, compute_dtype)
-        stage_input = get_stage_input(bundle)
-        stats = run_text_tensor_parallel_stage(
-            stage_input=stage_input,
-            bundle=bundle,
-            reference_input_override=None,
-            local_rank=rank,
-            tp_degree=world_size,
-            comm_dtype=comm_dtype,
-            tp_attn_math_mode=self.tp_attn_math_mode,
-            tp_mlp_math_mode=self.tp_mlp_math_mode,
-            debug_config=self.debug_config,
-        )
-        first_layer = bundle["layers"][0]
-        stats.pop("stage_output")
-        stats.update(
-            {
-                "rank": rank,
-                "world_size": world_size,
-                "start_idx": bundle["start_idx"],
-                "end_idx": bundle["end_idx"],
-                "num_layers": len(bundle["layers"]),
-                "device": str(self.device),
-                "comm_dtype": str(comm_dtype),
-                "tp_attn_math_mode": self.tp_attn_math_mode,
-                "tp_mlp_math_mode": self.tp_mlp_math_mode,
-                "num_heads": first_layer["num_attention_heads"],
-                "num_kv_heads": first_layer["num_key_value_heads"],
-                "local_q_heads": first_layer["num_attention_heads"] // world_size,
-                "local_kv_heads": first_layer["num_key_value_heads"] // world_size,
-                "head_dim": first_layer["head_dim"],
-                "hidden_act": first_layer["hidden_act"],
-                "attn_impl": first_layer.get("attn_implementation", "unknown"),
-                "deepstack_layer_indices": bundle.get("deepstack_layer_indices", []),
-                "bundle_dtype": bundle["save_dtype"],
-                "original_input_dtype": bundle["original_input_dtype"],
-                "original_input_device": bundle["original_input_device"],
-            }
-        )
-        return stats
-
-
-def run_text_tensor_parallel_rank(
-    *,
-    rank: int,
-    world_size: int,
-    bundle_path: str,
-    device: torch.device,
-    compute_dtype_arg: str,
-    comm_dtype_arg: str,
-    tp_attn_math_mode: str = "orig",
-    tp_mlp_math_mode: str = "orig",
-    debug_config: TpDebugConfig | None = None,
-) -> dict:
-    runner = TextTensorParallelRunner(
-        bundle_path=bundle_path,
-        device=device,
-        compute_dtype_arg=compute_dtype_arg,
-        comm_dtype_arg=comm_dtype_arg,
-        tp_attn_math_mode=tp_attn_math_mode,
-        tp_mlp_math_mode=tp_mlp_math_mode,
-        debug_config=debug_config,
-    )
-    return runner.run_rank(rank, world_size)
-
-
-DEBUG_REPLAY_EXPORTS = [
-    "tensor_diff_stats",
-    "load_text_stage_bundle",
-    "build_stage_traces",
-    "run_text_tensor_parallel_stage",
-    "TextTensorParallelRunner",
-    "run_text_tensor_parallel_rank",
-]
 
 __all__ = [
     "TensorParallelManifest",

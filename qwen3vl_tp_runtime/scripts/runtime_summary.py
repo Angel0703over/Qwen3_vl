@@ -7,7 +7,7 @@ from functools import lru_cache
 
 import torch
 
-from qwen3vl_tp_runtime.hexgen_core.modules.tp_debug import TpDebugConfig
+from qwen3vl_tp_runtime.debug.tp_debug import TpDebugConfig
 from qwen3vl_tp_runtime.models.qwen3vl.processing import load_processor
 from qwen3vl_tp_runtime.scripts.common import summarize_last_token_topk
 

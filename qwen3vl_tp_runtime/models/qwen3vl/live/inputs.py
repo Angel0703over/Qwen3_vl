@@ -12,6 +12,7 @@ from qwen3vl_tp_runtime.models.qwen3vl.live.common import (
 )
 from qwen3vl_tp_runtime.models.qwen3vl.runtime_mm_stage import (
     MmRuntimeState,
+    MmVisualState,
     mm_runtime_inputs_from_state,
 )
 from qwen3vl_tp_runtime.models.qwen3vl.vision.state import (
