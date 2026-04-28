@@ -151,12 +151,14 @@ class CompatPackageExportsTest(unittest.TestCase):
         self.assertIn("load_tp_manifest", tensor_module.__all__)
         self.assertIn("load_stage_state_for_tp_rank", tensor_module.__all__)
         self.assertIn("StageRunner", tensor_module.__all__)
-        self.assertIn("GenerateWorker", tensor_module.__all__)
-        self.assertIn("DecodeWorker", tensor_module.__all__)
+        self.assertNotIn("GenerateWorker", tensor_module.__all__)
+        self.assertNotIn("DecodeWorker", tensor_module.__all__)
         self.assertIn("TensorParallelRunner", tensor_module.__all__)
         self.assertIn("run_tensor_parallel_rank", tensor_module.__all__)
         self.assertIn("run_stage_state_tp", tensor_module.__all__)
-        self.assertTrue(issubclass(tensor_module.TensorParallelRunner, tensor_module.GenerateWorker))
+        self.assertFalse(hasattr(tensor_module, "GenerateWorker"))
+        self.assertFalse(hasattr(tensor_module, "DecodeWorker"))
+        self.assertTrue(issubclass(tensor_module.TensorParallelRunner, tensor_module.StageRunner))
         self.assertIn("run_text_tensor_parallel_rank", tensor_module.DEBUG_REPLAY_EXPORTS)
 
 

@@ -718,15 +718,7 @@ class StageRunner:
         }
 
 
-class GenerateWorker(StageRunner):
-    """TP-facing generate worker that delegates to the shared single-stage executor."""
-
-
-class DecodeWorker(GenerateWorker):
-    """TP-facing decode worker for naming symmetry with PP and hybrid backends."""
-
-
-class TensorParallelRunner(GenerateWorker):
+class TensorParallelRunner(StageRunner):
     """Rank runner for standalone backend=tp direct execution."""
 
 
@@ -980,8 +972,6 @@ DEBUG_REPLAY_EXPORTS = [
 __all__ = [
     "TensorParallelManifest",
     "StageRunner",
-    "GenerateWorker",
-    "DecodeWorker",
     "TensorParallelRunner",
     "load_tp_manifest",
     "load_stage_state_for_tp_rank",
