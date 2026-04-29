@@ -1,0 +1,2 @@
+PASS case=pp3-text-generate ranks=3 stages=[(0, 0, 3), (1, 1, 3), (2, 2, 3)] generated_token_ids=[104455, 9909, 9286, 16488] generated_text='人工智能（Artificial'
+PASS case=pp3-mm-generate ranks=3 stages=[(0, 0, 3), (1, 1, 3), (2, 2, 3)] generated_token_ids=[87140, 15946, 3837, 101177] generated_text='视频中，一名'

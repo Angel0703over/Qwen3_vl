@@ -1,11 +1,13 @@
 """Transport handlers and compatibility helpers for multimodal stage handoff."""
 
 from dataclasses import dataclass
+import time
 from typing import Any
 
 import torch
 import torch.distributed as dist
 
+from .distributed import record_transport_profile_event
 from .schema import PayloadSummary, StageHandoffPayload
 from .stage import build_stage_handoff_target_dtypes
 
@@ -50,10 +52,52 @@ class StageCommunicator:
 
     def send(self, handoff: StageHandoffPayload | None, dst: int) -> PayloadSummary:
         payload = None if handoff is None else handoff.to_transport_payload()
-        return send_payload(payload, dst=dst, comm_dtype=self.comm_dtype)
+        start = time.perf_counter()
+        try:
+            summary = send_payload(payload, dst=dst, comm_dtype=self.comm_dtype)
+        except Exception:
+            record_transport_profile_event(
+                channel=self.channel_name,
+                operation="send",
+                label="stage_handoff",
+                peer=dst,
+                elapsed_seconds=time.perf_counter() - start,
+                status="fail",
+            )
+            raise
+        record_transport_profile_event(
+            channel=self.channel_name,
+            operation="send",
+            label="stage_handoff",
+            peer=dst,
+            summary=summary,
+            elapsed_seconds=time.perf_counter() - start,
+        )
+        return summary
 
     def send_empty(self, dst: int) -> PayloadSummary:
-        return send_payload(None, dst=dst, comm_dtype=self.comm_dtype)
+        start = time.perf_counter()
+        try:
+            summary = send_payload(None, dst=dst, comm_dtype=self.comm_dtype)
+        except Exception:
+            record_transport_profile_event(
+                channel=self.channel_name,
+                operation="send_empty",
+                label="stage_handoff",
+                peer=dst,
+                elapsed_seconds=time.perf_counter() - start,
+                status="fail",
+            )
+            raise
+        record_transport_profile_event(
+            channel=self.channel_name,
+            operation="send_empty",
+            label="stage_handoff",
+            peer=dst,
+            summary=summary,
+            elapsed_seconds=time.perf_counter() - start,
+        )
+        return summary
 
     def recv(
         self,
@@ -62,14 +106,35 @@ class StageCommunicator:
     ) -> StageHandoffMessage:
         if stage_state is None:
             raise ValueError("recv 需要 stage_state。")
-        payload = recv_payload(
-            src=src,
-            device=self.device,
-            target_dtypes=self.build_target_dtypes(stage_state),
+        start = time.perf_counter()
+        try:
+            payload = recv_payload(
+                src=src,
+                device=self.device,
+                target_dtypes=self.build_target_dtypes(stage_state),
+            )
+        except Exception:
+            record_transport_profile_event(
+                channel=self.channel_name,
+                operation="recv",
+                label="stage_handoff",
+                peer=src,
+                elapsed_seconds=time.perf_counter() - start,
+                status="fail",
+            )
+            raise
+        summary = PayloadSummary.from_payload(payload)
+        record_transport_profile_event(
+            channel=self.channel_name,
+            operation="recv",
+            label="stage_handoff",
+            peer=src,
+            summary=summary,
+            elapsed_seconds=time.perf_counter() - start,
         )
         return StageHandoffMessage(
             handoff=StageHandoffPayload.from_transport_payload(payload),
-            summary=PayloadSummary.from_payload(payload),
+            summary=summary,
         )
 
 
@@ -206,11 +271,17 @@ def send_payload(
     _send_scalar(len(items), dst)
 
     tensor_shapes = {}
+    tensor_dtypes = {}
+    tensor_numels = {}
+    tensor_bytes = {}
     for name, tensor in items:
         _send_string(name, dst)
         _send_scalar(0 if tensor is None else 1, dst)
         if tensor is None:
             tensor_shapes[name] = None
+            tensor_dtypes[name] = None
+            tensor_numels[name] = 0
+            tensor_bytes[name] = 0
             continue
 
         wire_dtype = _resolve_wire_dtype(tensor, comm_dtype)
@@ -220,12 +291,19 @@ def send_payload(
         _send_shape(payload_cpu.shape, dst)
         dist.send(payload_cpu, dst=dst)
         tensor_shapes[name] = tuple(payload_cpu.shape)
+        tensor_dtypes[name] = str(wire_dtype)
+        tensor_numels[name] = int(payload_cpu.numel())
+        tensor_bytes[name] = int(payload_cpu.numel() * payload_cpu.element_size())
 
     return PayloadSummary(
         is_empty=False,
         num_tensors=len(items),
         payload_keys=[name for name, _ in items],
         tensor_shapes=tensor_shapes,
+        tensor_dtypes=tensor_dtypes,
+        tensor_numels=tensor_numels,
+        tensor_bytes=tensor_bytes,
+        total_tensor_bytes=sum(tensor_bytes.values()),
     )
 
 

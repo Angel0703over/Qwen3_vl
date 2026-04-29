@@ -102,6 +102,11 @@ def _summarize_event_kinds(events: list[dict[str, Any]]) -> dict[str, float]:
     return {key: round(value, 6) for key, value in sorted(totals.items())}
 
 
+def _transport_bucket(transport_metrics: dict[str, Any], kind: str) -> dict[str, Any]:
+    bucket = (transport_metrics.get("totals_by_kind") or {}).get(kind)
+    return bucket if isinstance(bucket, dict) else {}
+
+
 def _parse_real_seconds(text: str) -> float | None:
     for line in reversed(text.splitlines()):
         match = TIME_REAL_RE.match(line.strip())
@@ -142,6 +147,7 @@ def collect_log_record(case_id: str, path: Path) -> dict[str, Any]:
     summary = extract_last_json_summary_from_text(path, primary_text)
     runtime_metrics = summary.get("runtime_metrics") or {}
     startup_metrics = runtime_metrics.get("startup") or {}
+    transport_metrics = runtime_metrics.get("transport") or {}
     memory_metrics = runtime_metrics.get("memory") or {}
     events = startup_metrics.get("events")
     if not isinstance(events, list):
@@ -186,6 +192,19 @@ def collect_log_record(case_id: str, path: Path) -> dict[str, Any]:
             "cuda_peak_allocated_bytes": memory_metrics.get("peak_allocated_bytes"),
             "cuda_peak_reserved_bytes": memory_metrics.get("peak_reserved_bytes"),
             "cuda_available": memory_metrics.get("cuda_available"),
+        },
+        "payload": {
+            "startup_contract_bytes": _transport_bucket(transport_metrics, "startup_contract").get("total_bytes"),
+            "startup_contract_tensor_bytes": _transport_bucket(transport_metrics, "startup_contract").get("tensor_bytes"),
+            "startup_contract_object_bytes": _transport_bucket(transport_metrics, "startup_contract").get("object_bytes"),
+            "scaffold_bytes": _transport_bucket(transport_metrics, "scaffold").get("total_bytes"),
+            "scaffold_tensor_bytes": _transport_bucket(transport_metrics, "scaffold").get("tensor_bytes"),
+            "scaffold_object_bytes": _transport_bucket(transport_metrics, "scaffold").get("object_bytes"),
+            "stage_handoff_bytes": _transport_bucket(transport_metrics, "stage_handoff").get("total_bytes"),
+            "stage_handoff_seconds": _transport_bucket(transport_metrics, "stage_handoff").get("elapsed_seconds"),
+            "tp_collective_bytes": _transport_bucket(transport_metrics, "tp_collective").get("total_bytes"),
+            "tp_collective_seconds": _transport_bucket(transport_metrics, "tp_collective").get("elapsed_seconds"),
+            "transport_event_count": transport_metrics.get("event_count"),
         },
         "weight_load": {
             "loaded_weight_tensor_bytes": _get_path(summary, "weight_load.loaded_weight_tensor_bytes"),
@@ -234,12 +253,13 @@ def _format_bytes(value: int | None) -> str:
 
 def records_to_markdown(records: list[dict[str, Any]]) -> str:
     lines = [
-        "| case | rank | total s | prepare s | startup contract s | transport s | materialize s | barrier s | cuda peak alloc | cuda peak reserved | loaded weights |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| case | rank | total s | prepare s | contract s | materialize s | barrier s | startup bytes | scaffold bytes | handoff bytes | TP coll s | TP coll bytes | cuda peak alloc | cuda peak reserved | loaded weights |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for record in records:
         timing = record["timing"]
         memory = record["memory"]
+        payload = record["payload"]
         weight_load = record["weight_load"]
         lines.append(
             "| "
@@ -250,9 +270,13 @@ def records_to_markdown(records: list[dict[str, Any]]) -> str:
                     _format_seconds(timing["runtime_total_seconds"]),
                     _format_seconds(timing["prepare_session_seconds"]),
                     _format_seconds(timing["startup_contract_seconds"]),
-                    _format_seconds(timing["startup_contract_transport_seconds"]),
                     _format_seconds(timing["materialize_stage_seconds"]),
                     _format_seconds(timing["post_load_barrier_seconds"]),
+                    _format_bytes(payload["startup_contract_bytes"]),
+                    _format_bytes(payload["scaffold_bytes"]),
+                    _format_bytes(payload["stage_handoff_bytes"]),
+                    _format_seconds(payload["tp_collective_seconds"]),
+                    _format_bytes(payload["tp_collective_bytes"]),
                     _format_bytes(memory["cuda_peak_allocated_bytes"]),
                     _format_bytes(memory["cuda_peak_reserved_bytes"]),
                     _format_bytes(weight_load["loaded_weight_tensor_bytes"]),

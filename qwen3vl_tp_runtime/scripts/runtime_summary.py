@@ -14,7 +14,9 @@ import torch
 from qwen3vl_tp_runtime.debug.tp_debug import TpDebugConfig
 from qwen3vl_tp_runtime.hexgen_core.distributed import (
     get_startup_timing_events,
+    get_transport_profile_events,
     reset_startup_timing_events,
+    reset_transport_profile_events,
 )
 from qwen3vl_tp_runtime.models.qwen3vl.processing import load_processor
 from qwen3vl_tp_runtime.scripts.common import summarize_last_token_topk
@@ -40,6 +42,7 @@ def _tensor_shape_map_to_json(payload: dict[str, tuple[int, ...] | None]) -> dic
 
 def reset_runtime_metrics() -> None:
     reset_startup_timing_events()
+    reset_transport_profile_events()
     if not torch.cuda.is_available():
         return
     try:
@@ -113,6 +116,66 @@ def _summarize_startup_events(events: list[dict[str, Any]]) -> dict[str, Any]:
         "totals_by_kind": {
             key: _round_seconds(value)
             for key, value in sorted(totals_by_kind.items())
+        },
+    }
+
+
+def _summarize_transport_events(events: list[dict[str, Any]]) -> dict[str, Any]:
+    totals_by_kind: defaultdict[str, dict[str, float]] = defaultdict(
+        lambda: {
+            "event_count": 0,
+            "elapsed_seconds": 0.0,
+            "object_bytes": 0.0,
+            "tensor_bytes": 0.0,
+        }
+    )
+    totals_by_channel: defaultdict[str, dict[str, float]] = defaultdict(
+        lambda: {
+            "event_count": 0,
+            "elapsed_seconds": 0.0,
+            "object_bytes": 0.0,
+            "tensor_bytes": 0.0,
+        }
+    )
+    normalized_events: list[dict[str, Any]] = []
+    for event in events:
+        normalized = dict(event)
+        kind = str(normalized.get("kind") or "other")
+        channel = str(normalized.get("channel") or "unknown")
+        elapsed = float(normalized.get("elapsed_seconds") or 0.0)
+        object_bytes = float(normalized.get("object_bytes") or 0.0)
+        tensor_bytes = float(normalized.get("total_tensor_bytes") or 0.0)
+        normalized["elapsed_seconds"] = _round_seconds(elapsed)
+        normalized_events.append(normalized)
+
+        for bucket in (totals_by_kind[kind], totals_by_channel[channel]):
+            bucket["event_count"] += 1
+            bucket["elapsed_seconds"] += elapsed
+            bucket["object_bytes"] += object_bytes
+            bucket["tensor_bytes"] += tensor_bytes
+
+    def _finalize(payload: dict[str, float]) -> dict[str, int | float]:
+        return {
+            "event_count": int(payload["event_count"]),
+            "elapsed_seconds": _round_seconds(payload["elapsed_seconds"]),
+            "object_bytes": int(payload["object_bytes"]),
+            "tensor_bytes": int(payload["tensor_bytes"]),
+            "total_bytes": int(payload["object_bytes"] + payload["tensor_bytes"]),
+        }
+
+    for key in ("startup_contract", "scaffold", "stage_handoff", "tp_collective", "other"):
+        totals_by_kind.setdefault(key, totals_by_kind.default_factory())
+
+    return {
+        "event_count": len(normalized_events),
+        "events": normalized_events,
+        "totals_by_kind": {
+            key: _finalize(value)
+            for key, value in sorted(totals_by_kind.items())
+        },
+        "totals_by_channel": {
+            key: _finalize(value)
+            for key, value in sorted(totals_by_channel.items())
         },
     }
 
@@ -199,6 +262,7 @@ def _attach_runtime_metrics(
     summary["runtime_metrics"] = {
         "timing": timing,
         "startup": _summarize_startup_events(get_startup_timing_events()),
+        "transport": _summarize_transport_events(get_transport_profile_events()),
         "memory": {
             "cpu_max_rss_bytes": _maxrss_bytes(),
             **_collect_cuda_memory(),

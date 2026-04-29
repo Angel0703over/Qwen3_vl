@@ -1233,14 +1233,19 @@ PYTHONPATH=. /mnt/ssd/miniconda3/envs/vlm/bin/python test/test_compat_package_ex
 - 用户希望代码结构“函数名和功能一致、简洁”，类名可以添加，但要真的有意义。
 - 用户希望 import 尽量相对路径；但 `scripts/runtime.py` 因直接执行保留绝对 import 是可以解释的。
 
-## P3 性能 / 显存记录状态
+## P3 性能 / 显存 / transport profile 状态
 
-ROADMAP step 9 已落地。
+ROADMAP step 9 和 step 11 已落地。
 
 新增或更新：
 
 - `qwen3vl_tp_runtime/scripts/collect_runtime_perf.py`
 - `test/test_collect_runtime_perf.py`
+- `qwen3vl_tp_runtime/hexgen_core/schema.py`
+- `qwen3vl_tp_runtime/hexgen_core/distributed.py`
+- `qwen3vl_tp_runtime/hexgen_core/transport.py`
+- `qwen3vl_tp_runtime/scripts/runtime_summary.py`
+- `test/test_runtime_summary.py`
 - `runtime_metrics` 写入 runtime JSON summary
 - `baseline_runs/20260428/runtime-perf-records.json`
 - `baseline_runs/20260428/runtime-perf-table.md`
@@ -1256,6 +1261,27 @@ ROADMAP step 9 已落地。
 - `runtime_metrics.memory.cpu_max_rss_bytes`
 - `runtime_metrics.memory.peak_allocated_bytes`
 - `runtime_metrics.memory.peak_reserved_bytes`
+- `runtime_metrics.transport.events`
+- `runtime_metrics.transport.totals_by_kind.startup_contract`
+- `runtime_metrics.transport.totals_by_kind.scaffold`
+- `runtime_metrics.transport.totals_by_kind.stage_handoff`
+- `runtime_metrics.transport.totals_by_kind.tp_collective`
+- `runtime_metrics.transport.totals_by_channel.*`
+
+transport/payload profile 当前覆盖：
+
+- object/tensor send / recv / broadcast
+- `StageCommunicator` 的 PP/HYBRID stage handoff
+- TP helper 的 `all_reduce_cpu` / `all_gather_cpu` / `broadcast_cpu`
+- `PayloadSummary` 中的 tensor shape / dtype / numel / bytes
+
+`collect_runtime_perf.py` 额外汇总：
+
+- startup contract bytes / tensor bytes / object bytes
+- scaffold bytes / tensor bytes / object bytes
+- stage handoff bytes / seconds
+- TP collective bytes / seconds
+- transport event count
 
 收集命令：
 
@@ -1267,7 +1293,42 @@ PYTHONPATH=. /mnt/ssd/miniconda3/envs/vlm/bin/python \
   --output-md baseline_runs/20260428/runtime-perf-table.md
 ```
 
-当前 `baseline_runs/20260428` 是旧 correctness log：能解析已有 startup timer、`/usr/bin/time -p real` 和 loaded weight bytes，但没有 CUDA peak memory 字段；新代码重跑任意 runtime case 后会在 JSON summary 中直接出现 peak allocated/reserved。
+当前 `baseline_runs/20260428` 是旧 correctness log：能解析已有 startup timer、`/usr/bin/time -p real` 和 loaded weight bytes，但没有 CUDA peak memory 和新 transport profile 字段；所以当前 perf 表里的 CUDA peak 与 payload bytes 为空。新代码重跑任意 runtime case 后会在 JSON summary 中直接出现 peak allocated/reserved 与 `runtime_metrics.transport`。
+
+step 11 profiling 重跑记录：
+
+- 输出目录：`baseline_runs/20260428-step11-profile/`
+- 已重跑：`pp-text-generate`、`pp-mm-generate`、`tp-text-generate`、`tp-mm-generate`
+- 拓扑：Jetson2 rank0 + Jetson3 rank1，`MASTER_ADDR=10.126.126.3`
+- checker：`baseline_runs/20260428-step11-profile/check-baseline-logs.txt`，四个 case 全部 PASS
+- perf 表：`baseline_runs/20260428-step11-profile/runtime-perf-table.md`
+- machine-readable：`baseline_runs/20260428-step11-profile/runtime-perf-records.json`
+- 已能看到 PP startup/handoff payload bytes 和 TP collective seconds/bytes
+- HYBRID 未重跑：当前 Codex 沙箱不能访问 Jetson1 CUDA，且不能免密 SSH 到 `10.126.126.2` 绕过沙箱
+
+step 11 已运行并通过的本地检查：
+
+```bash
+/mnt/ssd/miniconda3/envs/vlm/bin/python -m py_compile \
+  qwen3vl_tp_runtime/hexgen_core/schema.py \
+  qwen3vl_tp_runtime/hexgen_core/distributed.py \
+  qwen3vl_tp_runtime/hexgen_core/transport.py \
+  qwen3vl_tp_runtime/scripts/runtime_summary.py \
+  qwen3vl_tp_runtime/scripts/collect_runtime_perf.py \
+  test/test_runtime_summary.py \
+  test/test_collect_runtime_perf.py
+
+PYTHONPATH=. /mnt/ssd/miniconda3/envs/vlm/bin/python test/test_runtime_summary.py
+PYTHONPATH=. /mnt/ssd/miniconda3/envs/vlm/bin/python test/test_collect_runtime_perf.py
+PYTHONPATH=. /mnt/ssd/miniconda3/envs/vlm/bin/python test/test_compat_package_exports.py
+PYTHONPATH=. /mnt/ssd/miniconda3/envs/vlm/bin/python qwen3vl_tp_runtime/scripts/collect_runtime_perf.py \
+  --baseline-dir baseline_runs/20260428 \
+  --output-json baseline_runs/20260428/runtime-perf-records.json \
+  --output-md baseline_runs/20260428/runtime-perf-table.md
+
+bash qwen3vl_tp_runtime/scripts/helpers/run-runtime-core-regression.sh
+bash qwen3vl_tp_runtime/scripts/helpers/run-runtime-core-regression.sh --include-weight-loader --skip-baseline-checks
+```
 
 ## 继续工作时的默认流程
 
@@ -1320,12 +1381,11 @@ bash sync-to-jetson2.sh --host 10.126.126.4 --git-changed
 
 ## 当前可以对老师汇报的一句话
 
-这个项目已经从“Qwen3-VL replay 验证器”推进到“从 `model_path` 直接构建 `StageState` 的 correctness-first 分布式推理 runtime 原型”：纯 PP、纯 TP、PP+TP HYBRID 三条主路径都已建立，text generate 和 multimodal generate 的关键 smoke 已通过；TP/PP 是并列基础后端，HYBRID 是组合层；每个 rank/stage 已能只 materialize 自己需要的 StageState 和 text decoder shard，旧 replay bundle 只保留在 debug/capture/file-backed reference 路径中。当前剩余重点是继续减少兼容壳、做 embedding/lm_head vocab parallelism，以及建立更系统的性能/显存基线。
+这个项目已经从“Qwen3-VL replay 验证器”推进到“从 `model_path` 直接构建 `StageState` 的 correctness-first 分布式推理 runtime 原型”：纯 PP、纯 TP、PP+TP HYBRID 三条主路径都已建立，text generate 和 multimodal generate 的关键 smoke 已通过；TP/PP 是并列基础后端，HYBRID 是组合层；每个 rank/stage 已能只 materialize 自己需要的 StageState 和 text decoder shard，旧 replay bundle 只保留在 debug/capture/file-backed reference 路径中。当前 startup / memory / transport payload profiling 已建立，剩余重点是按 ROADMAP 的具体顺序做性能优化，以及后续推进 embedding/lm_head vocab parallelism。
 
 ## 最后状态备注
 
-- 写入本文件之前，`git status --short` 没有输出，说明当时工作树是干净的。
-- 本文件创建后，工作树会新增 `qwen3vl_tp_runtime/SESSION_HANDOFF.md`。
+- 本文件会随着每轮任务更新；当前工作树状态以实际 `git status --short` 为准。
 - 如果新对话接手后第一件事是继续写代码，建议先跑：
 
 ```bash

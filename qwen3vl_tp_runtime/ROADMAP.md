@@ -391,26 +391,208 @@ PYTHONPATH=. /mnt/ssd/miniconda3/envs/vlm/bin/python \
 - `test/test_collect_runtime_perf.py` 通过。
 - `test/test_runtime_summary.py` 通过。
 
-### 10. 性能优化候选
+### 10. 性能优化执行原则
 
-等 correctness 和 baseline 自动化稳定后，再做：
+性能阶段从现在开始不再是一条大任务，而是按可观测、低风险减量、执行重排、拓扑搜索逐步推进。
 
-- startup contract tensor 减量。
-- scaffold broadcast 减量。
-- buffer reuse。
-- pinned memory。
-- PP handoff overlap。
-- TP all-reduce / all-gather profiling。
-- stage partition 搜索。
+通用规则：
+
+- 每个优化前先保留 before 表：
+  - `runtime-perf-records.json`
+  - `runtime-perf-table.md`
+- 每个优化后重跑同一组 case，生成 after 表。
+- correctness guard 必须先过：
+  - `bash qwen3vl_tp_runtime/scripts/helpers/run-runtime-core-regression.sh`
+- 如果改到权重加载：
+  - `bash qwen3vl_tp_runtime/scripts/helpers/run-runtime-core-regression.sh --include-weight-loader`
+- 如果改到真实 distributed generate 路径，至少重跑对应 smoke：
+  - `tp-text-generate`
+  - `pp-mm-generate`
+  - `hybrid-mm-generate`
+- 性能优化不应改变 `generated_token_ids` / `generated_text`。
+- 每个优化只动一个主目标，避免把多个变量混在一次对比里。
+
+建议输出目录命名：
+
+```bash
+baseline_runs/YYYYMMDD-perf-<topic>-before/
+baseline_runs/YYYYMMDD-perf-<topic>-after/
+```
+
+### 11. 已完成：先补齐 transport / payload profiling
+
+已落地：
+
+- `runtime_metrics.transport` 会记录机器可读 transport/profile 事件。
+- `PayloadSummary` 增加：
+  - `tensor_dtypes`
+  - `tensor_numels`
+  - `tensor_bytes`
+  - `total_tensor_bytes`
+- object/tensor send/recv/broadcast 会记录：
+  - label
+  - peer
+  - elapsed seconds
+  - object bytes
+  - tensor count / shapes / dtypes / bytes
+- `StageCommunicator` 会记录 PP/HYBRID stage handoff payload。
+- TP collective helper 会记录：
+  - `all_reduce_cpu`
+  - `all_gather_cpu`
+  - `broadcast_cpu`
+- `collect_runtime_perf.py` 会汇总：
+  - startup contract bytes
+  - scaffold bytes
+  - stage handoff bytes / seconds
+  - TP collective bytes / seconds
+
+`runtime_metrics.transport` 结构：
+
+```text
+runtime_metrics.transport.events[]
+runtime_metrics.transport.totals_by_kind.startup_contract
+runtime_metrics.transport.totals_by_kind.scaffold
+runtime_metrics.transport.totals_by_kind.stage_handoff
+runtime_metrics.transport.totals_by_kind.tp_collective
+runtime_metrics.transport.totals_by_channel.*
+```
 
 注意：
 
-- 性能优化不应破坏当前 correctness guard。
-- 每个优化都要保留前后 baseline 对比。
+- `baseline_runs/20260428` 是 frozen correctness baseline，payload bytes 列仍为空。
+- `baseline_runs/20260428-step11-profile` 已用新代码重跑 4 个 2 节点 distributed case，payload bytes / TP collective timing 已补齐。
+- HYBRID profiling 仍需在 Jetson1 正常终端参与时重跑。
+
+验收：
+
+- `runtime_metrics` 或 rank summary 中能读出 payload bytes / tensor shapes。
+- `collect_runtime_perf.py` 能把关键 payload 指标汇总到 JSON。
+- correctness baseline 不变。
+- `test/test_runtime_summary.py` 通过。
+- `test/test_collect_runtime_perf.py` 通过。
+- `run-runtime-core-regression.sh` 通过。
+- `run-runtime-core-regression.sh --include-weight-loader --skip-baseline-checks` 通过。
+
+### 12. startup contract tensor 减量
+
+目标：
+
+- 减少 multimodal startup contract 传输的 tensor 数量和总 bytes。
+- 保持 thin contract 语义，不回退到 full/root/replay payload。
+
+候选方向：
+
+- 去掉 non-stage 必要性不强的 visual/deepstack tensor。
+- 只给目标 stage 发送它真正需要的 handoff / visual state。
+- 对 metadata 和 tensor payload 做更严格的 stage-local select。
+
+验收：
+
+- `pp-mm-generate` 和 `hybrid-mm-generate` generated ids/text 不变。
+- startup contract payload bytes 下降或保持不增。
+- non-stage0 仍是 consume-only，不重新激活 frontend。
+
+### 13. scaffold broadcast 减量
+
+目标：
+
+- 减少 HYBRID stage leader 广播给同 stage TP rank 的 scaffold 内容。
+- 避免把 rank-local 可以直接加载的权重或不必要 runtime reference 放进 scaffold。
+
+候选方向：
+
+- scaffold 只保留 runtime metadata、shared input、必要 auxiliary tensor。
+- TP rank 自己 materialize 的 decoder weights 不经过 scaffold broadcast。
+- 检查 `text_scaffold` / `stage_scaffold` 的 tensor keys 和 bytes。
+
+验收：
+
+- `hybrid-text-generate` / `hybrid-mm-generate` correctness 不变。
+- scaffold broadcast bytes 下降或保持不增。
+- `weight_load.tp_weight_sharded=true` 和 stage-local scope 证据不回退。
+
+### 14. TP collective profiling 和低风险调整
+
+目标：
+
+- 先量化 TP all-reduce / all-gather 的实际耗时，再决定是否优化。
+
+优先记录：
+
+- 每个 decode/prefill step 的 collective 次数。
+- collective tensor shape / dtype / elapsed seconds。
+- rank 间耗时是否明显不一致。
+
+低风险候选：
+
+- 减少不必要 dtype cast。
+- 合并小 collective。
+- 避免重复 all-gather。
+
+验收：
+
+- `tp-text-generate` / `tp-mm-generate` correctness 不变。
+- collective timing 出现在 summary 或 perf records。
+- 优化后 collective 总耗时下降或保持不增。
+
+### 15. buffer reuse / pinned memory 实验
+
+目标：
+
+- 减少反复分配 hidden / handoff / decode step tensor 的开销。
+- 评估 Jetson 上 pinned memory 对 CPU transport / CPU->GPU copy 是否有收益。
+
+执行顺序：
+
+1. 先只做 profiling，不改语义。
+2. 再做 stage-local buffer reuse。
+3. 最后单独实验 pinned memory。
+
+验收：
+
+- correctness 不变。
+- CUDA peak reserved / allocated 不上升，最好下降。
+- runtime_total_seconds 或 transport seconds 有可解释变化。
+
+### 16. PP handoff overlap
+
+目标：
+
+- 尝试让 PP stage 间 hidden handoff 与本地计算重叠，减少纯等待时间。
+
+前置条件：
+
+- PP handoff payload bytes 和 send/recv timing 已经可观测。
+- 当前阻塞点明确，不先盲目改通信结构。
+
+验收：
+
+- `pp-text-generate` / `pp-mm-generate` correctness 不变。
+- PP handoff wait 时间下降。
+- 没有引入 rank 间死锁风险。
+
+### 17. stage partition 搜索
+
+目标：
+
+- 根据每个 stage 的耗时和显存，搜索更合适的 stage range。
+- 支持不同 Jetson 数量和异构性能。
+
+候选方向：
+
+- 先手工比较 `0:17 / 18:35` 附近的切分。
+- 后续再写脚本自动枚举 stage ranges。
+- 对 HYBRID 同时考虑 stage range 和 `tp_degrees`。
+
+验收：
+
+- 每组 partition 都有 correctness + perf 表。
+- 找到比当前 baseline 更好的 total time / peak memory 组合。
+- 文档记录最终推荐 partition。
 
 ## P4：功能增强
 
-### 11. embedding / lm_head vocab parallelism
+### 20. embedding / lm_head vocab parallelism
 
 当前状态：
 
@@ -432,7 +614,7 @@ PYTHONPATH=. /mnt/ssd/miniconda3/envs/vlm/bin/python \
 - logits 与当前 reference 对齐。
 - `weight_load` 能证明 vocab shard shape。
 
-### 12. KV cache session 化
+### 21. KV cache session 化
 
 当前状态：
 
@@ -451,7 +633,7 @@ PYTHONPATH=. /mnt/ssd/miniconda3/envs/vlm/bin/python \
 - cache 生命周期清晰。
 - 可以区分 session / request / stage / layer。
 
-### 13. 更接近 serving engine
+### 22. 更接近 serving engine
 
 长期目标：
 

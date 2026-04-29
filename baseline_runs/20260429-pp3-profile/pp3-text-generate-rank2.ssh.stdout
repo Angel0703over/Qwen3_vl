@@ -1,0 +1,672 @@
+[Gloo] Rank 2 is connected to 2 peer ranks. Expected number of connected peer ranks is : 2
+[pre-init] host=jetson3 rank=2 world_size=3 master=10.126.126.3:29631
+[startup][pp-direct-loader] host=jetson3 rank=2 local_rank=0 rank=2 waiting runtime-only text prompt metadata broadcast from src=0
+[startup][tensor-bcast] host=jetson3 rank=2 local_rank=0 broadcasting runtime_only_text_prompt_metadata src=0 local_has_payload=False
+[startup][tensor-bcast] host=jetson3 rank=2 local_rank=0 broadcast done for runtime_only_text_prompt_metadata src=0 tensors=2
+[startup][pp-direct-loader] host=jetson3 rank=2 local_rank=0 rank=2 locally building stage_idx=2 range=24:35
+[startup][direct-builder:text_generate] host=jetson3 rank=2 local_rank=0 begin prepare runtime-only text session stages=[2:24-35]
+[startup][direct-builder:text_generate] host=jetson3 rank=2 local_rank=0 done prepare runtime-only text session stages=[2:24-35] in 0.01s
+[startup][direct-builder:text_generate] host=jetson3 rank=2 local_rank=0 builder session ready session_kind=runtime-only-text device=cuda:0 state_device=cpu compute_dtype=torch.bfloat16 num_layers=36 tp_shard_rank=None tp_shard_world_size=None include_text_weights=True include_runtime_reference=False
+[startup][direct-builder:text_generate] host=jetson3 rank=2 local_rank=0 skip prefill boundary capture for runtime-only text generate stages=[2:24-35]
+[startup][direct-builder:text_generate] host=jetson3 rank=2 local_rank=0 begin materialize stage_idx=2 range=24:35
+[startup][direct-builder:text_generate] host=jetson3 rank=2 local_rank=0 begin load text stage weights stage_idx=2 range=24:35
+[startup][direct-builder:text_generate] host=jetson3 rank=2 local_rank=0 done load text stage weights stage_idx=2 range=24:35 in 0.04s
+[startup][direct-builder:text_generate] host=jetson3 rank=2 local_rank=0 done materialize stage_idx=2 range=24:35 in 0.05s
+[startup][direct-builder:text_generate] host=jetson3 rank=2 local_rank=0 releasing builder session session_kind=runtime-only-text
+[startup][pp-direct-loader] host=jetson3 rank=2 local_rank=0 rank=2 entering post-load barrier
+[startup][pp-direct-loader] host=jetson3 rank=2 local_rank=0 begin post-load barrier rank=2
+[startup][pp-direct-loader] host=jetson3 rank=2 local_rank=0 done post-load barrier rank=2 in 0.28s
+[startup][pp-direct-loader] host=jetson3 rank=2 local_rank=0 rank=2 local stage ready compute_dtype=torch.bfloat16
+{
+  "rank": 2,
+  "backend": "pp",
+  "pipeline_type": "text_generate",
+  "stage_idx": 2,
+  "num_stages": 3,
+  "start_idx": 24,
+  "end_idx": 35,
+  "num_layers": 12,
+  "weight_load": {
+    "tp_weight_sharded": false,
+    "tp_shard_rank": null,
+    "tp_shard_world_size": null,
+    "tp_local_dims": {
+      "local_attention_hidden_size": null,
+      "local_kv_hidden_size": null,
+      "local_intermediate_size": null
+    },
+    "tp_shard_shape_ok": true,
+    "tp_sharded_projection_check_count": 0,
+    "tp_shard_shape_mismatches": [],
+    "tp_sharded_projection_examples": [],
+    "tp_stage_loaded_weight_tensor_bytes": null,
+    "tp_stage_loaded_weight_tensor_bytes_equal": null,
+    "tp_stage_loaded_weight_tensor_bytes_checked": null,
+    "stage_start_idx": 24,
+    "stage_end_idx": 35,
+    "loaded_layer_indices": [
+      24,
+      25,
+      26,
+      27,
+      28,
+      29,
+      30,
+      31,
+      32,
+      33,
+      34,
+      35
+    ],
+    "loaded_layer_count": 12,
+    "loaded_top_level_weight_names": [
+      "final_norm_weight",
+      "lm_head_weight"
+    ],
+    "unexpected_layer_indices": [],
+    "stage_weight_scope_ok": true,
+    "loaded_weight_tensor_count": 134,
+    "loaded_weight_tensor_bytes": 3200257024,
+    "loaded_weight_tensor_mib": 3052.003,
+    "loaded_weight_tensor_examples": [
+      {
+        "name": "final_norm_weight",
+        "shape": [
+          2560
+        ],
+        "dtype": "torch.bfloat16",
+        "bytes": 5120
+      },
+      {
+        "name": "lm_head_weight",
+        "shape": [
+          151936,
+          2560
+        ],
+        "dtype": "torch.bfloat16",
+        "bytes": 777912320
+      },
+      {
+        "name": "layers.24.q_weight",
+        "shape": [
+          4096,
+          2560
+        ],
+        "dtype": "torch.bfloat16",
+        "bytes": 20971520
+      },
+      {
+        "name": "layers.24.k_weight",
+        "shape": [
+          1024,
+          2560
+        ],
+        "dtype": "torch.bfloat16",
+        "bytes": 5242880
+      },
+      {
+        "name": "layers.24.v_weight",
+        "shape": [
+          1024,
+          2560
+        ],
+        "dtype": "torch.bfloat16",
+        "bytes": 5242880
+      },
+      {
+        "name": "layers.24.o_weight",
+        "shape": [
+          2560,
+          4096
+        ],
+        "dtype": "torch.bfloat16",
+        "bytes": 20971520
+      },
+      {
+        "name": "layers.24.q_norm_weight",
+        "shape": [
+          128
+        ],
+        "dtype": "torch.bfloat16",
+        "bytes": 256
+      },
+      {
+        "name": "layers.24.k_norm_weight",
+        "shape": [
+          128
+        ],
+        "dtype": "torch.bfloat16",
+        "bytes": 256
+      }
+    ],
+    "tp_sharded_parameter_count": 0,
+    "tp_replicated_parameter_count": 0,
+    "tp_sharded_parameter_examples": [],
+    "tp_replicated_parameter_examples": []
+  },
+  "device": "cuda:0",
+  "comm_dtype": "torch.float32",
+  "prefill_seq_len": 16,
+  "max_new_tokens": 4,
+  "prefill": {
+    "input_shape": [
+      1,
+      16,
+      2560
+    ],
+    "output_shape": [
+      1,
+      16,
+      151936
+    ],
+    "received_payload_keys": [
+      "hidden_states"
+    ],
+    "sent_payload_keys": [],
+    "sent_tensor_shapes": {},
+    "boundary_max_diff": null,
+    "boundary_mean_diff": null,
+    "embedding_max_diff": null,
+    "embedding_mean_diff": null,
+    "hidden_stage_max_diff": null,
+    "hidden_stage_mean_diff": null,
+    "norm_max_diff": null,
+    "norm_mean_diff": null,
+    "stage_max_diff": null,
+    "stage_mean_diff": null,
+    "predicted_token_id": 104455,
+    "reference_token_id": null
+  },
+  "steps": [
+    {
+      "input_shape": [
+        1,
+        1,
+        2560
+      ],
+      "output_shape": [
+        1,
+        1,
+        151936
+      ],
+      "received_payload_keys": [
+        "hidden_states"
+      ],
+      "sent_payload_keys": [],
+      "sent_tensor_shapes": {},
+      "boundary_max_diff": null,
+      "boundary_mean_diff": null,
+      "embedding_max_diff": null,
+      "embedding_mean_diff": null,
+      "hidden_stage_max_diff": null,
+      "hidden_stage_mean_diff": null,
+      "norm_max_diff": null,
+      "norm_mean_diff": null,
+      "stage_max_diff": null,
+      "stage_mean_diff": null,
+      "predicted_token_id": 9909,
+      "reference_token_id": null
+    },
+    {
+      "input_shape": [
+        1,
+        1,
+        2560
+      ],
+      "output_shape": [
+        1,
+        1,
+        151936
+      ],
+      "received_payload_keys": [
+        "hidden_states"
+      ],
+      "sent_payload_keys": [],
+      "sent_tensor_shapes": {},
+      "boundary_max_diff": null,
+      "boundary_mean_diff": null,
+      "embedding_max_diff": null,
+      "embedding_mean_diff": null,
+      "hidden_stage_max_diff": null,
+      "hidden_stage_mean_diff": null,
+      "norm_max_diff": null,
+      "norm_mean_diff": null,
+      "stage_max_diff": null,
+      "stage_mean_diff": null,
+      "predicted_token_id": 9286,
+      "reference_token_id": null
+    },
+    {
+      "input_shape": [
+        1,
+        1,
+        2560
+      ],
+      "output_shape": [
+        1,
+        1,
+        151936
+      ],
+      "received_payload_keys": [
+        "hidden_states"
+      ],
+      "sent_payload_keys": [],
+      "sent_tensor_shapes": {},
+      "boundary_max_diff": null,
+      "boundary_mean_diff": null,
+      "embedding_max_diff": null,
+      "embedding_mean_diff": null,
+      "hidden_stage_max_diff": null,
+      "hidden_stage_mean_diff": null,
+      "norm_max_diff": null,
+      "norm_mean_diff": null,
+      "stage_max_diff": null,
+      "stage_mean_diff": null,
+      "predicted_token_id": 16488,
+      "reference_token_id": null
+    }
+  ],
+  "generated_token_ids": [
+    104455,
+    9909,
+    9286,
+    16488
+  ],
+  "prefill_topk": [
+    {
+      "token_id": 104455,
+      "logit": 49.75
+    },
+    {
+      "token_id": 102249,
+      "logit": 33.25
+    },
+    {
+      "token_id": 15469,
+      "logit": 28.75
+    },
+    {
+      "token_id": 98237,
+      "logit": 27.75
+    },
+    {
+      "token_id": 100405,
+      "logit": 25.0
+    }
+  ],
+  "step_topks": [
+    {
+      "step_idx": 0,
+      "topk": [
+        {
+          "token_id": 9909,
+          "logit": 49.0
+        },
+        {
+          "token_id": 104442,
+          "logit": 33.75
+        },
+        {
+          "token_id": 20412,
+          "logit": 33.5
+        },
+        {
+          "token_id": 3837,
+          "logit": 29.625
+        },
+        {
+          "token_id": 101158,
+          "logit": 29.5
+        }
+      ]
+    },
+    {
+      "step_idx": 1,
+      "topk": [
+        {
+          "token_id": 9286,
+          "logit": 39.0
+        },
+        {
+          "token_id": 15469,
+          "logit": 34.5
+        },
+        {
+          "token_id": 58194,
+          "logit": 28.375
+        },
+        {
+          "token_id": 102500,
+          "logit": 25.875
+        },
+        {
+          "token_id": 105205,
+          "logit": 25.5
+        }
+      ]
+    },
+    {
+      "step_idx": 2,
+      "topk": [
+        {
+          "token_id": 16488,
+          "logit": 43.75
+        },
+        {
+          "token_id": 333,
+          "logit": 24.625
+        },
+        {
+          "token_id": 33635,
+          "logit": 22.5
+        },
+        {
+          "token_id": 7090,
+          "logit": 20.5
+        },
+        {
+          "token_id": 1086,
+          "logit": 19.625
+        }
+      ]
+    }
+  ],
+  "generated_text": "人工智能（Artificial",
+  "runtime_metrics": {
+    "timing": {
+      "runtime_total_seconds": 5.947401
+    },
+    "startup": {
+      "event_count": 5,
+      "events": [
+        {
+          "component": "tensor-bcast",
+          "message": "broadcast runtime_only_text_prompt_metadata src=0",
+          "status": "done",
+          "elapsed_seconds": 0.507141,
+          "kind": "other_seconds"
+        },
+        {
+          "component": "direct-builder:text_generate",
+          "message": "prepare runtime-only text session stages=[2:24-35]",
+          "status": "done",
+          "elapsed_seconds": 0.010402,
+          "kind": "prepare_session_seconds"
+        },
+        {
+          "component": "direct-builder:text_generate",
+          "message": "load text stage weights stage_idx=2 range=24:35",
+          "status": "done",
+          "elapsed_seconds": 0.042315,
+          "kind": "other_seconds"
+        },
+        {
+          "component": "direct-builder:text_generate",
+          "message": "materialize stage_idx=2 range=24:35",
+          "status": "done",
+          "elapsed_seconds": 0.045967,
+          "kind": "materialize_stage_seconds"
+        },
+        {
+          "component": "pp-direct-loader",
+          "message": "post-load barrier rank=2",
+          "status": "done",
+          "elapsed_seconds": 0.279513,
+          "kind": "post_load_barrier_seconds"
+        }
+      ],
+      "totals_by_component": {
+        "direct-builder:text_generate": 0.098684,
+        "pp-direct-loader": 0.279513,
+        "tensor-bcast": 0.507141
+      },
+      "totals_by_kind": {
+        "materialize_stage_seconds": 0.045967,
+        "other_seconds": 0.549456,
+        "post_load_barrier_seconds": 0.279513,
+        "prepare_session_seconds": 0.010402,
+        "scaffold_transport_seconds": 0.0,
+        "startup_contract_prepare_seconds": 0.0,
+        "startup_contract_seconds": 0.0,
+        "startup_contract_transport_seconds": 0.0
+      }
+    },
+    "transport": {
+      "event_count": 5,
+      "events": [
+        {
+          "kind": "other",
+          "channel": "tensor-bcast",
+          "operation": "broadcast",
+          "label": "runtime_only_text_prompt_metadata",
+          "peer": 0,
+          "status": "done",
+          "elapsed_seconds": 0.507141,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 2,
+          "payload_keys": [
+            "input_ids",
+            "attention_mask"
+          ],
+          "tensor_shapes": {
+            "input_ids": [
+              1,
+              16
+            ],
+            "attention_mask": null
+          },
+          "tensor_dtypes": {
+            "input_ids": "torch.int64",
+            "attention_mask": null
+          },
+          "tensor_numels": {
+            "input_ids": 16,
+            "attention_mask": 0
+          },
+          "tensor_bytes": {
+            "input_ids": 128,
+            "attention_mask": 0
+          },
+          "total_tensor_bytes": 128
+        },
+        {
+          "kind": "stage_handoff",
+          "channel": "stage_handoff",
+          "operation": "recv",
+          "label": "stage_handoff",
+          "peer": 1,
+          "status": "done",
+          "elapsed_seconds": 0.529916,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "hidden_states"
+          ],
+          "tensor_shapes": {
+            "hidden_states": [
+              1,
+              16,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "hidden_states": "torch.bfloat16"
+          },
+          "tensor_numels": {
+            "hidden_states": 40960
+          },
+          "tensor_bytes": {
+            "hidden_states": 81920
+          },
+          "total_tensor_bytes": 81920
+        },
+        {
+          "kind": "stage_handoff",
+          "channel": "stage_handoff",
+          "operation": "recv",
+          "label": "stage_handoff",
+          "peer": 1,
+          "status": "done",
+          "elapsed_seconds": 0.197935,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "hidden_states"
+          ],
+          "tensor_shapes": {
+            "hidden_states": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "hidden_states": "torch.bfloat16"
+          },
+          "tensor_numels": {
+            "hidden_states": 2560
+          },
+          "tensor_bytes": {
+            "hidden_states": 5120
+          },
+          "total_tensor_bytes": 5120
+        },
+        {
+          "kind": "stage_handoff",
+          "channel": "stage_handoff",
+          "operation": "recv",
+          "label": "stage_handoff",
+          "peer": 1,
+          "status": "done",
+          "elapsed_seconds": 0.228932,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "hidden_states"
+          ],
+          "tensor_shapes": {
+            "hidden_states": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "hidden_states": "torch.bfloat16"
+          },
+          "tensor_numels": {
+            "hidden_states": 2560
+          },
+          "tensor_bytes": {
+            "hidden_states": 5120
+          },
+          "total_tensor_bytes": 5120
+        },
+        {
+          "kind": "stage_handoff",
+          "channel": "stage_handoff",
+          "operation": "recv",
+          "label": "stage_handoff",
+          "peer": 1,
+          "status": "done",
+          "elapsed_seconds": 0.201975,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "hidden_states"
+          ],
+          "tensor_shapes": {
+            "hidden_states": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "hidden_states": "torch.bfloat16"
+          },
+          "tensor_numels": {
+            "hidden_states": 2560
+          },
+          "tensor_bytes": {
+            "hidden_states": 5120
+          },
+          "total_tensor_bytes": 5120
+        }
+      ],
+      "totals_by_kind": {
+        "other": {
+          "event_count": 1,
+          "elapsed_seconds": 0.507141,
+          "object_bytes": 0,
+          "tensor_bytes": 128,
+          "total_bytes": 128
+        },
+        "scaffold": {
+          "event_count": 0,
+          "elapsed_seconds": 0.0,
+          "object_bytes": 0,
+          "tensor_bytes": 0,
+          "total_bytes": 0
+        },
+        "stage_handoff": {
+          "event_count": 4,
+          "elapsed_seconds": 1.158758,
+          "object_bytes": 0,
+          "tensor_bytes": 97280,
+          "total_bytes": 97280
+        },
+        "startup_contract": {
+          "event_count": 0,
+          "elapsed_seconds": 0.0,
+          "object_bytes": 0,
+          "tensor_bytes": 0,
+          "total_bytes": 0
+        },
+        "tp_collective": {
+          "event_count": 0,
+          "elapsed_seconds": 0.0,
+          "object_bytes": 0,
+          "tensor_bytes": 0,
+          "total_bytes": 0
+        }
+      },
+      "totals_by_channel": {
+        "stage_handoff": {
+          "event_count": 4,
+          "elapsed_seconds": 1.158758,
+          "object_bytes": 0,
+          "tensor_bytes": 97280,
+          "total_bytes": 97280
+        },
+        "tensor-bcast": {
+          "event_count": 1,
+          "elapsed_seconds": 0.507141,
+          "object_bytes": 0,
+          "tensor_bytes": 128,
+          "total_bytes": 128
+        }
+      }
+    },
+    "memory": {
+      "cpu_max_rss_bytes": 3769196544,
+      "cuda_available": true,
+      "devices": [
+        {
+          "device": "cuda:0",
+          "memory_allocated_bytes": 14294016,
+          "memory_reserved_bytes": 3263168512,
+          "max_memory_allocated_bytes": 3253076992,
+          "max_memory_reserved_bytes": 3263168512
+        }
+      ],
+      "peak_allocated_bytes": 3253076992,
+      "peak_reserved_bytes": 3263168512
+    }
+  }
+}

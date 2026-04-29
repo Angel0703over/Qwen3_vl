@@ -642,6 +642,10 @@ class PayloadSummary:
     num_tensors: int
     payload_keys: list[str]
     tensor_shapes: dict[str, tuple[int, ...] | None]
+    tensor_dtypes: dict[str, str | None] = field(default_factory=dict)
+    tensor_numels: dict[str, int] = field(default_factory=dict)
+    tensor_bytes: dict[str, int] = field(default_factory=dict)
+    total_tensor_bytes: int = 0
 
     @classmethod
     def empty(cls) -> "PayloadSummary":
@@ -650,6 +654,10 @@ class PayloadSummary:
             num_tensors=0,
             payload_keys=[],
             tensor_shapes={},
+            tensor_dtypes={},
+            tensor_numels={},
+            tensor_bytes={},
+            total_tensor_bytes=0,
         )
 
     @classmethod
@@ -663,11 +671,27 @@ class PayloadSummary:
             name: (None if tensor is None else tuple(tensor.shape))
             for name, tensor in payload.items()
         }
+        tensor_dtypes = {
+            name: (None if tensor is None else str(tensor.dtype))
+            for name, tensor in payload.items()
+        }
+        tensor_numels = {
+            name: (0 if tensor is None else int(tensor.numel()))
+            for name, tensor in payload.items()
+        }
+        tensor_bytes = {
+            name: (0 if tensor is None else int(tensor.numel() * tensor.element_size()))
+            for name, tensor in payload.items()
+        }
         return cls(
             is_empty=False,
             num_tensors=len(payload),
             payload_keys=list(payload.keys()),
             tensor_shapes=tensor_shapes,
+            tensor_dtypes=tensor_dtypes,
+            tensor_numels=tensor_numels,
+            tensor_bytes=tensor_bytes,
+            total_tensor_bytes=sum(tensor_bytes.values()),
         )
 
 

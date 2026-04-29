@@ -177,6 +177,7 @@ NODE_RANK=0 MASTER_ADDR="<rank0-host>" \
 distributed case 额外建议保留但暂不强制比较：
 
 - `HEXGEN_STARTUP_LOG=1` 中的 prepare / materialize / broadcast / barrier 时间
+- JSON summary 中的 `runtime_metrics.transport` 事件和 payload bytes 汇总
 - `/usr/bin/time -p` 的端到端 wall-clock 时间
 
 ## 20260428 冻结记录
@@ -248,36 +249,78 @@ PYTHONPATH=. /mnt/ssd/miniconda3/envs/vlm/bin/python \
 - `baseline_runs/20260428/runtime-perf-records.json`
 - `baseline_runs/20260428/runtime-perf-table.md`
 
-当前 20260428 correctness baseline 是旧日志：有 startup timer 和部分 `/usr/bin/time -p real`，但没有新加的 `runtime_metrics.memory.*` 字段；所以 CUDA peak alloc/reserved 当前为空。新代码重跑任意 case 后，JSON summary 会直接写：
+当前 20260428 correctness baseline 是旧日志：有 startup timer 和部分 `/usr/bin/time -p real`，但没有新加的 `runtime_metrics.memory.*` 和 `runtime_metrics.transport.*` 字段；所以 CUDA peak alloc/reserved 与 payload bytes 当前为空。新代码重跑任意 case 后，JSON summary 会直接写：
 
 - `runtime_metrics.timing.runtime_total_seconds`
 - `runtime_metrics.startup.events`
 - `runtime_metrics.startup.totals_by_kind.*`
+- `runtime_metrics.transport.events`
+- `runtime_metrics.transport.totals_by_kind.*`
+- `runtime_metrics.transport.totals_by_channel.*`
 - `runtime_metrics.memory.cpu_max_rss_bytes`
 - `runtime_metrics.memory.peak_allocated_bytes`
 - `runtime_metrics.memory.peak_reserved_bytes`
 
+`collect_runtime_perf.py` 会把 transport/profile 汇总成以下 payload 指标：
+
+- startup contract bytes / tensor bytes / object bytes
+- scaffold bytes / tensor bytes / object bytes
+- stage handoff bytes / seconds
+- TP collective bytes / seconds
+- transport event count
+
 当前从旧 log 解析到的表：
 
-| case | rank | total s | prepare s | startup contract s | transport s | materialize s | barrier s | cuda peak alloc | cuda peak reserved | loaded weights |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| hf-mm-generate | - | 20.03 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | - | - | - |
-| hf-text-generate | - | 18.89 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | - | - | - |
-| hybrid-mm-generate | 0 | - | 19.16 | 0.00 | 0.00 | 0.00 | 0.00 | - | - | 2.42 GiB |
-| hybrid-mm-generate | 1 | - | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | - | - | 2.42 GiB |
-| hybrid-mm-generate | 2 | - | 0.11 | 0.00 | 0.00 | 0.04 | 0.00 | - | - | 4.11 GiB |
-| hybrid-text-generate | 0 | 21.13 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | - | - | 2.42 GiB |
-| hybrid-text-generate | 1 | 20.97 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | - | - | 2.42 GiB |
-| hybrid-text-generate | 2 | 21.01 | 0.00 | 0.00 | 0.00 | 0.03 | 0.00 | - | - | 4.11 GiB |
-| live-mm-generate | - | 25.03 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | - | - | - |
-| pp-mm-generate | 0 | - | 19.26 | 0.00 | 0.00 | 0.03 | 0.00 | - | - | 4.11 GiB |
-| pp-mm-generate | 1 | - | 0.35 | 0.00 | 0.00 | 0.03 | 0.00 | - | - | 4.11 GiB |
-| pp-text-generate | 0 | 18.24 | 0.00 | 0.00 | 0.00 | 0.03 | 0.00 | - | - | 4.11 GiB |
-| pp-text-generate | 1 | 18.28 | 0.01 | 0.00 | 0.00 | 0.06 | 0.00 | - | - | 4.11 GiB |
-| tp-mm-generate | 0 | - | 19.52 | 0.00 | 0.00 | 0.00 | 0.00 | - | - | 4.83 GiB |
-| tp-mm-generate | 1 | - | 19.12 | 0.00 | 0.00 | 0.00 | 0.00 | - | - | 4.83 GiB |
-| tp-text-generate | 0 | 23.05 | 0.58 | 0.00 | 0.00 | 0.00 | 0.00 | - | - | 4.83 GiB |
-| tp-text-generate | 1 | 23.02 | 0.58 | 0.00 | 0.00 | 0.00 | 0.00 | - | - | 4.83 GiB |
+| case | rank | total s | prepare s | contract s | materialize s | barrier s | startup bytes | scaffold bytes | handoff bytes | TP coll s | TP coll bytes | cuda peak alloc | cuda peak reserved | loaded weights |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| hf-mm-generate | - | 20.03 | 0.00 | 0.00 | 0.00 | 0.00 | - | - | - | - | - | - | - | - |
+| hf-text-generate | - | 18.89 | 0.00 | 0.00 | 0.00 | 0.00 | - | - | - | - | - | - | - | - |
+| hybrid-mm-generate | 0 | - | 19.16 | 0.00 | 0.00 | 0.00 | - | - | - | - | - | - | - | 2.42 GiB |
+| hybrid-mm-generate | 1 | - | 0.00 | 0.00 | 0.00 | 0.00 | - | - | - | - | - | - | - | 2.42 GiB |
+| hybrid-mm-generate | 2 | - | 0.11 | 0.00 | 0.04 | 0.00 | - | - | - | - | - | - | - | 4.11 GiB |
+| hybrid-text-generate | 0 | 21.13 | 0.00 | 0.00 | 0.00 | 0.00 | - | - | - | - | - | - | - | 2.42 GiB |
+| hybrid-text-generate | 1 | 20.97 | 0.00 | 0.00 | 0.00 | 0.00 | - | - | - | - | - | - | - | 2.42 GiB |
+| hybrid-text-generate | 2 | 21.01 | 0.00 | 0.00 | 0.03 | 0.00 | - | - | - | - | - | - | - | 4.11 GiB |
+| live-mm-generate | - | 25.03 | 0.00 | 0.00 | 0.00 | 0.00 | - | - | - | - | - | - | - | - |
+| pp-mm-generate | 0 | - | 19.26 | 0.00 | 0.03 | 0.00 | - | - | - | - | - | - | - | 4.11 GiB |
+| pp-mm-generate | 1 | - | 0.35 | 0.00 | 0.03 | 0.00 | - | - | - | - | - | - | - | 4.11 GiB |
+| pp-text-generate | 0 | 18.24 | 0.00 | 0.00 | 0.03 | 0.00 | - | - | - | - | - | - | - | 4.11 GiB |
+| pp-text-generate | 1 | 18.28 | 0.01 | 0.00 | 0.06 | 0.00 | - | - | - | - | - | - | - | 4.11 GiB |
+| tp-mm-generate | 0 | - | 19.52 | 0.00 | 0.00 | 0.00 | - | - | - | - | - | - | - | 4.83 GiB |
+| tp-mm-generate | 1 | - | 19.12 | 0.00 | 0.00 | 0.00 | - | - | - | - | - | - | - | 4.83 GiB |
+| tp-text-generate | 0 | 23.05 | 0.58 | 0.00 | 0.00 | 0.00 | - | - | - | - | - | - | - | 4.83 GiB |
+| tp-text-generate | 1 | 23.02 | 0.58 | 0.00 | 0.00 | 0.00 | - | - | - | - | - | - | - | 4.83 GiB |
+
+## 20260428 step11 profiling 重跑记录
+
+新 transport/payload profiling 加入后，已用 Jetson2 + Jetson3 重跑 4 个 2 节点 distributed case，输出目录：
+
+- `baseline_runs/20260428-step11-profile/`
+
+检查结果：
+
+- `baseline_runs/20260428-step11-profile/check-baseline-logs.txt`
+- `pp-text-generate`: PASS
+- `pp-mm-generate`: PASS
+- `tp-text-generate`: PASS
+- `tp-mm-generate`: PASS
+
+性能 / payload 汇总：
+
+- `baseline_runs/20260428-step11-profile/runtime-perf-records.json`
+- `baseline_runs/20260428-step11-profile/runtime-perf-table.md`
+
+当前表中已能看到：
+
+- `pp-mm-generate` startup contract payload bytes：每 rank 约 `7.21 MiB`
+- `pp-mm-generate` stage handoff bytes：rank0 约 `6.15 MiB`，rank1 约 `3.08 MiB`
+- `tp-text-generate` TP collective bytes：每 rank 约 `13.54 MiB`
+- `tp-mm-generate` TP collective bytes：每 rank 约 `449.12 MiB`
+
+注意：
+
+- 原 `baseline_runs/20260428/` 仍是 frozen correctness baseline。
+- 这轮没有重跑 HYBRID，因为当前 Codex 沙箱不能访问 Jetson1 CUDA，且不能免密 SSH 到 `10.126.126.2` 绕过沙箱。
 
 ## 固定 case
 
@@ -539,13 +582,14 @@ bash qwen3vl_tp_runtime/scripts/helpers/run-runtime-core-regression.sh --include
 
 - 更细粒度的 per-rank 常驻显存
 - KV cache 占用
+- transport/payload bytes 与 elapsed seconds
 
-启动时间和 CUDA peak allocated/reserved 已经进入 `runtime_metrics` 和 `runtime-perf-*` 输出；后续性能优化前后都要保留这张表做对比。
+启动时间、transport/payload profile 和 CUDA peak allocated/reserved 已经进入 `runtime_metrics` 和 `runtime-perf-*` 输出；后续性能优化前后都要保留这张表做对比。
 
 ## 下一步
 
 这份文档当前已经记录 20260428 完整 correctness baseline。后续动作是：
 
 - 后续改动统一拿这份结果做对比
-- 新代码重跑 baseline 后补齐 CUDA peak alloc/reserved
-- P3 后续进入性能优化候选项
+- 新代码重跑 baseline 后补齐 CUDA peak alloc/reserved 与 payload bytes
+- P3 后续按 ROADMAP 中的具体性能优化顺序推进

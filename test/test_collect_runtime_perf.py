@@ -75,6 +75,32 @@ class CollectRuntimePerfTest(unittest.TestCase):
                                     "scaffold_transport_seconds": 0.0,
                                 },
                             },
+                            "transport": {
+                                "event_count": 3,
+                                "totals_by_kind": {
+                                    "startup_contract": {
+                                        "event_count": 1,
+                                        "elapsed_seconds": 0.4,
+                                        "object_bytes": 128,
+                                        "tensor_bytes": 2048,
+                                        "total_bytes": 2176,
+                                    },
+                                    "stage_handoff": {
+                                        "event_count": 1,
+                                        "elapsed_seconds": 0.2,
+                                        "object_bytes": 0,
+                                        "tensor_bytes": 4096,
+                                        "total_bytes": 4096,
+                                    },
+                                    "tp_collective": {
+                                        "event_count": 1,
+                                        "elapsed_seconds": 0.3,
+                                        "object_bytes": 0,
+                                        "tensor_bytes": 8192,
+                                        "total_bytes": 8192,
+                                    },
+                                },
+                            },
                             "memory": {
                                 "cpu_max_rss_bytes": 4096,
                                 "cuda_available": True,
@@ -91,6 +117,9 @@ class CollectRuntimePerfTest(unittest.TestCase):
 
         self.assertEqual(records[0]["timing"]["runtime_total_seconds"], 9.5)
         self.assertEqual(records[0]["timing"]["startup_contract_transport_seconds"], 0.4)
+        self.assertEqual(records[0]["payload"]["startup_contract_bytes"], 2176)
+        self.assertEqual(records[0]["payload"]["stage_handoff_bytes"], 4096)
+        self.assertEqual(records[0]["payload"]["tp_collective_seconds"], 0.3)
         self.assertEqual(records[0]["memory"]["cuda_peak_allocated_bytes"], 1024)
 
 

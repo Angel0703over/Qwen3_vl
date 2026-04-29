@@ -6,8 +6,8 @@ from unittest import mock
 
 import torch
 
-from qwen3vl_tp_runtime.hexgen_core.distributed import startup_timer
-from qwen3vl_tp_runtime.hexgen_core.schema import StageSpec, TextHybridManifest, TextPipelineManifest
+from qwen3vl_tp_runtime.hexgen_core.distributed import record_transport_profile_event, startup_timer
+from qwen3vl_tp_runtime.hexgen_core.schema import PayloadSummary, StageSpec, TextHybridManifest, TextPipelineManifest
 from qwen3vl_tp_runtime.debug.tp_debug import TpDebugConfig
 from qwen3vl_tp_runtime.scripts.runtime_summary import (
     _attach_runtime_metrics,
@@ -189,12 +189,31 @@ class RuntimeSummaryTest(unittest.TestCase):
             started_at = time.perf_counter()
             with startup_timer("direct-builder:text_generate", "prepare runtime-only text session stages=[0:0-0]"):
                 pass
+            record_transport_profile_event(
+                channel="tensor-send",
+                operation="send",
+                label="multimodal_startup_contract_tensors stage_idx=1",
+                peer=1,
+                summary=PayloadSummary(
+                    is_empty=False,
+                    num_tensors=1,
+                    payload_keys=["hidden_states"],
+                    tensor_shapes={"hidden_states": (1, 2, 4)},
+                    tensor_dtypes={"hidden_states": "torch.float32"},
+                    tensor_numels={"hidden_states": 8},
+                    tensor_bytes={"hidden_states": 32},
+                    total_tensor_bytes=32,
+                ),
+                elapsed_seconds=0.25,
+            )
             summary = _attach_runtime_metrics({"backend": "tp"}, started_at=started_at)
 
         metrics = summary["runtime_metrics"]
         self.assertIn("runtime_total_seconds", metrics["timing"])
         self.assertEqual(metrics["startup"]["event_count"], 1)
         self.assertIn("prepare_session_seconds", metrics["startup"]["totals_by_kind"])
+        self.assertEqual(metrics["transport"]["event_count"], 1)
+        self.assertEqual(metrics["transport"]["totals_by_kind"]["startup_contract"]["tensor_bytes"], 32)
         self.assertIn("cpu_max_rss_bytes", metrics["memory"])
 
 

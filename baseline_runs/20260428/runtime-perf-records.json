@@ -30,6 +30,19 @@
         "cuda_peak_reserved_bytes": null,
         "cuda_available": null
       },
+      "payload": {
+        "startup_contract_bytes": null,
+        "startup_contract_tensor_bytes": null,
+        "startup_contract_object_bytes": null,
+        "scaffold_bytes": null,
+        "scaffold_tensor_bytes": null,
+        "scaffold_object_bytes": null,
+        "stage_handoff_bytes": null,
+        "stage_handoff_seconds": null,
+        "tp_collective_bytes": null,
+        "tp_collective_seconds": null,
+        "transport_event_count": null
+      },
       "weight_load": {
         "loaded_weight_tensor_bytes": null,
         "tp_weight_sharded": null,
@@ -64,6 +77,19 @@
         "cuda_peak_allocated_bytes": null,
         "cuda_peak_reserved_bytes": null,
         "cuda_available": null
+      },
+      "payload": {
+        "startup_contract_bytes": null,
+        "startup_contract_tensor_bytes": null,
+        "startup_contract_object_bytes": null,
+        "scaffold_bytes": null,
+        "scaffold_tensor_bytes": null,
+        "scaffold_object_bytes": null,
+        "stage_handoff_bytes": null,
+        "stage_handoff_seconds": null,
+        "tp_collective_bytes": null,
+        "tp_collective_seconds": null,
+        "transport_event_count": null
       },
       "weight_load": {
         "loaded_weight_tensor_bytes": null,
@@ -100,6 +126,19 @@
         "cuda_peak_reserved_bytes": null,
         "cuda_available": null
       },
+      "payload": {
+        "startup_contract_bytes": null,
+        "startup_contract_tensor_bytes": null,
+        "startup_contract_object_bytes": null,
+        "scaffold_bytes": null,
+        "scaffold_tensor_bytes": null,
+        "scaffold_object_bytes": null,
+        "stage_handoff_bytes": null,
+        "stage_handoff_seconds": null,
+        "tp_collective_bytes": null,
+        "tp_collective_seconds": null,
+        "transport_event_count": null
+      },
       "weight_load": {
         "loaded_weight_tensor_bytes": 2594763776,
         "tp_weight_sharded": true,
@@ -134,6 +173,19 @@
         "cuda_peak_allocated_bytes": null,
         "cuda_peak_reserved_bytes": null,
         "cuda_available": null
+      },
+      "payload": {
+        "startup_contract_bytes": null,
+        "startup_contract_tensor_bytes": null,
+        "startup_contract_object_bytes": null,
+        "scaffold_bytes": null,
+        "scaffold_tensor_bytes": null,
+        "scaffold_object_bytes": null,
+        "stage_handoff_bytes": null,
+        "stage_handoff_seconds": null,
+        "tp_collective_bytes": null,
+        "tp_collective_seconds": null,
+        "transport_event_count": null
       },
       "weight_load": {
         "loaded_weight_tensor_bytes": 2594763776,
@@ -170,6 +222,19 @@
         "cuda_peak_reserved_bytes": null,
         "cuda_available": null
       },
+      "payload": {
+        "startup_contract_bytes": null,
+        "startup_contract_tensor_bytes": null,
+        "startup_contract_object_bytes": null,
+        "scaffold_bytes": null,
+        "scaffold_tensor_bytes": null,
+        "scaffold_object_bytes": null,
+        "stage_handoff_bytes": null,
+        "stage_handoff_seconds": null,
+        "tp_collective_bytes": null,
+        "tp_collective_seconds": null,
+        "transport_event_count": null
+      },
       "weight_load": {
         "loaded_weight_tensor_bytes": 4411426816,
         "tp_weight_sharded": false,
@@ -204,6 +269,19 @@
         "cuda_peak_allocated_bytes": null,
         "cuda_peak_reserved_bytes": null,
         "cuda_available": null
+      },
+      "payload": {
+        "startup_contract_bytes": null,
+        "startup_contract_tensor_bytes": null,
+        "startup_contract_object_bytes": null,
+        "scaffold_bytes": null,
+        "scaffold_tensor_bytes": null,
+        "scaffold_object_bytes": null,
+        "stage_handoff_bytes": null,
+        "stage_handoff_seconds": null,
+        "tp_collective_bytes": null,
+        "tp_collective_seconds": null,
+        "transport_event_count": null
       },
       "weight_load": {
         "loaded_weight_tensor_bytes": 2594763776,
@@ -240,6 +318,19 @@
         "cuda_peak_reserved_bytes": null,
         "cuda_available": null
       },
+      "payload": {
+        "startup_contract_bytes": null,
+        "startup_contract_tensor_bytes": null,
+        "startup_contract_object_bytes": null,
+        "scaffold_bytes": null,
+        "scaffold_tensor_bytes": null,
+        "scaffold_object_bytes": null,
+        "stage_handoff_bytes": null,
+        "stage_handoff_seconds": null,
+        "tp_collective_bytes": null,
+        "tp_collective_seconds": null,
+        "transport_event_count": null
+      },
       "weight_load": {
         "loaded_weight_tensor_bytes": 2594763776,
         "tp_weight_sharded": true,
@@ -274,6 +365,19 @@
         "cuda_peak_allocated_bytes": null,
         "cuda_peak_reserved_bytes": null,
         "cuda_available": null
+      },
+      "payload": {
+        "startup_contract_bytes": null,
+        "startup_contract_tensor_bytes": null,
+        "startup_contract_object_bytes": null,
+        "scaffold_bytes": null,
+        "scaffold_tensor_bytes": null,
+        "scaffold_object_bytes": null,
+        "stage_handoff_bytes": null,
+        "stage_handoff_seconds": null,
+        "tp_collective_bytes": null,
+        "tp_collective_seconds": null,
+        "transport_event_count": null
       },
       "weight_load": {
         "loaded_weight_tensor_bytes": 4411426816,
@@ -310,6 +414,19 @@
         "cuda_peak_reserved_bytes": null,
         "cuda_available": null
       },
+      "payload": {
+        "startup_contract_bytes": null,
+        "startup_contract_tensor_bytes": null,
+        "startup_contract_object_bytes": null,
+        "scaffold_bytes": null,
+        "scaffold_tensor_bytes": null,
+        "scaffold_object_bytes": null,
+        "stage_handoff_bytes": null,
+        "stage_handoff_seconds": null,
+        "tp_collective_bytes": null,
+        "tp_collective_seconds": null,
+        "transport_event_count": null
+      },
       "weight_load": {
         "loaded_weight_tensor_bytes": null,
         "tp_weight_sharded": null,
@@ -344,6 +461,19 @@
         "cuda_peak_allocated_bytes": null,
         "cuda_peak_reserved_bytes": null,
         "cuda_available": null
+      },
+      "payload": {
+        "startup_contract_bytes": null,
+        "startup_contract_tensor_bytes": null,
+        "startup_contract_object_bytes": null,
+        "scaffold_bytes": null,
+        "scaffold_tensor_bytes": null,
+        "scaffold_object_bytes": null,
+        "stage_handoff_bytes": null,
+        "stage_handoff_seconds": null,
+        "tp_collective_bytes": null,
+        "tp_collective_seconds": null,
+        "transport_event_count": null
       },
       "weight_load": {
         "loaded_weight_tensor_bytes": 4411421696,
@@ -380,6 +510,19 @@
         "cuda_peak_reserved_bytes": null,
         "cuda_available": null
       },
+      "payload": {
+        "startup_contract_bytes": null,
+        "startup_contract_tensor_bytes": null,
+        "startup_contract_object_bytes": null,
+        "scaffold_bytes": null,
+        "scaffold_tensor_bytes": null,
+        "scaffold_object_bytes": null,
+        "stage_handoff_bytes": null,
+        "stage_handoff_seconds": null,
+        "tp_collective_bytes": null,
+        "tp_collective_seconds": null,
+        "transport_event_count": null
+      },
       "weight_load": {
         "loaded_weight_tensor_bytes": 4411426816,
         "tp_weight_sharded": false,
@@ -414,6 +557,19 @@
         "cuda_peak_allocated_bytes": null,
         "cuda_peak_reserved_bytes": null,
         "cuda_available": null
+      },
+      "payload": {
+        "startup_contract_bytes": null,
+        "startup_contract_tensor_bytes": null,
+        "startup_contract_object_bytes": null,
+        "scaffold_bytes": null,
+        "scaffold_tensor_bytes": null,
+        "scaffold_object_bytes": null,
+        "stage_handoff_bytes": null,
+        "stage_handoff_seconds": null,
+        "tp_collective_bytes": null,
+        "tp_collective_seconds": null,
+        "transport_event_count": null
       },
       "weight_load": {
         "loaded_weight_tensor_bytes": 4411421696,
@@ -450,6 +606,19 @@
         "cuda_peak_reserved_bytes": null,
         "cuda_available": null
       },
+      "payload": {
+        "startup_contract_bytes": null,
+        "startup_contract_tensor_bytes": null,
+        "startup_contract_object_bytes": null,
+        "scaffold_bytes": null,
+        "scaffold_tensor_bytes": null,
+        "scaffold_object_bytes": null,
+        "stage_handoff_bytes": null,
+        "stage_handoff_seconds": null,
+        "tp_collective_bytes": null,
+        "tp_collective_seconds": null,
+        "transport_event_count": null
+      },
       "weight_load": {
         "loaded_weight_tensor_bytes": 4411426816,
         "tp_weight_sharded": false,
@@ -484,6 +653,19 @@
         "cuda_peak_allocated_bytes": null,
         "cuda_peak_reserved_bytes": null,
         "cuda_available": null
+      },
+      "payload": {
+        "startup_contract_bytes": null,
+        "startup_contract_tensor_bytes": null,
+        "startup_contract_object_bytes": null,
+        "scaffold_bytes": null,
+        "scaffold_tensor_bytes": null,
+        "scaffold_object_bytes": null,
+        "stage_handoff_bytes": null,
+        "stage_handoff_seconds": null,
+        "tp_collective_bytes": null,
+        "tp_collective_seconds": null,
+        "transport_event_count": null
       },
       "weight_load": {
         "loaded_weight_tensor_bytes": 5189532672,
@@ -520,6 +702,19 @@
         "cuda_peak_reserved_bytes": null,
         "cuda_available": null
       },
+      "payload": {
+        "startup_contract_bytes": null,
+        "startup_contract_tensor_bytes": null,
+        "startup_contract_object_bytes": null,
+        "scaffold_bytes": null,
+        "scaffold_tensor_bytes": null,
+        "scaffold_object_bytes": null,
+        "stage_handoff_bytes": null,
+        "stage_handoff_seconds": null,
+        "tp_collective_bytes": null,
+        "tp_collective_seconds": null,
+        "transport_event_count": null
+      },
       "weight_load": {
         "loaded_weight_tensor_bytes": 5189532672,
         "tp_weight_sharded": true,
@@ -555,6 +750,19 @@
         "cuda_peak_reserved_bytes": null,
         "cuda_available": null
       },
+      "payload": {
+        "startup_contract_bytes": null,
+        "startup_contract_tensor_bytes": null,
+        "startup_contract_object_bytes": null,
+        "scaffold_bytes": null,
+        "scaffold_tensor_bytes": null,
+        "scaffold_object_bytes": null,
+        "stage_handoff_bytes": null,
+        "stage_handoff_seconds": null,
+        "tp_collective_bytes": null,
+        "tp_collective_seconds": null,
+        "transport_event_count": null
+      },
       "weight_load": {
         "loaded_weight_tensor_bytes": 5189532672,
         "tp_weight_sharded": true,
@@ -589,6 +797,19 @@
         "cuda_peak_allocated_bytes": null,
         "cuda_peak_reserved_bytes": null,
         "cuda_available": null
+      },
+      "payload": {
+        "startup_contract_bytes": null,
+        "startup_contract_tensor_bytes": null,
+        "startup_contract_object_bytes": null,
+        "scaffold_bytes": null,
+        "scaffold_tensor_bytes": null,
+        "scaffold_object_bytes": null,
+        "stage_handoff_bytes": null,
+        "stage_handoff_seconds": null,
+        "tp_collective_bytes": null,
+        "tp_collective_seconds": null,
+        "transport_event_count": null
       },
       "weight_load": {
         "loaded_weight_tensor_bytes": 5189532672,
