@@ -142,10 +142,14 @@ def _clone_tensor_to_cpu(
     )
 
 
+_MM_STARTUP_DERIVED_SHARED_KEYS = frozenset(("attention_mask", "cos", "sin"))
+
+
 def _clone_mm_shared_to_cpu(
     shared: dict[str, Any],
     *,
     compute_dtype: torch.dtype | None = None,
+    include_derived: bool = True,
 ) -> dict[str, Any]:
     return {
         str(name): _clone_tensor_to_cpu(
@@ -155,6 +159,7 @@ def _clone_mm_shared_to_cpu(
         if torch.is_tensor(value) or value is None
         else value
         for name, value in shared.items()
+        if include_derived or str(name) not in _MM_STARTUP_DERIVED_SHARED_KEYS
     }
 
 
@@ -176,19 +181,22 @@ def _clone_mm_stage_handoffs_to_cpu(
     stage_handoffs: dict[int, dict[str, torch.Tensor | None]],
     *,
     compute_dtype: torch.dtype | None = None,
+    include_stage_output: bool = True,
 ) -> dict[int, dict[str, Any]]:
     payload: dict[int, dict[str, Any]] = {}
     for stage_idx, stage_payload in stage_handoffs.items():
-        payload[int(stage_idx)] = {
+        cloned_stage_payload = {
             "stage_input": _clone_tensor_to_cpu(
                 stage_payload.get("stage_input"),
                 compute_dtype=compute_dtype,
             ),
-            "stage_output": _clone_tensor_to_cpu(
+        }
+        if include_stage_output and "stage_output" in stage_payload:
+            cloned_stage_payload["stage_output"] = _clone_tensor_to_cpu(
                 stage_payload.get("stage_output"),
                 compute_dtype=compute_dtype,
-            ),
-        }
+            )
+        payload[int(stage_idx)] = cloned_stage_payload
     return payload
 
 
@@ -388,9 +396,13 @@ def _build_mm_startup_transport_payload(
     num_frames: int,
     frame_paths: list[str],
     compute_dtype: torch.dtype | None = None,
+    include_stage_output: bool = True,
+    include_derived_shared: bool = True,
 ) -> tuple[dict[str, Any], dict[str, torch.Tensor | None]]:
     tensor_payload: dict[str, torch.Tensor | None] = {}
     for name, value in shared.items():
+        if not include_derived_shared and name in _MM_STARTUP_DERIVED_SHARED_KEYS:
+            continue
         tensor_payload[f"shared.{name}"] = _clone_tensor_to_cpu(
             value,
             compute_dtype=compute_dtype,
@@ -400,10 +412,11 @@ def _build_mm_startup_transport_payload(
             stage_payload.get("stage_input"),
             compute_dtype=compute_dtype,
         )
-        tensor_payload[f"stage_handoffs.{int(stage_idx)}.stage_output"] = _clone_tensor_to_cpu(
-            stage_payload.get("stage_output"),
-            compute_dtype=compute_dtype,
-        )
+        if include_stage_output and "stage_output" in stage_payload:
+            tensor_payload[f"stage_handoffs.{int(stage_idx)}.stage_output"] = _clone_tensor_to_cpu(
+                stage_payload.get("stage_output"),
+                compute_dtype=compute_dtype,
+            )
     for stage_idx, stage_payload in stage_visuals.items():
         if isinstance(stage_payload, tuple):
             stage_visual_pos_masks, stage_deepstack = stage_payload
@@ -433,6 +446,8 @@ def pack_mm_startup_transport(
     payload: dict[str, Any],
     *,
     compute_dtype: torch.dtype | None = None,
+    include_stage_output: bool = True,
+    include_derived_shared: bool = True,
 ) -> tuple[dict[str, Any], dict[str, torch.Tensor | None]]:
     normalized = _normalize_mm_startup_contract(payload)
     return _build_mm_startup_transport_payload(
@@ -442,6 +457,8 @@ def pack_mm_startup_transport(
         num_frames=normalized["num_frames"],
         frame_paths=normalized["frame_paths"],
         compute_dtype=compute_dtype,
+        include_stage_output=include_stage_output,
+        include_derived_shared=include_derived_shared,
     )
 
 
@@ -950,6 +967,7 @@ class DirectStageStateBuilder:
         self,
         *,
         local_stage_indices: list[int] | None = None,
+        include_stage_output: bool = True,
     ) -> tuple[
         dict[str, Any],
         dict[int, dict[str, torch.Tensor | None]],
@@ -967,20 +985,21 @@ class DirectStageStateBuilder:
             stage_idx
             for stage_idx in selected_stage_indices
             if stage_idx not in self._prefill_stage_inputs_by_stage
-            or stage_idx not in self._prefill_stage_outputs_by_stage
+            or (include_stage_output and stage_idx not in self._prefill_stage_outputs_by_stage)
         ]
         if missing_stage_handoffs:
             raise RuntimeError(
                 f"multimodal startup payload 缺少 local stage handoff: {missing_stage_handoffs}"
             )
 
-        selected_stage_handoffs = {
-            int(stage_idx): {
+        selected_stage_handoffs = {}
+        for stage_idx in selected_stage_indices:
+            stage_payload = {
                 "stage_input": self._prefill_stage_inputs_by_stage[stage_idx],
-                "stage_output": self._prefill_stage_outputs_by_stage[stage_idx],
             }
-            for stage_idx in selected_stage_indices
-        }
+            if include_stage_output:
+                stage_payload["stage_output"] = self._prefill_stage_outputs_by_stage[stage_idx]
+            selected_stage_handoffs[int(stage_idx)] = stage_payload
         selected_stage_visuals = {
             int(stage_idx): self._mm_prefill_visuals_by_stage[stage_idx]
             for stage_idx in selected_stage_indices
@@ -988,23 +1007,40 @@ class DirectStageStateBuilder:
         }
         return self._mm_prefill_shared, selected_stage_handoffs, selected_stage_visuals
 
+    def _include_mm_startup_stage_output(self, include_stage_output: bool | None = None) -> bool:
+        if include_stage_output is not None:
+            return bool(include_stage_output)
+        return self.include_runtime_reference or self.mode != "generate"
+
+    def _include_mm_startup_derived_shared(self, include_derived_shared: bool | None = None) -> bool:
+        if include_derived_shared is not None:
+            return bool(include_derived_shared)
+        return self.include_runtime_reference or self.mode != "generate"
+
     def export_mm_startup_payload(
         self,
         *,
         local_stage_indices: list[int] | None = None,
+        include_stage_output: bool | None = None,
+        include_derived_shared: bool | None = None,
     ) -> dict[str, Any]:
+        include_stage_output = self._include_mm_startup_stage_output(include_stage_output)
+        include_derived_shared = self._include_mm_startup_derived_shared(include_derived_shared)
         shared, selected_stage_handoffs, selected_stage_visuals = self._collect_mm_startup_payload_parts(
             local_stage_indices=local_stage_indices,
+            include_stage_output=include_stage_output,
         )
 
         payload: dict[str, Any] = {
             "shared": _clone_mm_shared_to_cpu(
                 shared,
                 compute_dtype=self.compute_dtype,
+                include_derived=include_derived_shared,
             ),
             "stage_handoffs": _clone_mm_stage_handoffs_to_cpu(
                 selected_stage_handoffs,
                 compute_dtype=self.compute_dtype,
+                include_stage_output=include_stage_output,
             ),
             "num_frames": int(self.extra["num_frames"]),
             "frame_paths": list(self.extra["frame_paths"]),
@@ -1020,9 +1056,14 @@ class DirectStageStateBuilder:
         self,
         *,
         local_stage_indices: list[int] | None = None,
+        include_stage_output: bool | None = None,
+        include_derived_shared: bool | None = None,
     ) -> tuple[dict[str, Any], dict[str, torch.Tensor | None]]:
+        include_stage_output = self._include_mm_startup_stage_output(include_stage_output)
+        include_derived_shared = self._include_mm_startup_derived_shared(include_derived_shared)
         shared, selected_stage_handoffs, selected_stage_visuals = self._collect_mm_startup_payload_parts(
             local_stage_indices=local_stage_indices,
+            include_stage_output=include_stage_output,
         )
         return _build_mm_startup_transport_payload(
             shared=shared,
@@ -1031,6 +1072,8 @@ class DirectStageStateBuilder:
             num_frames=int(self.extra["num_frames"]),
             frame_paths=list(self.extra["frame_paths"]),
             compute_dtype=self.compute_dtype,
+            include_stage_output=include_stage_output,
+            include_derived_shared=include_derived_shared,
         )
 
     def _build_mm_stage_visual_payload_from_full(
@@ -1088,11 +1131,12 @@ class DirectStageStateBuilder:
                     stage_payload.get("stage_input"),
                 )
             )
-            self._prefill_stage_outputs_by_stage[spec.stage_idx] = (
-                _clone_tensor_to_cpu(
-                    stage_payload.get("stage_output"),
+            if "stage_output" in stage_payload and stage_payload.get("stage_output") is not None:
+                self._prefill_stage_outputs_by_stage[spec.stage_idx] = (
+                    _clone_tensor_to_cpu(
+                        stage_payload.get("stage_output"),
+                    )
                 )
-            )
             if spec.stage_idx not in self._mm_prefill_visuals_by_stage:
                 self._mm_prefill_visuals_by_stage[spec.stage_idx] = (
                     self._build_mm_stage_visual_payload_from_full(spec)
@@ -1150,6 +1194,8 @@ class DirectStageStateBuilder:
             end_idx=self.num_layers - 1,
             device=self.device,
             compute_dtype=self.compute_dtype,
+            config_spec=self._text_model_config,
+            rotary_emb=self._text_rotary_emb,
             visual_pos_masks=visual_pos_masks,
             deepstack_by_layer=deepstack_by_layer,
         )
@@ -1178,6 +1224,8 @@ class DirectStageStateBuilder:
             end_idx=spec.end_idx,
             device=target_device,
             compute_dtype=self.compute_dtype,
+            config_spec=self._text_model_config,
+            rotary_emb=self._text_rotary_emb,
             visual_pos_masks=visual_pos_masks,
             deepstack_by_layer=deepstack_by_layer,
         )

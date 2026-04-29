@@ -1306,6 +1306,59 @@ step 11 profiling 重跑记录：
 - 已能看到 PP startup/handoff payload bytes 和 TP collective seconds/bytes
 - HYBRID 未重跑：当前 Codex 沙箱不能访问 Jetson1 CUDA，且不能免密 SSH 到 `10.126.126.2` 绕过沙箱
 
+step 12 startup contract 第一轮减量：
+
+- 目标：向 vLLM-style PP contract 靠拢，主路径只传后续 stage 必须消费的中间量，不传 reference/debug 用的 stage output。
+- 已改代码：
+  - `runtime_builder.py`
+  - `test/test_pipeline_direct_loader.py`
+- 行为变化：
+  - `pack_mm_startup_transport()` / `DirectStageStateBuilder.export_mm_startup_transport()` 支持 `include_stage_output`。
+  - `mode=generate` 且 `include_runtime_reference=false` 时，multimodal startup contract 只导出 `stage_input`，不导出 `stage_output`。
+  - reference/debug 或非 generate 路径仍保留 `stage_output`。
+  - restore/seed runtime config 可以消费 stage-input-only handoff。
+- 本地验证：
+  - `test/test_pipeline_direct_loader.py`
+  - `test/test_hybrid_direct_loader.py`
+  - `python -m py_compile runtime_builder.py pipeline_parallel.py hybrid_parallel.py`
+  - `bash qwen3vl_tp_runtime/scripts/helpers/run-runtime-core-regression.sh`
+- Jetson2/3 实测目录：`baseline_runs/20260429-startup-contract-opt/`
+  - `pp-mm-generate-startup-opt` PASS，generated ids `[87140, 15946, 3837, 101177]`，text `视频中，一名`
+  - `hybrid-mm-generate-startup-opt` PASS，2 节点 `--pp 2 --tp-degrees 1 1` 变体，generated ids `[87140, 15946, 3837, 101177]`，text `视频中，一名`
+  - startup contract 从 `7,563,328` bytes / 13 tensors 降到 `4,353,088` bytes / 12 tensors
+  - 新 payload keys 不再包含 `stage_handoffs.1.stage_output`
+- 注意：
+  - 完整 3-rank HYBRID `--tp-degrees 2 1` 仍需 Jetson1 正常终端可参与时重跑。
+
+step 12 startup contract 第二轮减量，已把这一步彻底收口：
+
+- 目标：主路径 multimodal generate startup contract 不再传可本地重建的 derived shared tensor。
+- 已改代码：
+  - `qwen3vl_tp_runtime/models/qwen3vl/runtime_mm_stage.py`
+  - `qwen3vl_tp_runtime/models/qwen3vl/runtime_builder.py`
+  - `test/test_pipeline_direct_loader.py`
+  - `test/test_runtime_mm.py`
+- 行为变化：
+  - `compact_mm_runtime_shared(..., include_derived=False)` 可导出 compact shared metadata。
+  - `pack_mm_startup_transport()` / `DirectStageStateBuilder.export_mm_startup_transport()` 支持 `include_derived_shared`。
+  - `mode=generate` 且 `include_runtime_reference=false` 时，startup contract 不导出 `shared.attention_mask` / `shared.cos` / `shared.sin`。
+  - reference/debug 或非 generate 路径仍保留 derived shared tensor。
+  - `build_mm_stage_state()` 会用 compact shared + `stage_input` 本地重建 dense `attention_mask` 和 RoPE `cos/sin`。
+- 本地验证：
+  - `test/test_runtime_mm.py`
+  - `test/test_pipeline_direct_loader.py`
+  - `test/test_hybrid_direct_loader.py`
+  - `test/test_model_weight_loader.py`
+  - `bash qwen3vl_tp_runtime/scripts/helpers/run-runtime-core-regression.sh`
+- Jetson2/3 实测目录：`baseline_runs/20260429-startup-contract-derived-opt/`
+  - `pp-mm-generate-derived-opt` PASS，generated ids `[87140, 15946, 3837, 101177]`，text `视频中，一名`
+  - `hybrid-mm-generate-derived-opt` PASS，2 节点 `--pp 2 --tp-degrees 1 1` 变体，generated ids `[87140, 15946, 3837, 101177]`，text `视频中，一名`
+  - startup contract 从第一轮后的 `4,353,088` bytes / 12 tensors 降到 `3,245,806` bytes / 9 tensors
+  - 新 payload keys 不再包含 `shared.attention_mask` / `shared.cos` / `shared.sin`
+- 注意：
+  - 当前 compact contract 仍保留 `shared.attention_mask_2d` / `shared.position_ids` / `shared.rope_deltas` / multimodal grid metadata。
+  - 完整 3-rank HYBRID `--tp-degrees 2 1` 仍需 Jetson1 正常终端可参与时重跑。
+
 step 11 已运行并通过的本地检查：
 
 ```bash

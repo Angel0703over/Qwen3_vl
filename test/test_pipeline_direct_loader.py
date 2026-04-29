@@ -14,6 +14,7 @@ from qwen3vl_tp_runtime.models.qwen3vl.runtime_mm_stage import (
     compact_mm_runtime_shared,
 )
 from qwen3vl_tp_runtime.models.qwen3vl.runtime_builder import (
+    DirectStageStateBuilder,
     pack_mm_startup_transport,
     restore_mm_startup_transport,
     select_mm_startup_contract,
@@ -157,6 +158,59 @@ class PipelineDirectLoaderTest(unittest.TestCase):
         self.assertNotIn("root_input", restored)
         self.assertNotIn("boundaries", restored)
         self.assertFalse(any(name == "root_input" or name.startswith("boundaries") for name in tensors))
+
+    def test_multimodal_startup_transport_can_omit_reference_stage_output(self) -> None:
+        startup_contract = _build_mm_startup_contract(num_stages=2)
+
+        local_contract = select_mm_startup_contract(startup_contract, local_stage_indices=[1])
+        meta, tensors = pack_mm_startup_transport(
+            local_contract,
+            include_stage_output=False,
+        )
+        restored = restore_mm_startup_transport(meta, tensors)
+
+        self.assertEqual(sorted(restored["stage_handoffs"]), [1])
+        self.assertIn("stage_input", restored["stage_handoffs"][1])
+        self.assertNotIn("stage_output", restored["stage_handoffs"][1])
+        self.assertIn("stage_handoffs.1.stage_input", tensors)
+        self.assertNotIn("stage_handoffs.1.stage_output", tensors)
+
+    def test_multimodal_startup_transport_can_omit_shared_derived_tensors(self) -> None:
+        startup_contract = _build_mm_startup_contract(num_stages=2)
+
+        local_contract = select_mm_startup_contract(startup_contract, local_stage_indices=[1])
+        meta, tensors = pack_mm_startup_transport(
+            local_contract,
+            include_derived_shared=False,
+        )
+        restored = restore_mm_startup_transport(meta, tensors)
+
+        self.assertEqual(sorted(restored["stage_handoffs"]), [1])
+        self.assertIn("input_ids", restored["shared"])
+        self.assertIn("position_ids", restored["shared"])
+        self.assertNotIn("attention_mask", restored["shared"])
+        self.assertNotIn("cos", restored["shared"])
+        self.assertNotIn("sin", restored["shared"])
+        self.assertNotIn("shared.attention_mask", tensors)
+        self.assertNotIn("shared.cos", tensors)
+        self.assertNotIn("shared.sin", tensors)
+
+    def test_multimodal_generate_main_path_omits_startup_reference_output_and_derived_shared(self) -> None:
+        builder = object.__new__(DirectStageStateBuilder)
+        builder.include_runtime_reference = False
+        builder.mode = "generate"
+
+        self.assertFalse(builder._include_mm_startup_stage_output())
+        self.assertFalse(builder._include_mm_startup_derived_shared())
+
+        builder.include_runtime_reference = True
+        self.assertTrue(builder._include_mm_startup_stage_output())
+        self.assertTrue(builder._include_mm_startup_derived_shared())
+
+        builder.include_runtime_reference = False
+        builder.mode = "prefill"
+        self.assertTrue(builder._include_mm_startup_stage_output())
+        self.assertTrue(builder._include_mm_startup_derived_shared())
 
     def test_multimodal_startup_contract_rejects_full_or_root_payloads(self) -> None:
         startup_contract = _build_mm_startup_contract(num_stages=1)

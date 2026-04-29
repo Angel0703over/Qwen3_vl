@@ -20,6 +20,8 @@ from qwen3vl_tp_runtime.models.qwen3vl.runtime_mm_stage import (
     MmVisualState,
     compact_mm_frontend_meta,
     compact_mm_frontend_tensors,
+    compact_mm_runtime_shared,
+    build_mm_stage_state,
 )
 from qwen3vl_tp_runtime.models.qwen3vl.weights import TextModelConfigSpec
 from qwen3vl_tp_runtime.models.qwen3vl.vision.runtime import MmFrontendBatch
@@ -139,6 +141,43 @@ def _fake_text_config_spec() -> TextModelConfigSpec:
 
 
 class RuntimeMmTest(unittest.TestCase):
+    def test_build_mm_stage_state_rebuilds_missing_derived_shared_tensors(self) -> None:
+        fake_state = _fake_mm_runtime_state()
+        compact_shared = compact_mm_runtime_shared(
+            fake_state,
+            include_derived=False,
+        )
+
+        class _FakeRotary(torch.nn.Module):
+            def forward(self, inputs_embeds, vision_position_ids):
+                return (
+                    torch.full_like(inputs_embeds, 2.0),
+                    torch.full_like(inputs_embeds, 3.0),
+                )
+
+        with patch(
+            "qwen3vl_tp_runtime.models.qwen3vl.runtime_mm_stage.create_causal_mask",
+            return_value=None,
+        ):
+            restored = build_mm_stage_state(
+                compact_shared,
+                stage_input=fake_state.inputs_embeds,
+                start_idx=0,
+                end_idx=0,
+                device=torch.device("cpu"),
+                compute_dtype=torch.float32,
+                config_spec=_fake_text_config_spec(),
+                rotary_emb=_FakeRotary(),
+            )
+
+        self.assertNotIn("attention_mask", compact_shared)
+        self.assertNotIn("cos", compact_shared)
+        self.assertNotIn("sin", compact_shared)
+        self.assertEqual(tuple(restored.attention_mask.shape), (1, 1, 3, 3))
+        self.assertTrue(torch.equal(restored.cos, torch.full_like(fake_state.inputs_embeds, 2.0)))
+        self.assertTrue(torch.equal(restored.sin, torch.full_like(fake_state.inputs_embeds, 3.0)))
+        self.assertTrue(torch.equal(restored.position_ids, fake_state.position_ids))
+
     def test_prepare_mm_frontend_seed_uses_frontend_helper_not_session_wrapper(self) -> None:
         fake_model = type("FakeModel", (), {"device": torch.device("cpu")})()
         fake_inputs = _FakeBatch(input_ids=torch.tensor([[1, 2, 3]], dtype=torch.long))

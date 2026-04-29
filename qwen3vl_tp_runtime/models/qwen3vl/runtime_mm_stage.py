@@ -348,21 +348,138 @@ def compact_mm_frontend_seed(
     return compact_payload
 
 
-def compact_mm_runtime_shared(state: Any) -> dict[str, Any]:
+def compact_mm_runtime_shared(
+    state: Any,
+    *,
+    include_derived: bool = True,
+) -> dict[str, Any]:
     """Keep only the shared multimodal decoder runtime tensors."""
 
     runtime_state = coerce_mm_runtime_state(state)
-    return {
+    shared = {
         "input_ids": _clone_tensor(runtime_state.input_ids),
         "attention_mask_2d": _clone_tensor(runtime_state.attention_mask_2d),
         "position_ids": _clone_tensor(runtime_state.position_ids),
-        "attention_mask": _clone_tensor(runtime_state.attention_mask),
-        "cos": _clone_tensor(runtime_state.cos),
-        "sin": _clone_tensor(runtime_state.sin),
         "rope_deltas": _clone_tensor(runtime_state.rope_deltas),
         "mm_token_type_ids": _clone_tensor(runtime_state.mm_token_type_ids),
         "image_grid_thw": _clone_tensor(runtime_state.image_grid_thw),
         "video_grid_thw": _clone_tensor(runtime_state.video_grid_thw),
+    }
+    if include_derived:
+        shared.update(
+            {
+                "attention_mask": _clone_tensor(runtime_state.attention_mask),
+                "cos": _clone_tensor(runtime_state.cos),
+                "sin": _clone_tensor(runtime_state.sin),
+            }
+        )
+    return shared
+
+
+def _restore_mm_shared_runtime_tensors(
+    shared_state: Mapping[str, Any],
+    *,
+    inputs_embeds: torch.Tensor,
+    config_spec: TextModelConfigSpec | None,
+    mm_config=None,
+    device: torch.device,
+    compute_dtype: torch.dtype,
+    rotary_emb=None,
+) -> dict[str, torch.Tensor | None]:
+    input_ids = _runtime_tensor(shared_state.get("input_ids"), device=device)
+    attention_mask_2d = _runtime_tensor(shared_state.get("attention_mask_2d"), device=device)
+    position_ids = _runtime_tensor(shared_state.get("position_ids"), device=device)
+    rope_deltas = _runtime_tensor(shared_state.get("rope_deltas"), device=device)
+    mm_token_type_ids = _runtime_tensor(shared_state.get("mm_token_type_ids"), device=device)
+    image_grid_thw = _runtime_tensor(shared_state.get("image_grid_thw"), device=device)
+    video_grid_thw = _runtime_tensor(shared_state.get("video_grid_thw"), device=device)
+
+    if (
+        (position_ids is None or rope_deltas is None)
+        and mm_config is not None
+        and input_ids is not None
+        and mm_token_type_ids is not None
+        and (image_grid_thw is not None or video_grid_thw is not None)
+    ):
+        mm_position_ids, mm_rope_deltas = compute_mm_frontend_rope_index(
+            input_ids=input_ids,
+            mm_token_type_ids=mm_token_type_ids,
+            image_grid_thw=image_grid_thw,
+            video_grid_thw=video_grid_thw,
+            attention_mask=attention_mask_2d,
+            spatial_merge_size=int(mm_config.vision_config.spatial_merge_size),
+        )
+        if position_ids is None:
+            position_ids = mm_position_ids
+        if rope_deltas is None:
+            rope_deltas = mm_rope_deltas
+
+    full_position_ids, text_position_ids, vision_position_ids = _split_position_ids(
+        position_ids,
+        batch_size=inputs_embeds.shape[0],
+        seq_len=inputs_embeds.shape[1],
+        device=device,
+    )
+    position_ids = full_position_ids.detach()
+
+    attention_mask = _runtime_tensor(
+        shared_state.get("attention_mask"),
+        device=device,
+        compute_dtype=compute_dtype,
+    )
+    cos = _runtime_tensor(
+        shared_state.get("cos"),
+        device=device,
+        compute_dtype=compute_dtype,
+    )
+    sin = _runtime_tensor(
+        shared_state.get("sin"),
+        device=device,
+        compute_dtype=compute_dtype,
+    )
+    if attention_mask is None or cos is None or sin is None:
+        if config_spec is None:
+            raise RuntimeError(
+                "multimodal stage local restore 需要 config_spec，"
+                "因为 startup shared 没有 attention_mask/cos/sin。"
+            )
+        if attention_mask is None:
+            attention_mask = create_causal_mask(
+                config=build_text_hf_config(config_spec),
+                inputs_embeds=inputs_embeds,
+                attention_mask=attention_mask_2d,
+                past_key_values=None,
+                position_ids=text_position_ids,
+            )
+            if attention_mask is None:
+                attention_mask = build_text_causal_mask(
+                    inputs_embeds,
+                    attention_mask_2d=attention_mask_2d,
+                    past_length=0,
+                )
+        if cos is None or sin is None:
+            rotary = rotary_emb or build_text_rotary_embedding(
+                config_spec,
+                device=device,
+            )
+            rotary = rotary.to(device=device)
+            restored_cos, restored_sin = rotary(inputs_embeds, vision_position_ids)
+            if cos is None:
+                cos = restored_cos
+            if sin is None:
+                sin = restored_sin
+
+    return {
+        "input_ids": input_ids,
+        "attention_mask_2d": attention_mask_2d,
+        "position_ids": position_ids,
+        "attention_mask": attention_mask.detach(),
+        "cos": cos.detach(),
+        "sin": sin.detach(),
+        "rope_deltas": rope_deltas,
+        "mm_token_type_ids": mm_token_type_ids,
+        "image_grid_thw": image_grid_thw,
+        "video_grid_thw": video_grid_thw,
     }
 
 
@@ -639,6 +756,9 @@ def build_mm_stage_state(
     end_idx: int,
     device: torch.device,
     compute_dtype: torch.dtype,
+    config_spec: TextModelConfigSpec | None = None,
+    mm_config=None,
+    rotary_emb=None,
     visual_pos_masks: torch.Tensor | None = None,
     deepstack_by_layer: dict[int, torch.Tensor] | None = None,
 ) -> MmRuntimeState:
@@ -649,39 +769,48 @@ def build_mm_stage_state(
     else:
         shared_state = compact_mm_runtime_shared(state)
 
+    inputs_embeds = _runtime_tensor(stage_input, device=device, compute_dtype=compute_dtype)
+    if inputs_embeds is None:
+        raise RuntimeError("multimodal stage state 缺少 stage_input。")
+    restored_shared = _restore_mm_shared_runtime_tensors(
+        shared_state,
+        inputs_embeds=inputs_embeds,
+        config_spec=config_spec,
+        mm_config=mm_config,
+        device=device,
+        compute_dtype=compute_dtype,
+        rotary_emb=rotary_emb,
+    )
+
     if visual_pos_masks is None and deepstack_by_layer is None:
-        base_visual_pos_masks, base_deepstack = build_mm_stage_visual_payload(
-            state,
-            start_idx=start_idx,
-            end_idx=end_idx,
-            device=device,
-            compute_dtype=compute_dtype,
-        )
+        if isinstance(state, Mapping):
+            base_visual_pos_masks = state.get("visual_pos_masks")
+            base_deepstack = {
+                int(layer_idx): deepstack
+                for layer_idx, deepstack in (state.get("deepstack_by_layer") or {}).items()
+                if start_idx <= int(layer_idx) <= end_idx
+            }
+        else:
+            base_visual_pos_masks, base_deepstack = build_mm_stage_visual_payload(
+                state,
+                start_idx=start_idx,
+                end_idx=end_idx,
+                device=device,
+                compute_dtype=compute_dtype,
+            )
         if visual_pos_masks is None:
             visual_pos_masks = base_visual_pos_masks
         if deepstack_by_layer is None:
             deepstack_by_layer = base_deepstack
 
     return MmRuntimeState(
-        input_ids=_runtime_tensor(shared_state.get("input_ids"), device=device),
-        attention_mask_2d=_runtime_tensor(shared_state.get("attention_mask_2d"), device=device),
-        position_ids=_runtime_tensor(shared_state.get("position_ids"), device=device),
-        inputs_embeds=_runtime_tensor(stage_input, device=device, compute_dtype=compute_dtype),
-        attention_mask=_runtime_tensor(
-            shared_state.get("attention_mask"),
-            device=device,
-            compute_dtype=compute_dtype,
-        ),
-        cos=_runtime_tensor(
-            shared_state.get("cos"),
-            device=device,
-            compute_dtype=compute_dtype,
-        ),
-        sin=_runtime_tensor(
-            shared_state.get("sin"),
-            device=device,
-            compute_dtype=compute_dtype,
-        ),
+        input_ids=restored_shared["input_ids"],
+        attention_mask_2d=restored_shared["attention_mask_2d"],
+        position_ids=restored_shared["position_ids"],
+        inputs_embeds=inputs_embeds,
+        attention_mask=restored_shared["attention_mask"],
+        cos=restored_shared["cos"],
+        sin=restored_shared["sin"],
         visual=MmVisualState(
             visual_pos_masks=_runtime_tensor(visual_pos_masks, device=device),
             deepstack_by_layer={
@@ -693,10 +822,10 @@ def build_mm_stage_state(
                 for layer_idx, deepstack in (deepstack_by_layer or {}).items()
             },
         ),
-        rope_deltas=_runtime_tensor(shared_state.get("rope_deltas"), device=device),
-        mm_token_type_ids=_runtime_tensor(shared_state.get("mm_token_type_ids"), device=device),
-        image_grid_thw=_runtime_tensor(shared_state.get("image_grid_thw"), device=device),
-        video_grid_thw=_runtime_tensor(shared_state.get("video_grid_thw"), device=device),
+        rope_deltas=restored_shared["rope_deltas"],
+        mm_token_type_ids=restored_shared["mm_token_type_ids"],
+        image_grid_thw=restored_shared["image_grid_thw"],
+        video_grid_thw=restored_shared["video_grid_thw"],
     )
 
 

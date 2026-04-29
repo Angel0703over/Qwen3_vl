@@ -322,6 +322,80 @@ PYTHONPATH=. /mnt/ssd/miniconda3/envs/vlm/bin/python \
 - 原 `baseline_runs/20260428/` 仍是 frozen correctness baseline。
 - 这轮没有重跑 HYBRID，因为当前 Codex 沙箱不能访问 Jetson1 CUDA，且不能免密 SSH 到 `10.126.126.2` 绕过沙箱。
 
+## 20260429 startup contract stage_output 减量记录
+
+本轮优化把主路径 multimodal generate startup contract 中的 reference `stage_output` 移出，只保留后续 stage 启动必须的 `stage_input`。
+
+输出目录：
+
+- `baseline_runs/20260429-startup-contract-opt/`
+
+重跑结果：
+
+- `pp-mm-generate-startup-opt`: PASS，generated ids `[87140, 15946, 3837, 101177]`，text `视频中，一名`
+- `hybrid-mm-generate-startup-opt`: PASS，2 节点 `--pp 2 --tp-degrees 1 1` 变体，generated ids `[87140, 15946, 3837, 101177]`，text `视频中，一名`
+
+性能 / payload 汇总：
+
+- `baseline_runs/20260429-startup-contract-opt/runtime-perf-records.json`
+- `baseline_runs/20260429-startup-contract-opt/runtime-perf-table.md`
+
+对比：
+
+- before `baseline_runs/20260428-step11-profile/pp-mm-generate-*`：startup contract `13` tensors，`7,563,328` bytes，包含 `stage_handoffs.1.stage_output`。
+- after `baseline_runs/20260429-startup-contract-opt/*startup-opt*`：startup contract `12` tensors，`4,353,088` bytes，只包含 `stage_handoffs.1.stage_input`，不再包含 `stage_handoffs.1.stage_output`。
+
+注意：
+
+- `hybrid-mm-generate-startup-opt` 是 HYBRID startup contract 路径验证，不替代 frozen 3-rank `hybrid-mm-generate` correctness baseline。
+- 完整 3-rank HYBRID `--tp-degrees 2 1` 仍需 Jetson1 正常终端可参与时再重跑。
+
+## 20260429 startup contract derived tensor 减量记录
+
+本轮继续把主路径 multimodal generate startup contract 中可本地重建的 derived shared tensor 移出：
+
+- 不再传 `shared.attention_mask`
+- 不再传 `shared.cos`
+- 不再传 `shared.sin`
+
+输出目录：
+
+- `baseline_runs/20260429-startup-contract-derived-opt/`
+
+重跑结果：
+
+- `pp-mm-generate-derived-opt`: PASS，generated ids `[87140, 15946, 3837, 101177]`，text `视频中，一名`
+- `hybrid-mm-generate-derived-opt`: PASS，2 节点 `--pp 2 --tp-degrees 1 1` 变体，generated ids `[87140, 15946, 3837, 101177]`，text `视频中，一名`
+
+性能 / payload 汇总：
+
+- `baseline_runs/20260429-startup-contract-derived-opt/runtime-perf-records.json`
+- `baseline_runs/20260429-startup-contract-derived-opt/runtime-perf-table.md`
+
+对比：
+
+- before `baseline_runs/20260428-step11-profile/pp-mm-generate-*`：startup contract `13` tensors，`7,563,328` bytes。
+- stage-output after `baseline_runs/20260429-startup-contract-opt/*startup-opt*`：startup contract `12` tensors，`4,353,088` bytes。
+- derived-tensor after `baseline_runs/20260429-startup-contract-derived-opt/*derived-opt*`：startup contract `9` tensors，`3,245,806` bytes。
+
+最终 startup contract tensor payload keys：
+
+- `shared.input_ids`
+- `shared.attention_mask_2d`
+- `shared.position_ids`
+- `shared.rope_deltas`
+- `shared.mm_token_type_ids`
+- `shared.image_grid_thw`
+- `shared.video_grid_thw`
+- `stage_handoffs.1.stage_input`
+- `stage_visuals.1.visual_pos_masks`
+
+注意：
+
+- `shared.attention_mask_2d` 和 `shared.position_ids` 是 compact input / position metadata，不是 dense decoder `attention_mask` 或 RoPE `cos/sin`。
+- dense `attention_mask`、RoPE `cos`、RoPE `sin` 现在由 non-stage0 在本地 `StageState` materialize 时重建。
+- `hybrid-mm-generate-derived-opt` 是 2 节点 HYBRID startup contract 路径验证，不替代 frozen 3-rank `hybrid-mm-generate` correctness baseline。
+
 ## 固定 case
 
 ### 1. `hf-text-generate`

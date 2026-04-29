@@ -395,6 +395,14 @@ PYTHONPATH=. /mnt/ssd/miniconda3/envs/vlm/bin/python \
 
 性能阶段从现在开始不再是一条大任务，而是按可观测、低风险减量、执行重排、拓扑搜索逐步推进。
 
+总体目标：
+
+- 行为边界向 vLLM-style runtime contract 对齐。
+- 权重不通过 startup/scaffold/runtime payload 广播；每个 worker/rank 从 `model_path` 加载自己负责的 stage-local / shard-local weights。
+- 多模态 frontend / processor 只在输入 owner 侧执行一次；后续 PP stage 只消费 compact tensor dict / intermediate tensors 风格的中间结果。
+- PP stage 间只传递下一 stage 执行必须的 hidden / visual auxiliary state，不传原始媒体、root payload 或 replay payload。
+- HYBRID 同一 PP stage 内的 TP broadcast 只同步 shared request/runtime scaffold；rank-local 可以加载或构造的内容留给本 rank 完成。
+
 通用规则：
 
 - 每个优化前先保留 before 表：
@@ -473,43 +481,104 @@ runtime_metrics.transport.totals_by_channel.*
 - `run-runtime-core-regression.sh` 通过。
 - `run-runtime-core-regression.sh --include-weight-loader --skip-baseline-checks` 通过。
 
-### 12. startup contract tensor 减量
+### 12. 已完成：vLLM-style startup contract tensor 减量
 
 目标：
 
+- 对齐 vLLM 的 PP 边界语义：入口侧完成 multimodal processor / visual frontend，后续 stage 只接收 compact contract。
 - 减少 multimodal startup contract 传输的 tensor 数量和总 bytes。
-- 保持 thin contract 语义，不回退到 full/root/replay payload。
+- contract 只表达后续 stage 必须消费的 tensor / metadata，不携带原始图片/视频、full root payload、replay payload 或 rank-local 可重建内容。
+- non-stage0 保持 consume-only：不重新读媒体、不重新跑 visual frontend、不从 contract 反推出完整输入对象。
 
-候选方向：
+vLLM-style 命名和语义边界：
 
-- 去掉 non-stage 必要性不强的 visual/deepstack tensor。
-- 只给目标 stage 发送它真正需要的 handoff / visual state。
-- 对 metadata 和 tensor payload 做更严格的 stage-local select。
+- startup contract 后续应收敛成 compact model input / metadata，而不是派生 runtime tensor 集合。
+- 可以对齐使用的字段名：
+  - `input_ids`
+  - `positions`
+  - `image_grid_thw`
+  - `video_grid_thw`
+  - `second_per_grid_ts`
+  - `mrope_position_delta`
+- 可以作为本地运行时对象名，但不应作为大 tensor 跨 PP startup contract 传输：
+  - `attn_metadata`：由本地根据 compact input 构建，替代传 dense `attention_mask`。
+  - `inputs_embeds`：只在真正需要 embedding 输入的本地路径保留，不作为默认跨 stage contract。
+  - `intermediate_tensors`：对应 PP stage handoff / stage 间中间结果，不是 startup shared metadata。
+- 暂不引入 `slot_mapping` / `block_table` / `kv_cache` / `seq_lens` / `query_start_loc` 这类 vLLM scheduler + PagedAttention 强绑定名字，除非后续真的实现同等语义。
+
+已落地：
+
+- `stage_output` 从主路径 multimodal generate startup contract 中移出。
+- `pack_mm_startup_transport()` / `DirectStageStateBuilder.export_mm_startup_transport()` 支持 `include_stage_output`。
+- 默认策略：
+  - `mode=generate` 且 `include_runtime_reference=false`：只导出 `stage_input`，不导出 reference `stage_output`。
+  - reference/debug 或非 generate 路径：继续保留 `stage_output`，避免破坏对比/调试路径。
+- `restore_mm_startup_transport()` / `seed_mm_startup_runtime_config()` 可以消费 stage-input-only handoff。
+- `shared.attention_mask` / `shared.cos` / `shared.sin` 从主路径 multimodal generate startup contract 中移出。
+- `pack_mm_startup_transport()` / `DirectStageStateBuilder.export_mm_startup_transport()` 支持 `include_derived_shared`。
+- 默认策略：
+  - `mode=generate` 且 `include_runtime_reference=false`：只导出 compact shared input / metadata，不导出 derived `attention_mask/cos/sin`。
+  - reference/debug 或非 generate 路径：继续保留 derived shared tensor，避免破坏对比/调试路径。
+- `build_mm_stage_state()` 可以从 compact shared + `stage_input` 本地重建：
+  - dense `attention_mask`
+  - RoPE `cos`
+  - RoPE `sin`
+- 当前 compact shared 保留 `position_ids` / `attention_mask_2d` / `rope_deltas` / `mm_token_type_ids` / `image_grid_thw` / `video_grid_thw`，后续如果要继续对齐 vLLM 命名，可单独把 `position_ids` 收口为 `positions` 语义。
+- 新增单测覆盖 stage-output-optional transport、derived-shared-optional transport、主路径默认策略和 local rebuild。
+
+实测：
+
+- before：`baseline_runs/20260428-step11-profile/pp-mm-generate-*`
+  - startup contract：13 tensors，`7,563,328` bytes。
+  - 包含 `stage_handoffs.1.stage_output`，该 tensor `3,210,240` bytes。
+- 第一轮 after：`baseline_runs/20260429-startup-contract-opt/`
+  - `pp-mm-generate-startup-opt`：12 tensors，`4,353,088` bytes。
+  - `hybrid-mm-generate-startup-opt`（2 节点 `--pp 2 --tp-degrees 1 1`）：12 tensors，`4,353,088` bytes。
+  - startup contract payload keys 只包含 `stage_handoffs.1.stage_input`，不再包含 `stage_handoffs.1.stage_output`。
+- 最终 after：`baseline_runs/20260429-startup-contract-derived-opt/`
+  - `pp-mm-generate-derived-opt`：9 tensors，`3,245,806` bytes。
+  - `hybrid-mm-generate-derived-opt`（2 节点 `--pp 2 --tp-degrees 1 1`）：9 tensors，`3,245,806` bytes。
+  - startup contract payload keys 不再包含 `shared.attention_mask` / `shared.cos` / `shared.sin`。
+  - payload keys 保留 `shared.input_ids` / `shared.attention_mask_2d` / `shared.position_ids` / `shared.rope_deltas` / `shared.mm_token_type_ids` / multimodal grid metadata / `stage_handoffs.1.stage_input` / stage-local visuals。
+
+注意：
+
+- 完整 3-rank HYBRID `--tp-degrees 2 1` 仍需在 Jetson1 正常终端可参与时重跑；本轮已用 2 节点 HYBRID 变体覆盖 HYBRID startup contract 收发和本地重建路径。
 
 验收：
 
-- `pp-mm-generate` 和 `hybrid-mm-generate` generated ids/text 不变。
-- startup contract payload bytes 下降或保持不增。
+- `pp-mm-generate-startup-opt` generated ids/text 不变：`[87140, 15946, 3837, 101177]` / `视频中，一名`。
+- `hybrid-mm-generate-startup-opt` generated ids/text 不变：`[87140, 15946, 3837, 101177]` / `视频中，一名`。
+- `pp-mm-generate-derived-opt` generated ids/text 不变：`[87140, 15946, 3837, 101177]` / `视频中，一名`。
+- `hybrid-mm-generate-derived-opt` generated ids/text 不变：`[87140, 15946, 3837, 101177]` / `视频中，一名`。
+- startup contract payload bytes 从 `7.21 MiB` 降到 `3.10 MiB`。
 - non-stage0 仍是 consume-only，不重新激活 frontend。
+- rank log 能证明后续 stage 从 compact contract 构建本地 `StageState`，而不是消费 full/root/replay payload。
 
-### 13. scaffold broadcast 减量
+### 13. vLLM-style scaffold broadcast 减量
 
 目标：
 
+- 对齐 vLLM 的 TP worker 语义：同一 TP group 可以 broadcast shared input/request tensor dict，但权重由各 rank 自己加载 shard。
 - 减少 HYBRID stage leader 广播给同 stage TP rank 的 scaffold 内容。
-- 避免把 rank-local 可以直接加载的权重或不必要 runtime reference 放进 scaffold。
+- scaffold 只用于建立 shared runtime input / schedule / request metadata，不作为权重或完整 stage state 的分发通道。
+- 避免把 rank-local 可以直接加载或构造的权重、cache、runtime reference 放进 scaffold。
 
 候选方向：
 
+- 先用 HYBRID profile 列出现有 `scaffold` tensor keys / shapes / bytes。
+- 检查 `text_scaffold` / `stage_scaffold` 中哪些字段是 shared input，哪些字段是 rank-local reconstructible。
 - scaffold 只保留 runtime metadata、shared input、必要 auxiliary tensor。
-- TP rank 自己 materialize 的 decoder weights 不经过 scaffold broadcast。
-- 检查 `text_scaffold` / `stage_scaffold` 的 tensor keys 和 bytes。
+- TP rank 自己 materialize decoder projection / MLP projection shard；这些 weights 不经过 scaffold broadcast。
+- TP rank 本地可以从 manifest、rank id、stage range 推导出的字段，不从 leader 广播。
+- 如果后续需要共享 large tensor，优先证明它是 request-level shared input，而不是 stage/rank-local state。
 
 验收：
 
 - `hybrid-text-generate` / `hybrid-mm-generate` correctness 不变。
 - scaffold broadcast bytes 下降或保持不增。
 - `weight_load.tp_weight_sharded=true` 和 stage-local scope 证据不回退。
+- rank log 能证明同 stage TP ranks 都是 rank-local materialize weights，leader 只广播 shared scaffold。
 
 ### 14. TP collective profiling 和低风险调整
 
