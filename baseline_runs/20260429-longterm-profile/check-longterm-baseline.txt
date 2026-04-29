@@ -1,0 +1,3 @@
+PASS case=tp-mm-generate ranks=2 generated_token_ids=[87140, 15946, 3837, 101177] generated_text='视频中，一名'
+PASS case=hybrid-text-generate ranks=3 generated_token_ids=[104455, 9909, 9286, 16488] generated_text='人工智能（Artificial'
+PASS case=hybrid-mm-generate ranks=3 generated_token_ids=[87140, 15946, 3837, 101177] generated_text='视频中，一名'

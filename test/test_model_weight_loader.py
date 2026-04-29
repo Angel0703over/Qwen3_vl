@@ -1451,6 +1451,48 @@ class ModelWeightLoaderTest(unittest.TestCase):
             )
         )
 
+    def test_scaffold_transport_deduplicates_alias_tensors(self) -> None:
+        stage_input = torch.arange(24, dtype=torch.float32).view(1, 3, 8)
+        attention_mask_2d = torch.ones(1, 3, dtype=torch.int64)
+        scaffold = {
+            "save_dtype": "float32",
+            "runtime_only_generate": True,
+            "start_idx": 0,
+            "end_idx": 0,
+            "max_new_tokens": 0,
+            "layers": [],
+            "stage_input": stage_input,
+            "layer_input": stage_input,
+            "prefill_attention_mask_2d": attention_mask_2d,
+        }
+
+        naive_tensor_bytes = (
+            stage_input.numel() * stage_input.element_size() * 2
+            + attention_mask_2d.numel() * attention_mask_2d.element_size()
+        )
+        meta, tensor_payload = pack_text_scaffold_transport(scaffold)
+        restored = restore_text_scaffold_transport(meta, tensor_payload)
+        packed_tensor_bytes = sum(
+            0 if tensor is None else tensor.numel() * tensor.element_size()
+            for tensor in tensor_payload.values()
+        )
+
+        self.assertEqual(len(tensor_payload), 2)
+        self.assertEqual(
+            set(tensor_payload),
+            {"scaffold.stage_input", "scaffold.prefill_attention_mask_2d"},
+        )
+        self.assertEqual(
+            meta["scaffold"]["layer_input"]["__tensor_ref__"],
+            "scaffold.stage_input",
+        )
+        self.assertEqual(
+            packed_tensor_bytes,
+            naive_tensor_bytes - stage_input.numel() * stage_input.element_size(),
+        )
+        self.assertTrue(torch.equal(restored["stage_input"], stage_input))
+        self.assertTrue(torch.equal(restored["layer_input"], stage_input))
+
     def test_materialize_runtime_only_text_scaffold_restores_tp_local_weights(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             model_dir = Path(tmpdir)
@@ -1517,6 +1559,8 @@ class ModelWeightLoaderTest(unittest.TestCase):
             self.assertNotIn("prefill_seq_len", scaffold)
             self.assertNotIn("batch_size", scaffold)
             self.assertNotIn("token_id_dtype", scaffold)
+            scaffold.pop("save_dtype", None)
+            scaffold.pop("hidden_size", None)
 
             materialized = materialize_text_stage_state(
                 stage_state_scaffold=scaffold,
@@ -1541,6 +1585,8 @@ class ModelWeightLoaderTest(unittest.TestCase):
             self.assertEqual(materialized["prefill_seq_len"], 3)
             self.assertEqual(materialized["batch_size"], 1)
             self.assertEqual(materialized["token_id_dtype"], "int64")
+            self.assertEqual(materialized["save_dtype"], "float32")
+            self.assertEqual(materialized["hidden_size"], 8)
 
     def test_multimodal_generate_scaffold_omits_weights_and_materializes_local_shard(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -2141,6 +2187,12 @@ class ModelWeightLoaderTest(unittest.TestCase):
                     runtime_config=runtime_config,
                 ) as builder:
                     bundle = builder.build_stage_bundle(1)
+                with DirectStageBundleBuilder(
+                    stage_specs=[stage_spec],
+                    runtime_config=runtime_config,
+                    include_text_weights=False,
+                ) as builder:
+                    scaffold = builder.build_stage_bundle(1)
 
             self.assertTrue(bundle["runtime_only_generate"])
             self.assertEqual(bundle["modality"], "multimodal")
@@ -2153,6 +2205,61 @@ class ModelWeightLoaderTest(unittest.TestCase):
             self.assertNotIn("prefill", bundle)
             self.assertNotIn("decode_steps", bundle)
             self.assertNotIn("generated_token_ids", bundle)
+            self.assertTrue(torch.equal(scaffold["stage_input"], expected_stage_input))
+            self.assertNotIn("layer_input", scaffold)
+            scaffold_meta, scaffold_tensors = pack_text_scaffold_transport(scaffold)
+            restored_scaffold = restore_text_scaffold_transport(scaffold_meta, scaffold_tensors)
+            self.assertNotIn("scaffold.layer_input", scaffold_tensors)
+            self.assertTrue(torch.equal(restored_scaffold["stage_input"], expected_stage_input))
+            stripped_scaffold = dict(scaffold)
+            for field_name in (
+                "prefill_attention_mask_2d",
+                "prefill_attention_mask",
+                "prefill_position_ids",
+                "prefill_cos",
+                "prefill_sin",
+                "num_frames",
+                "frame_paths",
+            ):
+                stripped_scaffold.pop(field_name, None)
+            stripped_scaffold["mm_frontend_metadata_local_rebuild"] = True
+            materialized_scaffold = materialize_text_stage_state(
+                stage_state_scaffold=stripped_scaffold,
+                runtime_config=runtime_config,
+                compute_dtype=torch.float32,
+            )
+            self.assertTrue(
+                torch.equal(
+                    materialized_scaffold["prefill_attention_mask_2d"],
+                    bundle["prefill_attention_mask_2d"],
+                )
+            )
+            self.assertTrue(
+                torch.equal(
+                    materialized_scaffold["prefill_attention_mask"],
+                    bundle["prefill_attention_mask"],
+                )
+            )
+            self.assertTrue(
+                torch.equal(
+                    materialized_scaffold["prefill_position_ids"],
+                    bundle["prefill_position_ids"],
+                )
+            )
+            self.assertTrue(
+                torch.allclose(
+                    materialized_scaffold["prefill_cos"],
+                    bundle["prefill_cos"],
+                )
+            )
+            self.assertTrue(
+                torch.allclose(
+                    materialized_scaffold["prefill_sin"],
+                    bundle["prefill_sin"],
+                )
+            )
+            self.assertEqual(materialized_scaffold["num_frames"], 2)
+            self.assertEqual(materialized_scaffold["frame_paths"], ["/tmp/f0.png", "/tmp/f1.png"])
 
     def test_mm_state_from_decode_state_accepts_stage_handoffs_without_hidden_states(self) -> None:
         stage_input = torch.full((1, 1, 4), 5.0, dtype=torch.float32)

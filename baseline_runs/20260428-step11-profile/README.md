@@ -20,5 +20,6 @@ Notes:
 
 - The original `baseline_runs/20260428/` directory remains the frozen
   correctness baseline.
-- Hybrid was not rerun in this directory because the Codex sandbox cannot access
-  Jetson1 CUDA, and passwordless SSH to `10.126.126.2` is not available.
+- Hybrid was intentionally left out of this first PP/TP profiling directory.
+  The later `baseline_runs/20260429-longterm-profile/` directory freezes the
+  real 3-rank hybrid profile.

@@ -66,7 +66,12 @@ def _classify_transport_kind(channel: str, label: str | None) -> str:
     lowered = f"{channel} {label or ''}".lower()
     if "startup_contract" in lowered:
         return "startup_contract"
-    if "stage_scaffold" in lowered or "text_scaffold" in lowered or "stage_state" in lowered:
+    if (
+        "stage_scaffold" in lowered
+        or "text_scaffold" in lowered
+        or "runtime_inputs" in lowered
+        or "stage_state" in lowered
+    ):
         return "scaffold"
     if "stage_handoff" in lowered:
         return "stage_handoff"

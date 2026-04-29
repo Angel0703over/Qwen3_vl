@@ -203,8 +203,40 @@ def _restore_text_prompt_stage_state(
     if stage_state.get("modality") == "multimodal":
         restored = dict(stage_state)
         restored.pop("runtime_only_prompt_local_rebuild", None)
+        shared = runtime_config.get("_mm_startup_shared")
+        shared = shared if isinstance(shared, dict) else {}
+        input_ids = _runtime_tensor(
+            shared.get("input_ids"),
+            device=torch.device("cpu"),
+        )
+        attention_mask_2d = _default_mask_2d(
+            input_ids,
+            shared.get("attention_mask_2d"),
+        )
         if restored.get("prefill_attention_mask_2d") is None:
-            raise RuntimeError("multimodal runtime-only generate scaffold 缺少 prefill_attention_mask_2d。")
+            if attention_mask_2d is None:
+                raise RuntimeError("multimodal runtime-only generate scaffold 缺少 prefill_attention_mask_2d。")
+            restored["prefill_attention_mask_2d"] = _runtime_tensor(
+                attention_mask_2d,
+                device=torch.device("cpu"),
+            )
+        if restored.get("prefill_seq_len") is None and input_ids is not None:
+            restored["prefill_seq_len"] = int(input_ids.shape[-1])
+        if restored.get("batch_size") is None and input_ids is not None:
+            restored["batch_size"] = int(input_ids.shape[0])
+        if restored.get("token_id_dtype") is None and input_ids is not None:
+            restored["token_id_dtype"] = _dtype_name(input_ids.dtype)
+        restored.pop("mm_frontend_metadata_local_rebuild", None)
+        if restored.get("num_frames") is None:
+            restored["num_frames"] = int(
+                runtime_config.get("_mm_num_frames", runtime_config.get("num_frames", 0))
+            )
+        if restored.get("frame_paths") is None:
+            restored["frame_paths"] = list(
+                runtime_config.get("_mm_frame_paths")
+                or runtime_config.get("frame_paths")
+                or []
+            )
         return restored
 
     needs_restore = bool(stage_state.pop("runtime_only_prompt_local_rebuild", False))

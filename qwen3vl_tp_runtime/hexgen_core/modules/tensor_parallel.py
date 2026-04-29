@@ -3,7 +3,13 @@
 import torch
 import torch.distributed as dist
 
-from ..distributed import broadcast_cpu, startup_log, startup_timer
+from ..distributed import (
+    broadcast_cpu,
+    broadcast_object_cpu,
+    broadcast_tensor_payload_cpu,
+    startup_log,
+    startup_timer,
+)
 from ..schema import StageState, TensorParallelManifest
 from ...debug.tp_debug import (
     TpDebugConfig,
@@ -22,8 +28,11 @@ from ...models.qwen3vl.execution import (
 from ...models.qwen3vl.capture.common import load_bundle, move_bundle
 from ...models.qwen3vl.functional import dtype_from_name, resolve_comm_dtype
 from ...models.qwen3vl.runtime_builder import (
+    DirectStageStateBuilder,
     build_direct_stage_state,
     materialize_text_stage_state,
+    restore_mm_startup_transport,
+    seed_mm_startup_runtime_config,
 )
 from ...models.qwen3vl.runtime_mm_stage import build_mm_decode_state_from_weights
 from ...models.qwen3vl.runtime_text_stage import summarize_text_weight_load
@@ -66,6 +75,68 @@ def _validate_tp_manifest(manifest: TensorParallelManifest, world_size: int) -> 
         )
 
 
+def _need_tp_mm_input_owner_contract(manifest: TensorParallelManifest) -> bool:
+    runtime_config = manifest.runtime_config
+    return (
+        _all_tp_stages_are_direct(manifest)
+        and str(runtime_config.get("modality", "multimodal")) == "multimodal"
+    )
+
+
+def _seed_tp_mm_input_owner_startup_contract(
+    manifest: TensorParallelManifest,
+    *,
+    rank: int,
+    stage_idx: int,
+) -> None:
+    runtime_config = manifest.runtime_config
+    if (
+        runtime_config.get("_mm_startup_contract_ready")
+        or not _need_tp_mm_input_owner_contract(manifest)
+    ):
+        return
+
+    local_stage_indices = [int(stage_idx)]
+    startup_meta = None
+    startup_tensors = None
+    if rank == 0:
+        with startup_timer("tp-direct-loader", "prepare multimodal input-owner startup contract"):
+            with DirectStageStateBuilder(
+                stage_specs=manifest.stages,
+                runtime_config=dict(runtime_config),
+                include_text_weights=False,
+                mm_activate_frontend=True,
+            ) as builder:
+                startup_meta, startup_tensors = builder.export_mm_startup_transport(
+                    local_stage_indices=local_stage_indices,
+                )
+    else:
+        startup_log(
+            "tp-direct-loader",
+            f"rank={rank} waiting multimodal input-owner startup contract from src=0",
+        )
+
+    startup_meta = broadcast_object_cpu(
+        startup_meta,
+        src=0,
+        label=f"tp_multimodal_startup_contract_meta stage_idx={int(stage_idx)}",
+    )
+    startup_tensors = broadcast_tensor_payload_cpu(
+        startup_tensors,
+        src=0,
+        label=f"tp_multimodal_startup_contract_tensors stage_idx={int(stage_idx)}",
+    )
+    startup_contract = restore_mm_startup_transport(
+        startup_meta,
+        startup_tensors,
+    )
+    seed_mm_startup_runtime_config(
+        runtime_config,
+        startup_contract,
+        local_stage_indices=local_stage_indices,
+    )
+
+
 def load_stage_state_for_tp_rank(
     manifest: TensorParallelManifest,
     *,
@@ -79,20 +150,24 @@ def load_stage_state_for_tp_rank(
     runtime_modality = str(manifest.runtime_config.get("modality", "multimodal"))
 
     if _all_tp_stages_are_direct(manifest):
+        _seed_tp_mm_input_owner_startup_contract(
+            manifest,
+            rank=rank,
+            stage_idx=stage_meta.stage_idx,
+        )
         startup_log(
             "tp-direct-loader",
             f"rank={rank} building shared direct scaffold stage_idx={stage_meta.stage_idx} "
             f"range={stage_meta.start_idx}:{stage_meta.end_idx}",
         )
+        mm_activate_frontend = False if runtime_modality == "multimodal" else None
         scaffold = build_direct_stage_state(
             stage_idx=stage_meta.stage_idx,
             start_idx=stage_meta.start_idx,
             end_idx=stage_meta.end_idx,
             runtime_config=manifest.runtime_config,
             include_text_weights=False,
-            mm_activate_frontend=(
-                stage_meta.start_idx == 0 if runtime_modality == "multimodal" else None
-            ),
+            mm_activate_frontend=mm_activate_frontend,
         )
         compute_dtype_name = scaffold["save_dtype"] if compute_dtype_arg == "auto" else compute_dtype_arg
         compute_dtype = dtype_from_name(compute_dtype_name)

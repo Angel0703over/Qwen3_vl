@@ -79,6 +79,7 @@ echo "[regression] python=${PYTHON_BIN}"
 run_python test/test_check_baseline_logs.py
 run_python test/test_collect_runtime_perf.py
 run_python test/test_runtime_builder_handoffs.py
+run_python test/test_hybrid_runtime_input_schema.py
 run_python test/test_tensor_parallel_direct.py
 run_python test/test_pipeline_direct_loader.py
 run_python test/test_hybrid_direct_loader.py

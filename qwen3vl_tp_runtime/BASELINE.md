@@ -6,8 +6,15 @@
 
 - 固定一组 `hf / live / pp / tp / hybrid` 的 generate 回归命令。
 - 后续改动统一拿这组命令做回归。
-- 当前先固定 `generated_token_ids`、`generated_text`，以及 `tp / hybrid` 的 `weight_load` shard/stage scope 证据。
-- 启动时间和峰值显存先不强制纳入这份基线，留到最终性能验收再统一收。
+- correctness baseline 固定 `generated_token_ids`、`generated_text`，以及 `tp / hybrid` 的 `weight_load` shard/stage scope 证据。
+- performance/profile baseline 固定启动耗时、transport payload bytes、TP collective bytes、CUDA peak memory 和 loaded weight bytes。
+
+## 当前推荐 baseline
+
+- 完整 correctness baseline：`baseline_runs/20260428/`。
+- step 13 长期目标真实 profile：`baseline_runs/20260429-longterm-profile/`。
+- 最小本地回归入口：`bash qwen3vl_tp_runtime/scripts/helpers/run-runtime-core-regression.sh`。
+- 改动 runtime 主路径后，至少检查对应 distributed case 的 generated ids/text、payload keys/bytes 和 `weight_load`。
 
 ## 基线规则
 
@@ -29,7 +36,7 @@
 | `pp-text-generate` | `pp` | `text` | `是` | 2 stage / 2 rank |
 | `pp-mm-generate` | `pp` | `multimodal` | `是` | 2 stage / 2 rank |
 | `tp-text-generate` | `tp` | `text` | `是` | 1 stage / TP=2 |
-| `tp-mm-generate` | `tp` | `multimodal` | `是` | 当前先作为 smoke 基线 |
+| `tp-mm-generate` | `tp` | `multimodal` | `是` | 已覆盖 input-owner startup contract |
 | `hybrid-text-generate` | `hybrid` | `text` | `是` | 2 stage, `tp_degrees=2 1` |
 | `hybrid-mm-generate` | `hybrid` | `multimodal` | `是` | 2 stage, `tp_degrees=2 1` |
 
@@ -64,12 +71,15 @@ export MAX_NEW_TOKENS=4
 
 ## 记录方式
 
-当前硬性记录两样东西：
+当前硬性记录：
 
 1. `stdout` 里的最终 JSON
 2. distributed case 的 `HEXGEN_STARTUP_LOG=1` 启动日志
+3. `runtime_metrics.transport` 中的 payload keys/count/bytes
+4. `runtime_metrics.memory` 中的 CUDA peak allocated/reserved
+5. `weight_load.loaded_weight_tensor_bytes` 和 TP shard/stage scope 证据
 
-如果方便，建议额外保存 `stderr` 或终端里的 `/usr/bin/time -p` 结果；这部分当前只作为参考，不作为是否过线的硬门槛。
+如果方便，建议额外保存 `stderr` 或终端里的 `/usr/bin/time -p` 结果；如果某轮没有 `/usr/bin/time`，以 runtime JSON 里的 `runtime_total_seconds` 为准。
 如果某台 Jetson 没有 `/usr/bin/time`，直接去掉 `/usr/bin/time -p` 即可，不影响当前基线验收。
 
 建议统一输出目录：
@@ -320,7 +330,7 @@ PYTHONPATH=. /mnt/ssd/miniconda3/envs/vlm/bin/python \
 注意：
 
 - 原 `baseline_runs/20260428/` 仍是 frozen correctness baseline。
-- 这轮没有重跑 HYBRID，因为当前 Codex 沙箱不能访问 Jetson1 CUDA，且不能免密 SSH 到 `10.126.126.2` 绕过沙箱。
+- 这轮当时只覆盖 PP/TP profiling；后续 3-rank HYBRID profile 已由 `baseline_runs/20260429-longterm-profile/` 补齐并冻结。
 
 ## 20260429 startup contract stage_output 减量记录
 
@@ -348,7 +358,7 @@ PYTHONPATH=. /mnt/ssd/miniconda3/envs/vlm/bin/python \
 注意：
 
 - `hybrid-mm-generate-startup-opt` 是 HYBRID startup contract 路径验证，不替代 frozen 3-rank `hybrid-mm-generate` correctness baseline。
-- 完整 3-rank HYBRID `--tp-degrees 2 1` 仍需 Jetson1 正常终端可参与时再重跑。
+- 完整 3-rank HYBRID `--pp 2 --tp-degrees 2 1` 后续已由 `baseline_runs/20260429-longterm-profile/` 验证并冻结。
 
 ## 20260429 startup contract derived tensor 减量记录
 
@@ -539,8 +549,8 @@ HEXGEN_STARTUP_LOG=1 /usr/bin/time -p "${TORCHRUN}" \
 
 说明：
 
-- 这组当前先作为 smoke 基线。
-- 它现在还不是最终的 multimodal shard-only 形态。
+- 这组已纳入当前 correctness baseline。
+- 后续 `baseline_runs/20260429-longterm-profile/` 已覆盖 pure TP multimodal input-owner：rank0 准备 compact startup contract，其他 TP rank consume-only，所有 TP rank 本地 materialize 自己的 weight shard。
 
 ```bash
 export MASTER_ADDR="<rank0-host>"
@@ -660,10 +670,275 @@ bash qwen3vl_tp_runtime/scripts/helpers/run-runtime-core-regression.sh --include
 
 启动时间、transport/payload profile 和 CUDA peak allocated/reserved 已经进入 `runtime_metrics` 和 `runtime-perf-*` 输出；后续性能优化前后都要保留这张表做对比。
 
+## 2026-04-29 scaffold broadcast alias 去重记录
+
+本轮是 `ROADMAP.md` step 13 的第一段低风险优化，只处理明确重复的 HYBRID scaffold tensor：
+
+- 场景：单元测试覆盖的 multimodal runtime-only generate weightless scaffold。
+- 行为：`stage_input` 和 `layer_input` 是同一个 tensor alias 时，scaffold 不再单独携带 `layer_input`；transport packer 也会把重复 alias 折成 tensor ref。
+- before tensor count / bytes：3 tensors / 216 bytes。
+- before payload keys：`scaffold.stage_input`、`scaffold.layer_input`、`scaffold.prefill_attention_mask_2d`。
+- after tensor count / bytes：2 tensors / 120 bytes。
+- after payload keys：`scaffold.stage_input`、`scaffold.prefill_attention_mask_2d`。
+- correctness：本地 `test_model_weight_loader.py`、`test_hybrid_direct_loader.py`、`test_tensor_parallel_direct.py` 已通过。
+
+本节记录的是单元 slice。完整 3-rank HYBRID `--pp 2 --tp-degrees 2 1` 的真实 Jetson profile 后续已由 `baseline_runs/20260429-longterm-profile/` 冻结，用于对照最终 runtime input / scaffold bytes。
+
+## 2026-04-29 scaffold rank-local 字段减量记录
+
+本轮是 `ROADMAP.md` step 13 的中期第一步，只处理 rank-local 可推导 scalar metadata：
+
+- 场景：HYBRID stage-group scaffold broadcast。
+- 行为：leader 发送 scaffold 前移除 `stage_idx`、`start_idx`、`end_idx`、`save_dtype`、`hidden_size`、`batch_size`；本地再从 `StageSpec`、compute dtype、text config 和 runtime tensor shape 恢复。
+- before object meta bytes：153 bytes。
+- before meta keys：`batch_size`、`end_idx`、`hidden_size`、`layers`、`save_dtype`、`stage_idx`、`start_idx`。
+- after object meta bytes：94 bytes。
+- after meta keys：`layers`、`rank_local_fields_local_rebuild`。
+- tensor count / tensor bytes：0 / 0，本步主要减少 object metadata，tensor payload keys 不因此改变。
+- correctness：本地 `test_hybrid_direct_loader.py`、`test_model_weight_loader.py`、`test_tensor_parallel_direct.py` 已通过。
+
+本节记录的是单元 slice。完整 3-rank HYBRID 真实 profile 后续已由 `baseline_runs/20260429-longterm-profile/` 冻结，用于对照最终 `runtime_inputs_meta` / scaffold object bytes。
+
+## 2026-04-29 scaffold prefill runtime tensor 本地重建记录
+
+本轮是 `ROADMAP.md` step 13 的中期第二步，处理 HYBRID multimodal scaffold 中重复的 top-level prefill runtime tensors：
+
+- 场景：HYBRID multimodal runtime-only generate stage-group scaffold broadcast。
+- 行为：leader 发送 scaffold 前移除 `prefill_attention_mask_2d`、`prefill_attention_mask`、`prefill_position_ids`、`prefill_cos`、`prefill_sin`；本地用 `_mm_startup_shared` + `stage_input` 通过 `build_mm_stage_state()` 重建。
+- before tensor count / bytes：7 tensors / 308 bytes。
+- before tensor keys：`scaffold.stage_input`、`scaffold.rope_deltas`、`scaffold.prefill_attention_mask_2d`、`scaffold.prefill_attention_mask`、`scaffold.prefill_position_ids`、`scaffold.prefill_cos`、`scaffold.prefill_sin`。
+- before object meta bytes：485 bytes。
+- after tensor count / bytes：2 tensors / 56 bytes。
+- after tensor keys：`scaffold.stage_input`、`scaffold.rope_deltas`。
+- after object meta bytes：251 bytes。
+- correctness：本地 `test_hybrid_direct_loader.py`、`test_model_weight_loader.py`、`test_tensor_parallel_direct.py` 已通过。
+
+本节记录的是单元 slice。完整 3-rank HYBRID 真实 profile 后续已由 `baseline_runs/20260429-longterm-profile/` 冻结，用于对照最终 runtime input tensor keys / bytes。
+
+## 2026-04-29 scaffold frontend metadata 收口记录
+
+本轮是 `ROADMAP.md` step 13 的中期收口，处理 HYBRID multimodal scaffold 中只用于 frontend 来源记录的 metadata：
+
+- 场景：HYBRID multimodal runtime-only generate stage-group scaffold broadcast。
+- 行为：leader 发送 scaffold 前移除 `num_frames`、`frame_paths`；本地 materialize 后从 `_mm_num_frames` / `_mm_frame_paths` 恢复兼容字段，不重新读媒体、不重新跑视觉 frontend。
+- before object meta bytes：347 bytes。
+- before meta keys：`frame_paths`、`layers`、`mm_prefill_runtime_tensors_local_rebuild`、`modality`、`num_frames`、`rank_local_fields_local_rebuild`、`rope_deltas`、`runtime_only_generate`、`stage_input`。
+- after object meta bytes：324 bytes。
+- after meta keys：`layers`、`mm_frontend_metadata_local_rebuild`、`mm_prefill_runtime_tensors_local_rebuild`、`modality`、`rank_local_fields_local_rebuild`、`rope_deltas`、`runtime_only_generate`、`stage_input`。
+- tensor count / bytes：2 tensors / 56 bytes，本步不改变 tensor payload。
+- tensor keys：`scaffold.stage_input`、`scaffold.rope_deltas`。
+- correctness：本地 `test_hybrid_direct_loader.py`、`test_model_weight_loader.py` 已通过。
+
+`text_scaffold` / `stage_scaffold` 当前只保留给 reference/debug 兼容路径和历史 profile label；runtime-only 主路径开始切到 `runtime_inputs` transport，字段差异已收紧到真实 modality runtime input。
+
+## 2026-04-29 runtime input broadcast 第一轮记录
+
+本轮是 `ROADMAP.md` step 13 的长期第一刀：HYBRID `runtime-only generate` 的 stage-group broadcast 不再发送 `scaffold` root，而是发送 `runtime_inputs` root。
+
+- 场景：HYBRID direct runtime-only generate，`include_runtime_reference=false`。
+- 新协议：`hybrid_runtime_inputs_v1`。
+- 行为：leader 广播 shared request/runtime input dict；follower 用 `StageSpec`、runtime config 和 startup shared metadata 本地恢复最小 StageState scaffold，再 materialize 本 rank 权重 shard。
+- reference/debug/file-backed path：暂时保留旧 `text_scaffold` / `stage_scaffold` transport。
+
+Multimodal runtime-only slice：
+
+- before root：`scaffold`。
+- before object meta bytes：433 bytes。
+- before tensor count / bytes：2 tensors / 56 bytes。
+- before tensor keys：`scaffold.stage_input`、`scaffold.rope_deltas`。
+- before meta keys：`layers`、`max_new_tokens`、`mm_frontend_metadata_local_rebuild`、`mm_prefill_runtime_tensors_local_rebuild`、`modality`、`module_name`、`rank_local_fields_local_rebuild`、`rope_deltas`、`runtime_only_generate`、`stage_input`、`stage_type`。
+- after root：`runtime_inputs`。
+- after object meta bytes：270 bytes。
+- after tensor count / bytes：2 tensors / 56 bytes。
+- after tensor keys：`runtime_inputs.stage_input`、`runtime_inputs.rope_deltas`。
+- after meta keys：`modality`、`mode`、`protocol`、`rope_deltas`、`runtime_only_generate`、`stage_input`。
+
+Text runtime-only slice：
+
+- before root：`scaffold`。
+- before object meta bytes：271 bytes。
+- before tensor count / bytes：0 tensors / 0 bytes。
+- after root：`runtime_inputs`。
+- after object meta bytes：190 bytes。
+- after tensor count / bytes：0 tensors / 0 bytes。
+- after meta keys：`modality`、`mode`、`protocol`、`runtime_only_generate`、`runtime_only_prompt_local_rebuild`。
+
+correctness：本地 `test_hybrid_direct_loader.py`、`test_model_weight_loader.py`、`test_runtime_summary.py`、`test_tensor_parallel_direct.py` 已通过；`run-runtime-core-regression.sh` 已通过，baseline checker 中 PP/TP/HYBRID text/mm generate 均为 PASS。
+
+## 2026-04-29 runtime input broadcast 第二轮记录
+
+本轮是 `ROADMAP.md` step 13 的长期第二刀：HYBRID `runtime-only generate` 的 stage leader 不再先构造 weightless scaffold-like `StageState`，再从中抽 `runtime_inputs`。
+
+- 场景：HYBRID direct runtime-only generate，`include_runtime_reference=false`。
+- 新行为：
+  - text：直接从 `_runtime_only_input_ids` / `_runtime_only_attention_mask` 组 `runtime_inputs`。
+  - multimodal：直接从 `_mm_startup_shared`、`_mm_startup_stage_handoffs[stage_idx]` 和可选 `_mm_startup_stage_visuals[stage_idx]` 组 `runtime_inputs`。
+  - leader 在 runtime-only stage-group broadcast 分支不再调用 `build_direct_stage_state(..., include_text_weights=False)`。
+  - follower 仍会把 `runtime_inputs` 恢复成 materialize 所需的最小 StageState scaffold；权重继续由本 rank 从 `model_path` materialize。
+- reference/debug/file-backed path：仍保留旧 `text_scaffold` / `stage_scaffold` transport。
+
+Text runtime-only slice：
+
+- before object meta bytes：190 bytes。
+- before tensor count / bytes：0 tensors / 0 bytes。
+- before tensor keys：空。
+- after object meta bytes：249 bytes。
+- after tensor count / bytes：1 tensor / 24 bytes。
+- after tensor keys：`runtime_inputs.input_ids`。
+
+Multimodal runtime-only slice：
+
+- before object meta bytes：270 bytes。
+- before tensor count / bytes：2 tensors / 56 bytes。
+- before tensor keys：`runtime_inputs.stage_input`、`runtime_inputs.rope_deltas`。
+- after object meta bytes：441 bytes。
+- after tensor count / bytes：4 tensors / 104 bytes。
+- after tensor keys：`runtime_inputs.shared.input_ids`、`runtime_inputs.shared.attention_mask_2d`、`runtime_inputs.shared.rope_deltas`、`runtime_inputs.stage_handoff.stage_input`。
+
+说明：本轮 bytes 增加是预期的，因为 payload 从“依赖 scaffold 派生字段 + 本地 runtime_config 隐式补齐”改为“自洽的 request/runtime input dict”。这一步的收益是移除 leader 构造 scaffold-like StageState 的启动工作和语义依赖，而不是单纯压缩 tensor bytes。
+
+correctness：
+
+- `PYTHONPATH=.:test /mnt/ssd/miniconda3/envs/vlm/bin/python test/test_hybrid_direct_loader.py`
+- `PYTHONPATH=.:test /mnt/ssd/miniconda3/envs/vlm/bin/python test/test_model_weight_loader.py`
+- `PYTHONPATH=.:test /mnt/ssd/miniconda3/envs/vlm/bin/python test/test_tensor_parallel_direct.py`
+- `PYTHONPATH=.:test /mnt/ssd/miniconda3/envs/vlm/bin/python test/test_distributed_serialization.py`
+- `bash qwen3vl_tp_runtime/scripts/helpers/run-runtime-core-regression.sh`
+
+## 2026-04-29 runtime input schema 固化记录
+
+本轮是 `ROADMAP.md` step 13 的长期第三刀：把 `hybrid_runtime_inputs_v1` 从内部 helper 约定固化成正式 schema。
+
+- 新增：
+  - `HYBRID_RUNTIME_INPUT_PROTOCOL`
+  - `HybridRuntimeInputSchema`
+- schema 现在明确：
+  - text runtime input 只允许 `protocol` / `modality` / `mode` / `runtime_only_generate` / `input_ids` / `attention_mask_2d` / `runtime_only_prompt_local_rebuild`。
+  - multimodal runtime input 只允许 `shared` / `stage_handoff` / `stage_visuals` 三类 runtime dict。
+  - `stage_handoff` 只允许 `stage_input`，不允许 `stage_output`。
+  - `shared` 不允许 dense `attention_mask`、`cos`、`sin` 这类 derived tensor。
+  - weights、layers、frontend paths、replay/full payload、rank-local StageState 字段都被拒绝。
+- enforcement：
+  - leader build runtime input 时校验。
+  - broadcast restore 后、resolve compute dtype 前校验。
+  - 恢复最小 StageState scaffold 前再次校验。
+- payload 对比：
+  - 本步不改变 runtime input tensor keys、tensor count 或 bytes。
+  - text 仍保持第二刀 after：1 tensor / 24 bytes，key=`runtime_inputs.input_ids`。
+  - multimodal 仍保持第二刀 after：4 tensors / 104 bytes，keys=`runtime_inputs.shared.input_ids` / `runtime_inputs.shared.attention_mask_2d` / `runtime_inputs.shared.rope_deltas` / `runtime_inputs.stage_handoff.stage_input`。
+
+correctness：
+
+- `PYTHONPATH=.:test /mnt/ssd/miniconda3/envs/vlm/bin/python test/test_hybrid_runtime_input_schema.py`
+- `PYTHONPATH=.:test /mnt/ssd/miniconda3/envs/vlm/bin/python test/test_hybrid_direct_loader.py`
+- `PYTHONPATH=.:test /mnt/ssd/miniconda3/envs/vlm/bin/python test/test_compat_package_exports.py`
+- `PYTHONPATH=.:test /mnt/ssd/miniconda3/envs/vlm/bin/python test/test_model_weight_loader.py`
+- `PYTHONPATH=.:test /mnt/ssd/miniconda3/envs/vlm/bin/python test/test_tensor_parallel_direct.py`
+
+## 2026-04-29 pure TP multimodal input-owner 记录
+
+本轮是 `ROADMAP.md` step 13 的长期第四刀：纯 TP multimodal 对齐 vLLM-style input-owner。
+
+- 场景：`backend=tp` direct multimodal generate，`include_runtime_reference=false`。
+- before：每个 TP rank 都会在 direct scaffold 构建阶段以 `mm_activate_frontend=True` active multimodal frontend / file-backed prefill reference；没有 input-owner startup broadcast，因此 startup transport 是 0 tensors / 0 bytes。
+- after：
+  - rank0/input owner 运行一次 frontend，导出 thin multimodal startup contract。
+  - rank0 和非 rank0 都 seed 本地 startup contract。
+  - 最终 `build_direct_stage_state(... include_text_weights=False, mm_activate_frontend=False)`，所有 TP rank 都是 consume-only。
+  - TP weight shard 仍由每个 rank 从 `model_path` 本地 materialize，不进入 broadcast。
+
+Runtime-only generate 代表性 startup contract slice：
+
+- object meta bytes：82 bytes。
+- meta keys：`frame_paths`、`num_frames`。
+- tensor count / bytes：9 tensors / 239 bytes。
+- tensor keys：`shared.input_ids`、`shared.attention_mask_2d`、`shared.position_ids`、`shared.rope_deltas`、`shared.mm_token_type_ids`、`shared.image_grid_thw`、`shared.video_grid_thw`、`stage_handoffs.0.stage_input`、`stage_visuals.0.visual_pos_masks`。
+- 不包含：weights、layers、`stage_output`、dense `shared.attention_mask`、`shared.cos`、`shared.sin`、root/full/replay payload。
+
+本地单元覆盖：
+
+- `PYTHONPATH=.:test /mnt/ssd/miniconda3/envs/vlm/bin/python test/test_tensor_parallel_direct.py`
+- `PYTHONPATH=.:test /mnt/ssd/miniconda3/envs/vlm/bin/python test/test_hybrid_direct_loader.py`
+- `PYTHONPATH=.:test /mnt/ssd/miniconda3/envs/vlm/bin/python test/test_model_weight_loader.py`
+- `bash qwen3vl_tp_runtime/scripts/helpers/run-runtime-core-regression.sh`
+
+真实 Jetson profile 已在下一节确认：
+
+- `tp-mm-generate` rank0 log 中出现 `prepare multimodal input-owner startup contract`。
+- rank0/rank1 的最终 builder 都是 `multimodal_frontend_mode=consume-only startup_contract_ready=True`。
+- rank0/rank1 的 `weight_load.tp_weight_sharded=true`、`tp_shard_rank=0/2` 和 `1/2` 不变。
+- `generated_token_ids` / `generated_text` 不变。
+
+## 2026-04-29 step 13 长期目标真实 profile 冻结
+
+输出目录：
+
+- `baseline_runs/20260429-longterm-profile/`
+
+拓扑：
+
+- `tp-mm-generate`: Jetson2 rank0，Jetson3 rank1，`--backend tp --tp 2`。
+- `hybrid-text-generate`: Jetson2 rank0/rank1，Jetson3 rank2，`--backend hybrid --pp 2 --tp-degrees 2 1`。
+- `hybrid-mm-generate`: Jetson2 rank0/rank1，Jetson3 rank2，`--backend hybrid --pp 2 --tp-degrees 2 1`。
+- `MASTER_ADDR=10.126.126.3`。
+
+自动检查：
+
+- `baseline_runs/20260429-longterm-profile/check-longterm-baseline.txt`
+- `tp-mm-generate`: PASS
+- `hybrid-text-generate`: PASS
+- `hybrid-mm-generate`: PASS
+
+Correctness：
+
+| case_id | rank logs | generated_token_ids | generated_text |
+| --- | --- | --- | --- |
+| `tp-mm-generate` | `baseline_runs/20260429-longterm-profile/tp-mm-generate-rank0.log`, `baseline_runs/20260429-longterm-profile/tp-mm-generate-rank1.log` | `[87140, 15946, 3837, 101177]` | `视频中，一名` |
+| `hybrid-text-generate` | `baseline_runs/20260429-longterm-profile/hybrid-text-generate-rank0.log`, `baseline_runs/20260429-longterm-profile/hybrid-text-generate-rank1.log`, `baseline_runs/20260429-longterm-profile/hybrid-text-generate-rank2.log` | `[104455, 9909, 9286, 16488]` | `人工智能（Artificial` |
+| `hybrid-mm-generate` | `baseline_runs/20260429-longterm-profile/hybrid-mm-generate-rank0.log`, `baseline_runs/20260429-longterm-profile/hybrid-mm-generate-rank1.log`, `baseline_runs/20260429-longterm-profile/hybrid-mm-generate-rank2.log` | `[87140, 15946, 3837, 101177]` | `视频中，一名` |
+
+关键 payload / weight 证据：
+
+- `tp-mm-generate`
+  - rank0 出现 `prepare multimodal input-owner startup contract`。
+  - rank0/rank1 最终 builder 都是 `multimodal_frontend_mode=consume-only startup_contract_ready=True`。
+  - `tp_multimodal_startup_contract_meta`: 422 object bytes。
+  - `tp_multimodal_startup_contract_tensors`: 12 tensors / 12,093,371 tensor bytes。
+  - tensor keys：`shared.input_ids` / `shared.attention_mask_2d` / `shared.position_ids` / `shared.rope_deltas` / `shared.mm_token_type_ids` / `shared.image_grid_thw` / `shared.video_grid_thw` / `stage_handoffs.0.stage_input` / `stage_visuals.0.visual_pos_masks` / `stage_visuals.0.deepstack_by_layer.0` / `stage_visuals.0.deepstack_by_layer.1` / `stage_visuals.0.deepstack_by_layer.2`。
+  - rank0/rank1 `loaded_weight_tensor_bytes=5,189,532,672`，`tp_weight_sharded=true`，`tp_shard_rank=0/1`。
+- `hybrid-text-generate`
+  - stage0 `runtime_inputs_meta`: 249 object bytes。
+  - stage0 `runtime_inputs_tensors`: 1 tensor / 128 tensor bytes，key=`runtime_inputs.input_ids`。
+  - rank0/rank1 `loaded_weight_tensor_bytes=2,594,763,776`，`tp_stage_loaded_weight_tensor_bytes_equal=true`。
+  - rank2 `loaded_weight_tensor_bytes=4,411,426,816`。
+- `hybrid-mm-generate`
+  - stage1 startup contract：422 object bytes，9 tensors / 3,245,384 tensor bytes。
+  - stage0 `runtime_inputs_meta`: 938 object bytes。
+  - stage0 `runtime_inputs_tensors`: 11 tensors / 12,093,371 tensor bytes。
+  - runtime input keys：`runtime_inputs.shared.input_ids` / `runtime_inputs.shared.attention_mask_2d` / `runtime_inputs.shared.position_ids` / `runtime_inputs.shared.rope_deltas` / `runtime_inputs.shared.mm_token_type_ids` / `runtime_inputs.shared.video_grid_thw` / `runtime_inputs.stage_handoff.stage_input` / `runtime_inputs.stage_visuals.visual_pos_masks` / `runtime_inputs.stage_visuals.deepstack_by_layer.0` / `runtime_inputs.stage_visuals.deepstack_by_layer.1` / `runtime_inputs.stage_visuals.deepstack_by_layer.2`。
+  - rank0/rank1 `loaded_weight_tensor_bytes=2,594,763,776`，`tp_stage_loaded_weight_tensor_bytes_equal=true`。
+  - rank2 `loaded_weight_tensor_bytes=4,411,426,816`。
+
+Perf table：
+
+- `baseline_runs/20260429-longterm-profile/runtime-perf-records.json`
+- `baseline_runs/20260429-longterm-profile/runtime-perf-table.md`
+
+| case | rank | total s | startup bytes | scaffold bytes | TP coll bytes | cuda peak alloc | loaded weights |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `tp-mm-generate` | 0 | 74.64 | 11.53 MiB | 0 B | 449.12 MiB | 6.53 GiB | 4.83 GiB |
+| `tp-mm-generate` | 1 | 74.66 | 11.53 MiB | 0 B | 449.12 MiB | 6.53 GiB | 4.83 GiB |
+| `hybrid-text-generate` | 0 | 10.77 | 0 B | 377 B | 6.87 MiB | 2.46 GiB | 2.42 GiB |
+| `hybrid-text-generate` | 1 | 7.43 | 0 B | 377 B | 6.87 MiB | 2.46 GiB | 2.42 GiB |
+| `hybrid-text-generate` | 2 | 10.56 | 0 B | 0 B | 19.56 MiB | 4.18 GiB | 4.11 GiB |
+| `hybrid-mm-generate` | 0 | 35.06 | 3.10 MiB | 11.53 MiB | 227.64 MiB | 3.73 GiB | 2.42 GiB |
+| `hybrid-mm-generate` | 1 | 35.36 | 0 B | 11.53 MiB | 227.64 MiB | 3.22 GiB | 2.42 GiB |
+| `hybrid-mm-generate` | 2 | 35.14 | 3.10 MiB | 0 B | 648.46 MiB | 5.46 GiB | 4.11 GiB |
+
 ## 下一步
 
-这份文档当前已经记录 20260428 完整 correctness baseline。后续动作是：
+这份文档当前已经记录 20260428 完整 correctness baseline 和 20260429 step 13 长期目标真实 profile。后续动作是：
 
-- 后续改动统一拿这份结果做对比
-- 新代码重跑 baseline 后补齐 CUDA peak alloc/reserved 与 payload bytes
-- P3 后续按 ROADMAP 中的具体性能优化顺序推进
+- correctness 改动默认拿 `baseline_runs/20260428/` 做 generated ids/text 和 shard scope 对比。
+- startup/runtime input/payload 改动默认拿 `baseline_runs/20260429-longterm-profile/` 做 payload keys/bytes、CUDA peak memory 和 loaded weight bytes 对比。
+- P3 后续按 `ROADMAP.md` 的具体性能优化顺序推进。

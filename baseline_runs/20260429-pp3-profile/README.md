@@ -10,7 +10,8 @@ Topology:
 - Jetson3 runs rank2 on its local CUDA device.
 - `MASTER_ADDR=10.126.126.3`
 - The ranks were launched manually with `RANK/WORLD_SIZE/LOCAL_RANK` instead of
-  `torchrun`, because the Codex sandbox cannot access Jetson1 CUDA.
+  `torchrun`; this directory is an exploratory 3-rank PP profile, not the
+  current frozen hybrid baseline.
 
 Cases:
 

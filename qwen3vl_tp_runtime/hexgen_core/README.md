@@ -5,7 +5,7 @@
 当前目录按 HexGen / Jupiter 风格分成几类：
 
 - `modules/`: 并行运行时主入口
-  - `tensor_parallel.py`: `backend=tp` 的 standalone direct 入口，主公开名是 `TensorParallelRunner / run_tensor_parallel_rank / run_stage_state_tp`，负责单 stage TP 校验、TP rank 入口、以及 TP debug replay 兼容
+  - `tensor_parallel.py`: `backend=tp` 的 standalone direct 入口，主公开名是 `TensorParallelRunner / run_tensor_parallel_rank / run_stage_state_tp`，负责单 stage TP 校验、TP rank 入口、TP shard-local materialize，以及 pure TP multimodal input-owner startup contract
   - `pipeline_parallel.py`: `backend=pp` 的纯 PP stage runtime
   - `hybrid_parallel.py`: `backend=hybrid` 的 PP + TP hybrid runtime
 - `config.py`: 默认路径、replay bundle / manifest 常量
@@ -18,3 +18,5 @@
 - `__init__.py`: runtime-facing 聚合导出
 
 模型相关实现不放在这里，而是放在 `../models/qwen3vl/`，这样可以把 runtime 结构和模型适配层拆开。
+
+debug/replay 兼容入口不放在 `hexgen_core/modules/` 下；TP replay 和 trace helper 在顶层 `qwen3vl_tp_runtime/debug/` 包里。

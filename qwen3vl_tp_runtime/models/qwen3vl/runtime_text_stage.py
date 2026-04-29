@@ -9,6 +9,7 @@ import torch
 
 from ...hexgen_core.schema import StageSpec, StageState
 from .live.common import _runtime_tensor
+from .runtime_mm_stage import build_mm_stage_state
 from .runtime_text import _restore_text_prompt_stage_state
 from .weights import (
     TextModelConfigSpec,
@@ -70,6 +71,20 @@ def _clone_tensor_cpu(tensor: torch.Tensor | None) -> torch.Tensor | None:
 
 def _weight_tensor_key(tensor: torch.Tensor) -> tuple[str, int, tuple[int, ...], str]:
     return (str(tensor.device), int(tensor.data_ptr()), tuple(tensor.shape), str(tensor.dtype))
+
+
+_TransportTensorAliasKey = tuple[str, int, int, tuple[int, ...], tuple[int, ...], str]
+
+
+def _transport_tensor_alias_key(tensor: torch.Tensor) -> _TransportTensorAliasKey:
+    return (
+        str(tensor.device),
+        int(tensor.data_ptr()),
+        int(tensor.storage_offset()),
+        tuple(tensor.shape),
+        tuple(tensor.stride()),
+        str(tensor.dtype),
+    )
 
 
 def _weight_tensor_bytes(tensor: torch.Tensor) -> int:
@@ -317,15 +332,31 @@ def compact_text_stage_state(stage_state: dict[str, Any]) -> dict[str, Any]:
     return scaffold
 
 
+def compact_multimodal_runtime_scaffold(stage_state: dict[str, Any]) -> dict[str, Any]:
+    scaffold = dict(stage_state)
+    stage_input = scaffold.get("stage_input")
+    layer_input = scaffold.get("layer_input")
+    if torch.is_tensor(stage_input) and torch.is_tensor(layer_input):
+        if _transport_tensor_alias_key(stage_input) == _transport_tensor_alias_key(layer_input):
+            scaffold.pop("layer_input", None)
+    return scaffold
+
+
 def _pack_text_transport_value(
     value: Any,
     *,
     path: tuple[str, ...],
     tensor_payload: dict[str, torch.Tensor | None],
+    tensor_aliases: dict[_TransportTensorAliasKey, str],
 ) -> Any:
     if torch.is_tensor(value):
         key = ".".join(path)
+        alias_key = _transport_tensor_alias_key(value)
+        existing_key = tensor_aliases.get(alias_key)
+        if existing_key is not None:
+            return {_TEXT_TENSOR_REF: existing_key}
         tensor_payload[key] = _clone_tensor_cpu(value)
+        tensor_aliases[alias_key] = key
         return {_TEXT_TENSOR_REF: key}
     if isinstance(value, dict):
         return {
@@ -333,6 +364,7 @@ def _pack_text_transport_value(
                 item,
                 path=(*path, str(key)),
                 tensor_payload=tensor_payload,
+                tensor_aliases=tensor_aliases,
             )
             for key, item in value.items()
         }
@@ -342,6 +374,7 @@ def _pack_text_transport_value(
                 item,
                 path=(*path, str(index)),
                 tensor_payload=tensor_payload,
+                tensor_aliases=tensor_aliases,
             )
             for index, item in enumerate(value)
         ]
@@ -352,6 +385,7 @@ def _pack_text_transport_value(
                     item,
                     path=(*path, str(index)),
                     tensor_payload=tensor_payload,
+                    tensor_aliases=tensor_aliases,
                 )
                 for index, item in enumerate(value)
             ]
@@ -359,24 +393,34 @@ def _pack_text_transport_value(
     return value
 
 
-def pack_text_scaffold_transport(
-    scaffold: dict[str, Any],
+def pack_named_tensor_dict_transport(
+    payload: dict[str, Any],
+    *,
+    root_key: str,
 ) -> tuple[dict[str, Any], dict[str, torch.Tensor | None]]:
     tensor_payload: dict[str, torch.Tensor | None] = {}
+    tensor_aliases: dict[_TransportTensorAliasKey, str] = {}
     meta = _pack_text_transport_value(
-        scaffold,
-        path=("scaffold",),
+        payload,
+        path=(root_key,),
         tensor_payload=tensor_payload,
+        tensor_aliases=tensor_aliases,
     )
     if not isinstance(meta, dict):
-        raise RuntimeError("text scaffold transport meta 必须是 dict。")
+        raise RuntimeError(f"{root_key} transport meta 必须是 dict。")
     return (
         {
             "version": 1,
-            "scaffold": meta,
+            root_key: meta,
         },
         tensor_payload,
     )
+
+
+def pack_text_scaffold_transport(
+    scaffold: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, torch.Tensor | None]]:
+    return pack_named_tensor_dict_transport(scaffold, root_key="scaffold")
 
 
 def _restore_text_transport_value(
@@ -417,24 +461,54 @@ def _restore_text_transport_value(
     return value
 
 
+def restore_named_tensor_dict_transport(
+    meta: dict[str, Any],
+    tensor_payload: dict[str, torch.Tensor | None] | None,
+    *,
+    root_key: str,
+) -> dict[str, Any]:
+    if not isinstance(meta, dict):
+        raise RuntimeError(f"{root_key} transport meta 缺少 metadata。")
+    if tensor_payload is None:
+        raise RuntimeError(f"{root_key} transport 缺少 tensor payload。")
+    payload_meta = meta.get(root_key)
+    if not isinstance(payload_meta, dict):
+        raise RuntimeError(f"{root_key} transport meta 缺少 {root_key}。")
+    restored = _restore_text_transport_value(
+        payload_meta,
+        tensor_payload=tensor_payload,
+    )
+    if not isinstance(restored, dict):
+        raise RuntimeError(f"{root_key} transport 恢复结果不是 dict。")
+    return restored
+
+
 def restore_text_scaffold_transport(
     meta: dict[str, Any],
     tensor_payload: dict[str, torch.Tensor | None] | None,
 ) -> dict[str, Any]:
-    if not isinstance(meta, dict):
-        raise RuntimeError("text scaffold transport meta 缺少 metadata。")
-    if tensor_payload is None:
-        raise RuntimeError("text scaffold transport 缺少 tensor payload。")
-    scaffold_meta = meta.get("scaffold")
-    if not isinstance(scaffold_meta, dict):
-        raise RuntimeError("text scaffold transport meta 缺少 scaffold。")
-    restored = _restore_text_transport_value(
-        scaffold_meta,
-        tensor_payload=tensor_payload,
+    return restore_named_tensor_dict_transport(
+        meta,
+        tensor_payload,
+        root_key="scaffold",
     )
-    if not isinstance(restored, dict):
-        raise RuntimeError("text scaffold transport 恢复结果不是 dict。")
-    return restored
+
+
+def pack_runtime_input_transport(
+    runtime_inputs: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, torch.Tensor | None]]:
+    return pack_named_tensor_dict_transport(runtime_inputs, root_key="runtime_inputs")
+
+
+def restore_runtime_input_transport(
+    meta: dict[str, Any],
+    tensor_payload: dict[str, torch.Tensor | None] | None,
+) -> dict[str, Any]:
+    return restore_named_tensor_dict_transport(
+        meta,
+        tensor_payload,
+        root_key="runtime_inputs",
+    )
 
 
 def build_text_stage_state(
@@ -555,6 +629,112 @@ def restore_text_stage_inputs(
     return restored_state
 
 
+def _infer_runtime_batch_size(stage_state: dict[str, Any]) -> int | None:
+    for key in ("prefill_attention_mask_2d", "stage_input", "layer_input"):
+        value = stage_state.get(key)
+        if torch.is_tensor(value) and value.ndim >= 1:
+            return int(value.shape[0])
+    prefill = stage_state.get("prefill")
+    if isinstance(prefill, dict):
+        for key in ("attention_mask_2d", "stage_input", "layer_input"):
+            value = prefill.get(key)
+            if torch.is_tensor(value) and value.ndim >= 1:
+                return int(value.shape[0])
+    return None
+
+
+_MM_PREFILL_RUNTIME_REBUILD_FLAG = "mm_prefill_runtime_tensors_local_rebuild"
+_MM_PREFILL_RUNTIME_FIELDS = (
+    "prefill_attention_mask_2d",
+    "prefill_attention_mask",
+    "prefill_position_ids",
+    "prefill_cos",
+    "prefill_sin",
+)
+
+
+def _restore_multimodal_prefill_runtime_tensors(
+    stage_state: dict[str, Any],
+    *,
+    runtime_config: dict[str, Any],
+    config_spec: TextModelConfigSpec,
+    compute_dtype: torch.dtype,
+) -> dict[str, Any]:
+    if not stage_state.get("runtime_only_generate"):
+        return stage_state
+    if stage_state.get("modality") != "multimodal":
+        return stage_state
+    if all(stage_state.get(field_name) is not None for field_name in _MM_PREFILL_RUNTIME_FIELDS):
+        return stage_state
+
+    shared = runtime_config.get("_mm_startup_shared")
+    if not isinstance(shared, dict):
+        missing_fields = [
+            field_name
+            for field_name in _MM_PREFILL_RUNTIME_FIELDS
+            if stage_state.get(field_name) is None
+        ]
+        raise RuntimeError(
+            "multimodal runtime-only scaffold 缺少 prefill runtime tensors，"
+            f"且 runtime_config 没有 _mm_startup_shared，无法本地重建: {missing_fields}"
+        )
+
+    stage_input = stage_state.get("stage_input")
+    if not torch.is_tensor(stage_input):
+        stage_input = stage_state.get("layer_input")
+    if not torch.is_tensor(stage_input):
+        raise RuntimeError("multimodal runtime-only scaffold 缺少 stage_input，无法本地重建 prefill tensors。")
+
+    rotary_emb = build_text_rotary_embedding(
+        config_spec,
+        device=torch.device("cpu"),
+    )
+    restored_mm_state = build_mm_stage_state(
+        shared,
+        stage_input=stage_input,
+        start_idx=int(stage_state["start_idx"]),
+        end_idx=int(stage_state["end_idx"]),
+        device=torch.device("cpu"),
+        compute_dtype=compute_dtype,
+        config_spec=config_spec,
+        rotary_emb=rotary_emb,
+        visual_pos_masks=stage_state.get("visual_pos_masks"),
+        deepstack_by_layer=stage_state.get("deepstack_by_layer") or {},
+    )
+
+    restored = dict(stage_state)
+    restored.pop(_MM_PREFILL_RUNTIME_REBUILD_FLAG, None)
+    restored["prefill_attention_mask_2d"] = _runtime_tensor(
+        restored_mm_state.attention_mask_2d,
+        device=torch.device("cpu"),
+    )
+    restored["prefill_attention_mask"] = _runtime_tensor(
+        restored_mm_state.attention_mask,
+        device=torch.device("cpu"),
+        compute_dtype=compute_dtype,
+    )
+    restored["prefill_position_ids"] = _runtime_tensor(
+        restored_mm_state.position_ids,
+        device=torch.device("cpu"),
+    )
+    restored["prefill_cos"] = _runtime_tensor(
+        restored_mm_state.cos,
+        device=torch.device("cpu"),
+        compute_dtype=compute_dtype,
+    )
+    restored["prefill_sin"] = _runtime_tensor(
+        restored_mm_state.sin,
+        device=torch.device("cpu"),
+        compute_dtype=compute_dtype,
+    )
+    if restored.get("rope_deltas") is None and restored_mm_state.rope_deltas is not None:
+        restored["rope_deltas"] = _runtime_tensor(
+            restored_mm_state.rope_deltas,
+            device=torch.device("cpu"),
+        )
+    return restored
+
+
 def materialize_text_stage_state(
     *,
     stage_state_scaffold: StageState,
@@ -573,6 +753,20 @@ def materialize_text_stage_state(
 
     weight_index = _builder_dep("load_model_weight_index", load_model_weight_index)(model_path)
     config_spec = _builder_dep("load_text_model_config_spec", load_text_model_config_spec)(model_path)
+    stage_state = _restore_multimodal_prefill_runtime_tensors(
+        stage_state,
+        runtime_config=runtime_config,
+        config_spec=config_spec,
+        compute_dtype=compute_dtype,
+    )
+    if stage_state.get("save_dtype") is None:
+        stage_state["save_dtype"] = _dtype_name(compute_dtype)
+    if stage_state.get("hidden_size") is None:
+        stage_state["hidden_size"] = int(config_spec.hidden_size)
+    if stage_state.get("batch_size") is None:
+        batch_size = _infer_runtime_batch_size(stage_state)
+        if batch_size is not None:
+            stage_state["batch_size"] = batch_size
     stage_weights = _builder_dep(
         "load_text_decoder_stage_weight_bundle",
         load_text_decoder_stage_weight_bundle,
@@ -615,4 +809,3 @@ def materialize_text_stage_state(
         config_spec=config_spec,
         compute_dtype=compute_dtype,
     )
-

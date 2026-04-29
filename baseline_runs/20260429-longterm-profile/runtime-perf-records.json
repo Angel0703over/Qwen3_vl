@@ -1,0 +1,389 @@
+{
+  "baseline_dir": "baseline_runs/20260429-longterm-profile",
+  "records": [
+    {
+      "case_id": "tp-mm-generate",
+      "path": "baseline_runs/20260429-longterm-profile/tp-mm-generate-rank0.log",
+      "rank": 0,
+      "backend": "tp",
+      "pipeline_type": "multimodal_generate",
+      "mode": "generate",
+      "generated_token_ids": [
+        87140,
+        15946,
+        3837,
+        101177
+      ],
+      "generated_text": "视频中，一名",
+      "timing": {
+        "runtime_total_seconds": 74.643471,
+        "prepare_session_seconds": 19.216083,
+        "startup_contract_seconds": 1.194104,
+        "startup_contract_transport_seconds": 0.0,
+        "materialize_stage_seconds": 0.085255,
+        "post_load_barrier_seconds": 0.0,
+        "scaffold_transport_seconds": 0.0
+      },
+      "memory": {
+        "cpu_max_rss_bytes": 8044081152,
+        "cuda_peak_allocated_bytes": 7011273216,
+        "cuda_peak_reserved_bytes": 7235174400,
+        "cuda_available": true
+      },
+      "payload": {
+        "startup_contract_bytes": 12093793,
+        "startup_contract_tensor_bytes": 12093371,
+        "startup_contract_object_bytes": 422,
+        "scaffold_bytes": 0,
+        "scaffold_tensor_bytes": 0,
+        "scaffold_object_bytes": 0,
+        "stage_handoff_bytes": 0,
+        "stage_handoff_seconds": 0.0,
+        "tp_collective_bytes": 470937600,
+        "tp_collective_seconds": 45.185622,
+        "transport_event_count": 294
+      },
+      "weight_load": {
+        "loaded_weight_tensor_bytes": 5189532672,
+        "tp_weight_sharded": true,
+        "stage_weight_scope_ok": true
+      }
+    },
+    {
+      "case_id": "tp-mm-generate",
+      "path": "baseline_runs/20260429-longterm-profile/tp-mm-generate-rank1.log",
+      "rank": 1,
+      "backend": "tp",
+      "pipeline_type": "multimodal_generate",
+      "mode": "generate",
+      "generated_token_ids": [
+        87140,
+        15946,
+        3837,
+        101177
+      ],
+      "generated_text": "视频中，一名",
+      "timing": {
+        "runtime_total_seconds": 74.655514,
+        "prepare_session_seconds": 0.351652,
+        "startup_contract_seconds": 21.205799,
+        "startup_contract_transport_seconds": 0.0,
+        "materialize_stage_seconds": 0.083594,
+        "post_load_barrier_seconds": 0.0,
+        "scaffold_transport_seconds": 0.0
+      },
+      "memory": {
+        "cpu_max_rss_bytes": 7225360384,
+        "cuda_peak_allocated_bytes": 7007468032,
+        "cuda_peak_reserved_bytes": 7230980096,
+        "cuda_available": true
+      },
+      "payload": {
+        "startup_contract_bytes": 12093793,
+        "startup_contract_tensor_bytes": 12093371,
+        "startup_contract_object_bytes": 422,
+        "scaffold_bytes": 0,
+        "scaffold_tensor_bytes": 0,
+        "scaffold_object_bytes": 0,
+        "stage_handoff_bytes": 0,
+        "stage_handoff_seconds": 0.0,
+        "tp_collective_bytes": 470937600,
+        "tp_collective_seconds": 44.37185,
+        "transport_event_count": 294
+      },
+      "weight_load": {
+        "loaded_weight_tensor_bytes": 5189532672,
+        "tp_weight_sharded": true,
+        "stage_weight_scope_ok": true
+      }
+    },
+    {
+      "case_id": "hybrid-text-generate",
+      "path": "baseline_runs/20260429-longterm-profile/hybrid-text-generate-rank0.log",
+      "rank": 0,
+      "backend": "hybrid",
+      "pipeline_type": "text_generate",
+      "mode": "generate",
+      "generated_token_ids": [
+        104455,
+        9909,
+        9286,
+        16488
+      ],
+      "generated_text": "人工智能（Artificial",
+      "timing": {
+        "runtime_total_seconds": 10.774977,
+        "prepare_session_seconds": 0.0,
+        "startup_contract_seconds": 0.0,
+        "startup_contract_transport_seconds": 0.0,
+        "materialize_stage_seconds": 0.040486,
+        "post_load_barrier_seconds": 0.273822,
+        "scaffold_transport_seconds": 0.0
+      },
+      "memory": {
+        "cpu_max_rss_bytes": 4222414848,
+        "cuda_peak_allocated_bytes": 2637366272,
+        "cuda_peak_reserved_bytes": 2650800128,
+        "cuda_available": true
+      },
+      "payload": {
+        "startup_contract_bytes": 0,
+        "startup_contract_tensor_bytes": 0,
+        "startup_contract_object_bytes": 0,
+        "scaffold_bytes": 377,
+        "scaffold_tensor_bytes": 128,
+        "scaffold_object_bytes": 249,
+        "stage_handoff_bytes": 194560,
+        "stage_handoff_seconds": 0.05404,
+        "tp_collective_bytes": 7198720,
+        "tp_collective_seconds": 0.717359,
+        "transport_event_count": 155
+      },
+      "weight_load": {
+        "loaded_weight_tensor_bytes": 2594763776,
+        "tp_weight_sharded": true,
+        "stage_weight_scope_ok": true
+      }
+    },
+    {
+      "case_id": "hybrid-text-generate",
+      "path": "baseline_runs/20260429-longterm-profile/hybrid-text-generate-rank1.log",
+      "rank": 1,
+      "backend": "hybrid",
+      "pipeline_type": "text_generate",
+      "mode": "generate",
+      "generated_token_ids": [
+        104455,
+        9909,
+        9286,
+        16488
+      ],
+      "generated_text": "人工智能（Artificial",
+      "timing": {
+        "runtime_total_seconds": 7.427297,
+        "prepare_session_seconds": 0.0,
+        "startup_contract_seconds": 0.0,
+        "startup_contract_transport_seconds": 0.0,
+        "materialize_stage_seconds": 0.044496,
+        "post_load_barrier_seconds": 0.273935,
+        "scaffold_transport_seconds": 0.0
+      },
+      "memory": {
+        "cpu_max_rss_bytes": 4197654528,
+        "cuda_peak_allocated_bytes": 2637284352,
+        "cuda_peak_reserved_bytes": 2650800128,
+        "cuda_available": true
+      },
+      "payload": {
+        "startup_contract_bytes": 0,
+        "startup_contract_tensor_bytes": 0,
+        "startup_contract_object_bytes": 0,
+        "scaffold_bytes": 377,
+        "scaffold_tensor_bytes": 128,
+        "scaffold_object_bytes": 249,
+        "stage_handoff_bytes": 0,
+        "stage_handoff_seconds": 0.082795,
+        "tp_collective_bytes": 7198720,
+        "tp_collective_seconds": 0.663888,
+        "transport_event_count": 155
+      },
+      "weight_load": {
+        "loaded_weight_tensor_bytes": 2594763776,
+        "tp_weight_sharded": true,
+        "stage_weight_scope_ok": true
+      }
+    },
+    {
+      "case_id": "hybrid-text-generate",
+      "path": "baseline_runs/20260429-longterm-profile/hybrid-text-generate-rank2.log",
+      "rank": 2,
+      "backend": "hybrid",
+      "pipeline_type": "text_generate",
+      "mode": "generate",
+      "generated_token_ids": [
+        104455,
+        9909,
+        9286,
+        16488
+      ],
+      "generated_text": "人工智能（Artificial",
+      "timing": {
+        "runtime_total_seconds": 10.557189,
+        "prepare_session_seconds": 0.010106,
+        "startup_contract_seconds": 0.0,
+        "startup_contract_transport_seconds": 0.0,
+        "materialize_stage_seconds": 0.055833,
+        "post_load_barrier_seconds": 0.003398,
+        "scaffold_transport_seconds": 0.0
+      },
+      "memory": {
+        "cpu_max_rss_bytes": 4980432896,
+        "cuda_peak_allocated_bytes": 4483894272,
+        "cuda_peak_reserved_bytes": 4494196736,
+        "cuda_available": true
+      },
+      "payload": {
+        "startup_contract_bytes": 0,
+        "startup_contract_tensor_bytes": 0,
+        "startup_contract_object_bytes": 0,
+        "scaffold_bytes": 0,
+        "scaffold_tensor_bytes": 0,
+        "scaffold_object_bytes": 0,
+        "stage_handoff_bytes": 97280,
+        "stage_handoff_seconds": 1.559386,
+        "tp_collective_bytes": 20506624,
+        "tp_collective_seconds": 0.471044,
+        "transport_event_count": 229
+      },
+      "weight_load": {
+        "loaded_weight_tensor_bytes": 4411426816,
+        "tp_weight_sharded": false,
+        "stage_weight_scope_ok": true
+      }
+    },
+    {
+      "case_id": "hybrid-mm-generate",
+      "path": "baseline_runs/20260429-longterm-profile/hybrid-mm-generate-rank0.log",
+      "rank": 0,
+      "backend": "hybrid",
+      "pipeline_type": "multimodal_generate",
+      "mode": "generate",
+      "generated_token_ids": [
+        87140,
+        15946,
+        3837,
+        101177
+      ],
+      "generated_text": "视频中，一名",
+      "timing": {
+        "runtime_total_seconds": 35.055237,
+        "prepare_session_seconds": 19.18591,
+        "startup_contract_seconds": 0.397548,
+        "startup_contract_transport_seconds": 0.397548,
+        "materialize_stage_seconds": 0.051992,
+        "post_load_barrier_seconds": 0.002667,
+        "scaffold_transport_seconds": 0.0
+      },
+      "memory": {
+        "cpu_max_rss_bytes": 9829416960,
+        "cuda_peak_allocated_bytes": 4000027136,
+        "cuda_peak_reserved_bytes": 4030726144,
+        "cuda_available": true
+      },
+      "payload": {
+        "startup_contract_bytes": 3245806,
+        "startup_contract_tensor_bytes": 3245384,
+        "startup_contract_object_bytes": 422,
+        "scaffold_bytes": 12094309,
+        "scaffold_tensor_bytes": 12093371,
+        "scaffold_object_bytes": 938,
+        "stage_handoff_bytes": 6451200,
+        "stage_handoff_seconds": 0.53929,
+        "tp_collective_bytes": 238694400,
+        "tp_collective_seconds": 1.971525,
+        "transport_event_count": 156
+      },
+      "weight_load": {
+        "loaded_weight_tensor_bytes": 2594763776,
+        "tp_weight_sharded": true,
+        "stage_weight_scope_ok": true
+      }
+    },
+    {
+      "case_id": "hybrid-mm-generate",
+      "path": "baseline_runs/20260429-longterm-profile/hybrid-mm-generate-rank1.log",
+      "rank": 1,
+      "backend": "hybrid",
+      "pipeline_type": "multimodal_generate",
+      "mode": "generate",
+      "generated_token_ids": [
+        87140,
+        15946,
+        3837,
+        101177
+      ],
+      "generated_text": "视频中，一名",
+      "timing": {
+        "runtime_total_seconds": 35.356298,
+        "prepare_session_seconds": 0.0,
+        "startup_contract_seconds": 0.0,
+        "startup_contract_transport_seconds": 0.0,
+        "materialize_stage_seconds": 0.056579,
+        "post_load_barrier_seconds": 0.002713,
+        "scaffold_transport_seconds": 0.0
+      },
+      "memory": {
+        "cpu_max_rss_bytes": 4215046144,
+        "cuda_peak_allocated_bytes": 3462581248,
+        "cuda_peak_reserved_bytes": 3590324224,
+        "cuda_available": true
+      },
+      "payload": {
+        "startup_contract_bytes": 0,
+        "startup_contract_tensor_bytes": 0,
+        "startup_contract_object_bytes": 0,
+        "scaffold_bytes": 12094309,
+        "scaffold_tensor_bytes": 12093371,
+        "scaffold_object_bytes": 938,
+        "stage_handoff_bytes": 0,
+        "stage_handoff_seconds": 0.877832,
+        "tp_collective_bytes": 238694400,
+        "tp_collective_seconds": 1.55618,
+        "transport_event_count": 154
+      },
+      "weight_load": {
+        "loaded_weight_tensor_bytes": 2594763776,
+        "tp_weight_sharded": true,
+        "stage_weight_scope_ok": true
+      }
+    },
+    {
+      "case_id": "hybrid-mm-generate",
+      "path": "baseline_runs/20260429-longterm-profile/hybrid-mm-generate-rank2.log",
+      "rank": 2,
+      "backend": "hybrid",
+      "pipeline_type": "multimodal_generate",
+      "mode": "generate",
+      "generated_token_ids": [
+        87140,
+        15946,
+        3837,
+        101177
+      ],
+      "generated_text": "视频中，一名",
+      "timing": {
+        "runtime_total_seconds": 35.142418,
+        "prepare_session_seconds": 0.356003,
+        "startup_contract_seconds": 23.547257,
+        "startup_contract_transport_seconds": 23.547257,
+        "materialize_stage_seconds": 0.039478,
+        "post_load_barrier_seconds": 0.106465,
+        "scaffold_transport_seconds": 0.0
+      },
+      "memory": {
+        "cpu_max_rss_bytes": 5067948032,
+        "cuda_peak_allocated_bytes": 5865984000,
+        "cuda_peak_reserved_bytes": 6006243328,
+        "cuda_available": true
+      },
+      "payload": {
+        "startup_contract_bytes": 3245806,
+        "startup_contract_tensor_bytes": 3245384,
+        "startup_contract_object_bytes": 422,
+        "scaffold_bytes": 0,
+        "scaffold_tensor_bytes": 0,
+        "scaffold_object_bytes": 0,
+        "stage_handoff_bytes": 3225600,
+        "stage_handoff_seconds": 4.219109,
+        "tp_collective_bytes": 679956480,
+        "tp_collective_seconds": 1.393392,
+        "transport_event_count": 230
+      },
+      "weight_load": {
+        "loaded_weight_tensor_bytes": 4411426816,
+        "tp_weight_sharded": false,
+        "stage_weight_scope_ok": true
+      }
+    }
+  ]
+}

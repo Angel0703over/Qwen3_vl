@@ -8,6 +8,382 @@ import torch
 StageState: TypeAlias = dict[str, Any]
 
 
+HYBRID_RUNTIME_INPUT_PROTOCOL = "hybrid_runtime_inputs_v1"
+
+
+class HybridRuntimeInputSchema:
+    """Formal schema for HYBRID runtime-only stage-group input broadcast."""
+
+    PROTOCOL = HYBRID_RUNTIME_INPUT_PROTOCOL
+    COMMON_REQUIRED_KEYS = frozenset(
+        (
+            "protocol",
+            "modality",
+            "mode",
+            "runtime_only_generate",
+        )
+    )
+    COMMON_ALLOWED_KEYS = COMMON_REQUIRED_KEYS
+    TEXT_REQUIRED_KEYS = COMMON_REQUIRED_KEYS | frozenset(
+        (
+            "input_ids",
+            "runtime_only_prompt_local_rebuild",
+        )
+    )
+    TEXT_ALLOWED_KEYS = TEXT_REQUIRED_KEYS | frozenset(("attention_mask_2d",))
+    MULTIMODAL_REQUIRED_KEYS = COMMON_REQUIRED_KEYS | frozenset(
+        (
+            "shared",
+            "stage_handoff",
+        )
+    )
+    MULTIMODAL_ALLOWED_KEYS = MULTIMODAL_REQUIRED_KEYS | frozenset(("stage_visuals",))
+    MULTIMODAL_SHARED_REQUIRED_KEYS = frozenset(
+        (
+            "input_ids",
+            "attention_mask_2d",
+            "rope_deltas",
+        )
+    )
+    MULTIMODAL_SHARED_ALLOWED_KEYS = MULTIMODAL_SHARED_REQUIRED_KEYS | frozenset(
+        (
+            "position_ids",
+            "mm_token_type_ids",
+            "image_grid_thw",
+            "video_grid_thw",
+        )
+    )
+    MULTIMODAL_STAGE_HANDOFF_REQUIRED_KEYS = frozenset(("stage_input",))
+    MULTIMODAL_STAGE_HANDOFF_ALLOWED_KEYS = MULTIMODAL_STAGE_HANDOFF_REQUIRED_KEYS
+    MULTIMODAL_STAGE_VISUAL_ALLOWED_KEYS = frozenset(
+        (
+            "visual_pos_masks",
+            "deepstack_by_layer",
+        )
+    )
+
+    COMMON_LOCAL_REBUILD_FIELDS = frozenset(
+        (
+            "module_name",
+            "stage_type",
+            "stage_idx",
+            "start_idx",
+            "end_idx",
+            "save_dtype",
+            "max_new_tokens",
+            "layers",
+        )
+    )
+    TEXT_LOCAL_REBUILD_FIELDS = COMMON_LOCAL_REBUILD_FIELDS | frozenset(
+        (
+            "prefill_attention_mask_2d",
+            "prefill_seq_len",
+            "batch_size",
+            "token_id_dtype",
+        )
+    )
+    MULTIMODAL_LOCAL_REBUILD_FIELDS = COMMON_LOCAL_REBUILD_FIELDS | frozenset(
+        (
+            "prefill_attention_mask_2d",
+            "prefill_attention_mask",
+            "prefill_position_ids",
+            "prefill_cos",
+            "prefill_sin",
+            "num_frames",
+            "frame_paths",
+        )
+    )
+
+    FORBIDDEN_BROADCAST_KEYS = frozenset(
+        (
+            "attention_mask",
+            "batch_size",
+            "boundaries",
+            "bundle",
+            "cache_by_layer",
+            "cos",
+            "end_idx",
+            "frame_dir",
+            "frame_paths",
+            "frontend_paths",
+            "hidden_size",
+            "hidden_states",
+            "layer_input",
+            "layers",
+            "module_name",
+            "num_frames",
+            "prefill_attention_mask",
+            "prefill_attention_mask_2d",
+            "prefill_cos",
+            "prefill_position_ids",
+            "prefill_sin",
+            "replay_bundle",
+            "replay_bundle_path",
+            "root_input",
+            "save_dtype",
+            "sin",
+            "stage_bundle",
+            "stage_idx",
+            "stage_output",
+            "stage_type",
+            "start_idx",
+            "token_id_dtype",
+        )
+    )
+    FORBIDDEN_BROADCAST_KEY_SUFFIXES = ("_weight", "_bias")
+
+    @classmethod
+    def allowed_top_level_keys(cls, modality: str) -> frozenset[str]:
+        if modality == "text":
+            return cls.TEXT_ALLOWED_KEYS
+        if modality == "multimodal":
+            return cls.MULTIMODAL_ALLOWED_KEYS
+        raise RuntimeError(f"HYBRID runtime input schema 不支持 modality={modality!r}。")
+
+    @classmethod
+    def local_rebuild_fields(cls, modality: str) -> frozenset[str]:
+        if modality == "text":
+            return cls.TEXT_LOCAL_REBUILD_FIELDS
+        if modality == "multimodal":
+            return cls.MULTIMODAL_LOCAL_REBUILD_FIELDS
+        raise RuntimeError(f"HYBRID runtime input schema 不支持 modality={modality!r}。")
+
+    @classmethod
+    def validate(cls, payload: dict[str, Any], *, context: str = "runtime_inputs") -> None:
+        if not isinstance(payload, dict):
+            raise RuntimeError(f"HYBRID runtime input schema 需要 dict，context={context}。")
+
+        cls._assert_no_forbidden_keys(payload, context=context)
+        cls._assert_required_keys(
+            payload,
+            required=cls.COMMON_REQUIRED_KEYS,
+            context=context,
+            scope="runtime_inputs",
+        )
+        protocol = payload.get("protocol")
+        if protocol != cls.PROTOCOL:
+            raise RuntimeError(
+                "HYBRID runtime input protocol 不匹配，"
+                f"context={context} expected={cls.PROTOCOL!r} actual={protocol!r}"
+            )
+        mode = payload.get("mode")
+        if mode != "generate":
+            raise RuntimeError(
+                "HYBRID runtime input 目前只支持 generate mode，"
+                f"context={context} mode={mode!r}"
+            )
+        if payload.get("runtime_only_generate") is not True:
+            raise RuntimeError(
+                "HYBRID runtime input 必须显式 runtime_only_generate=True，"
+                f"context={context}"
+            )
+
+        modality = payload.get("modality")
+        if modality == "text":
+            cls._validate_text(payload, context=context)
+            return
+        if modality == "multimodal":
+            cls._validate_multimodal(payload, context=context)
+            return
+        raise RuntimeError(
+            "HYBRID runtime input modality 不在协议内，"
+            f"context={context} modality={modality!r}"
+        )
+
+    @classmethod
+    def _validate_text(cls, payload: dict[str, Any], *, context: str) -> None:
+        cls._assert_allowed_keys(
+            payload,
+            allowed=cls.TEXT_ALLOWED_KEYS,
+            context=context,
+            scope="text runtime_inputs",
+        )
+        cls._assert_required_keys(
+            payload,
+            required=cls.TEXT_REQUIRED_KEYS,
+            context=context,
+            scope="text runtime_inputs",
+        )
+        if payload.get("runtime_only_prompt_local_rebuild") is not True:
+            raise RuntimeError(
+                "text runtime input 必须声明 runtime_only_prompt_local_rebuild=True，"
+                f"context={context}"
+            )
+        if not torch.is_tensor(payload.get("input_ids")):
+            raise RuntimeError(f"text runtime input 必须携带 tensor input_ids，context={context}。")
+        attention_mask = payload.get("attention_mask_2d")
+        if attention_mask is not None and not torch.is_tensor(attention_mask):
+            raise RuntimeError(
+                "text runtime input attention_mask_2d 必须是 tensor 或省略，"
+                f"context={context}"
+            )
+
+    @classmethod
+    def _validate_multimodal(cls, payload: dict[str, Any], *, context: str) -> None:
+        cls._assert_allowed_keys(
+            payload,
+            allowed=cls.MULTIMODAL_ALLOWED_KEYS,
+            context=context,
+            scope="multimodal runtime_inputs",
+        )
+        cls._assert_required_keys(
+            payload,
+            required=cls.MULTIMODAL_REQUIRED_KEYS,
+            context=context,
+            scope="multimodal runtime_inputs",
+        )
+
+        shared = payload.get("shared")
+        if not isinstance(shared, dict):
+            raise RuntimeError(f"multimodal runtime input shared 必须是 dict，context={context}。")
+        cls._assert_allowed_keys(
+            shared,
+            allowed=cls.MULTIMODAL_SHARED_ALLOWED_KEYS,
+            context=context,
+            scope="multimodal runtime_inputs.shared",
+        )
+        cls._assert_required_keys(
+            shared,
+            required=cls.MULTIMODAL_SHARED_REQUIRED_KEYS,
+            context=context,
+            scope="multimodal runtime_inputs.shared",
+        )
+        for tensor_key in cls.MULTIMODAL_SHARED_REQUIRED_KEYS:
+            if not torch.is_tensor(shared.get(tensor_key)):
+                raise RuntimeError(
+                    "multimodal runtime input shared 必须携带必要 tensor，"
+                    f"context={context} key={tensor_key}"
+                )
+        for tensor_key in cls.MULTIMODAL_SHARED_ALLOWED_KEYS:
+            value = shared.get(tensor_key)
+            if value is not None and not torch.is_tensor(value):
+                raise RuntimeError(
+                    "multimodal runtime input shared 字段必须是 tensor 或省略，"
+                    f"context={context} key={tensor_key}"
+                )
+
+        stage_handoff = payload.get("stage_handoff")
+        if not isinstance(stage_handoff, dict):
+            raise RuntimeError(f"multimodal runtime input stage_handoff 必须是 dict，context={context}。")
+        cls._assert_allowed_keys(
+            stage_handoff,
+            allowed=cls.MULTIMODAL_STAGE_HANDOFF_ALLOWED_KEYS,
+            context=context,
+            scope="multimodal runtime_inputs.stage_handoff",
+        )
+        cls._assert_required_keys(
+            stage_handoff,
+            required=cls.MULTIMODAL_STAGE_HANDOFF_REQUIRED_KEYS,
+            context=context,
+            scope="multimodal runtime_inputs.stage_handoff",
+        )
+        if not torch.is_tensor(stage_handoff.get("stage_input")):
+            raise RuntimeError(
+                "multimodal runtime input stage_handoff 必须携带 tensor stage_input，"
+                f"context={context}"
+            )
+
+        stage_visuals = payload.get("stage_visuals")
+        if stage_visuals is None:
+            return
+        if not isinstance(stage_visuals, dict):
+            raise RuntimeError(f"multimodal runtime input stage_visuals 必须是 dict，context={context}。")
+        cls._assert_allowed_keys(
+            stage_visuals,
+            allowed=cls.MULTIMODAL_STAGE_VISUAL_ALLOWED_KEYS,
+            context=context,
+            scope="multimodal runtime_inputs.stage_visuals",
+        )
+        visual_pos_masks = stage_visuals.get("visual_pos_masks")
+        if visual_pos_masks is not None and not torch.is_tensor(visual_pos_masks):
+            raise RuntimeError(
+                "multimodal runtime input stage_visuals.visual_pos_masks 必须是 tensor 或省略，"
+                f"context={context}"
+            )
+        deepstack_by_layer = stage_visuals.get("deepstack_by_layer")
+        if deepstack_by_layer is None:
+            return
+        if not isinstance(deepstack_by_layer, dict):
+            raise RuntimeError(
+                "multimodal runtime input stage_visuals.deepstack_by_layer 必须是 dict，"
+                f"context={context}"
+            )
+        for layer_idx, deepstack in deepstack_by_layer.items():
+            if not isinstance(layer_idx, int):
+                raise RuntimeError(
+                    "multimodal runtime input deepstack layer key 必须是 int，"
+                    f"context={context} key={layer_idx!r}"
+                )
+            if deepstack is not None and not torch.is_tensor(deepstack):
+                raise RuntimeError(
+                    "multimodal runtime input deepstack value 必须是 tensor 或 None，"
+                    f"context={context} key={layer_idx!r}"
+                )
+
+    @classmethod
+    def _assert_allowed_keys(
+        cls,
+        payload: dict[Any, Any],
+        *,
+        allowed: frozenset[str],
+        context: str,
+        scope: str,
+    ) -> None:
+        invalid = [str(key) for key in payload if str(key) not in allowed]
+        if invalid:
+            raise RuntimeError(
+                "HYBRID runtime input 字段不在协议内，"
+                f"context={context} scope={scope} invalid_keys={invalid}"
+            )
+
+    @classmethod
+    def _assert_required_keys(
+        cls,
+        payload: dict[str, Any],
+        *,
+        required: frozenset[str],
+        context: str,
+        scope: str,
+    ) -> None:
+        missing = [key for key in sorted(required) if key not in payload]
+        if missing:
+            raise RuntimeError(
+                "HYBRID runtime input 缺少协议必需字段，"
+                f"context={context} scope={scope} missing_keys={missing}"
+            )
+
+    @classmethod
+    def _assert_no_forbidden_keys(
+        cls,
+        value: Any,
+        *,
+        context: str,
+        path: tuple[str, ...] = (),
+    ) -> None:
+        if isinstance(value, dict):
+            for raw_key, item in value.items():
+                key = str(raw_key)
+                current_path = (*path, key)
+                if cls._is_forbidden_broadcast_key(key):
+                    joined = ".".join(current_path)
+                    raise RuntimeError(
+                        "HYBRID runtime input 禁止广播 stage-local、weight、frontend path "
+                        "或 derived attention 字段，"
+                        f"context={context} key={joined}"
+                    )
+                cls._assert_no_forbidden_keys(item, context=context, path=current_path)
+        elif isinstance(value, (list, tuple)):
+            for index, item in enumerate(value):
+                cls._assert_no_forbidden_keys(item, context=context, path=(*path, str(index)))
+
+    @classmethod
+    def _is_forbidden_broadcast_key(cls, key: str) -> bool:
+        return key in cls.FORBIDDEN_BROADCAST_KEYS or any(
+            key.endswith(suffix)
+            for suffix in cls.FORBIDDEN_BROADCAST_KEY_SUFFIXES
+        )
+
+
 @dataclass(slots=True)
 class StageReplaySpec:
     """Replay-only metadata for a captured pipeline stage."""

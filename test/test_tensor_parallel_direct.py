@@ -1,21 +1,32 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import torch
 
 from qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel import (
     TensorParallelManifest,
     TensorParallelRunner,
+    load_stage_state_for_tp_rank,
 )
 from qwen3vl_tp_runtime.hexgen_core.schema import StageSpec
+from qwen3vl_tp_runtime.models.qwen3vl.runtime_mm_stage import (
+    MmFrontendSeed,
+    compact_mm_runtime_shared,
+)
+from qwen3vl_tp_runtime.models.qwen3vl.runtime_builder import (
+    pack_mm_startup_transport,
+    select_mm_startup_contract,
+)
 
 
 def _build_tp_manifest(
     *,
     stage_ranges: list[tuple[int, int]],
     tp_degrees: list[int],
+    modality: str = "text",
+    include_runtime_reference: bool = False,
 ) -> TensorParallelManifest:
     stages = [
         StageSpec(
@@ -37,14 +48,51 @@ def _build_tp_manifest(
         boundaries=[],
         num_frames=0,
         save_dtype="float32",
-        pipeline_type="text_generate",
+        pipeline_type=f"{modality}_generate",
         runtime_config={
-            "modality": "text",
+            "modality": modality,
             "mode": "generate",
             "model_path": "/tmp/fake-model",
             "save_dtype": "float32",
+            "include_runtime_reference": include_runtime_reference,
         },
     )
+
+
+def _build_mm_startup_contract(*, num_stages: int) -> dict[str, object]:
+    frontend_seed = MmFrontendSeed(
+        input_ids=torch.tensor([[1, 2, 3]], dtype=torch.long),
+        attention_mask_2d=torch.tensor([[1, 1, 1]], dtype=torch.long),
+        position_ids=torch.zeros(4, 1, 3, dtype=torch.long),
+        inputs_embeds=torch.zeros(1, 3, 4),
+        attention_mask=torch.zeros(1, 1, 3, 3),
+        cos=torch.zeros(1, 3, 4),
+        sin=torch.zeros(1, 3, 4),
+        visual_pos_masks=torch.ones(1, 3, dtype=torch.bool),
+        deepstack_by_layer={},
+        rope_deltas=torch.zeros(1, 1, dtype=torch.long),
+        mm_token_type_ids=torch.tensor([[0, 1, 0]], dtype=torch.int),
+        image_grid_thw=torch.tensor([[1, 1, 1]], dtype=torch.long),
+    )
+    return {
+        "shared": compact_mm_runtime_shared(frontend_seed),
+        "stage_handoffs": {
+            stage_idx: {
+                "stage_input": torch.zeros(1, 3, 4) + float(stage_idx),
+                "stage_output": torch.zeros(1, 3, 4) + float(stage_idx + 1),
+            }
+            for stage_idx in range(num_stages)
+        },
+        "stage_visuals": {
+            stage_idx: {
+                "visual_pos_masks": torch.ones(1, 3, dtype=torch.bool),
+                "deepstack_by_layer": {},
+            }
+            for stage_idx in range(num_stages)
+        },
+        "num_frames": 2,
+        "frame_paths": ["/tmp/f0.png", "/tmp/f1.png"],
+    }
 
 
 class TensorParallelDirectRunnerTest(unittest.TestCase):
@@ -76,6 +124,171 @@ class TensorParallelDirectRunnerTest(unittest.TestCase):
     def test_direct_tp_runner_rejects_multi_stage_manifest(self) -> None:
         with self.assertRaisesRegex(ValueError, "单 stage"):
             _build_tp_manifest(stage_ranges=[(0, 17), (18, 35)], tp_degrees=[2])
+
+    def test_multimodal_tp_input_owner_broadcasts_startup_contract_once(self) -> None:
+        manifest = _build_tp_manifest(
+            stage_ranges=[(0, 35)],
+            tp_degrees=[2],
+            modality="multimodal",
+        )
+        startup_contract = _build_mm_startup_contract(num_stages=1)
+        startup_meta, startup_tensors = pack_mm_startup_transport(
+            select_mm_startup_contract(startup_contract, local_stage_indices=[0]),
+            include_stage_output=False,
+            include_derived_shared=False,
+        )
+        builder_instance = MagicMock()
+        builder_instance.__enter__.return_value = builder_instance
+        builder_instance.export_mm_startup_transport.return_value = (startup_meta, startup_tensors)
+        scaffold = {
+            "save_dtype": "float32",
+            "stage_idx": 0,
+            "start_idx": 0,
+            "end_idx": 35,
+            "layers": [],
+        }
+        local_state = {
+            "save_dtype": "float32",
+            "stage_idx": 0,
+            "start_idx": 0,
+            "end_idx": 35,
+            "layers": [],
+        }
+
+        with patch(
+            "qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel.DirectStageStateBuilder",
+            return_value=builder_instance,
+        ) as builder_cls, patch(
+            "qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel.broadcast_object_cpu",
+            return_value=startup_meta,
+        ) as bcast_meta_mock, patch(
+            "qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel.broadcast_tensor_payload_cpu",
+            return_value=startup_tensors,
+        ) as bcast_tensor_mock, patch(
+            "qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel.build_direct_stage_state",
+            return_value=scaffold,
+        ) as build_mock, patch(
+            "qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel.materialize_text_stage_state",
+            return_value=local_state,
+        ) as materialize_mock, patch(
+            "qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel.move_bundle",
+            return_value=local_state,
+        ):
+            stage_state, compute_dtype = load_stage_state_for_tp_rank(
+                manifest,
+                rank=0,
+                world_size=2,
+                device=torch.device("cpu"),
+                compute_dtype_arg="float32",
+            )
+
+        builder_cls.assert_called_once()
+        builder_kwargs = builder_cls.call_args.kwargs
+        self.assertEqual(builder_kwargs["stage_specs"], manifest.stages)
+        self.assertFalse(builder_kwargs["include_text_weights"])
+        self.assertTrue(builder_kwargs["mm_activate_frontend"])
+        builder_instance.export_mm_startup_transport.assert_called_once_with(local_stage_indices=[0])
+        bcast_meta_mock.assert_called_once()
+        self.assertEqual(
+            bcast_meta_mock.call_args.kwargs["label"],
+            "tp_multimodal_startup_contract_meta stage_idx=0",
+        )
+        bcast_tensor_mock.assert_called_once()
+        self.assertEqual(
+            bcast_tensor_mock.call_args.kwargs["label"],
+            "tp_multimodal_startup_contract_tensors stage_idx=0",
+        )
+        build_mock.assert_called_once()
+        self.assertFalse(build_mock.call_args.kwargs["mm_activate_frontend"])
+        build_runtime_config = build_mock.call_args.kwargs["runtime_config"]
+        self.assertTrue(build_runtime_config["_mm_startup_contract_ready"])
+        self.assertEqual(sorted(build_runtime_config["_mm_startup_stage_handoffs"]), [0])
+        self.assertNotIn("_mm_startup_root_input", build_runtime_config)
+        self.assertNotIn("_mm_startup_boundaries", build_runtime_config)
+        materialize_mock.assert_called_once()
+        self.assertEqual(materialize_mock.call_args.kwargs["tp_shard_rank"], 0)
+        self.assertEqual(materialize_mock.call_args.kwargs["tp_shard_world_size"], 2)
+        self.assertIs(stage_state, local_state)
+        self.assertEqual(compute_dtype, torch.float32)
+
+    def test_multimodal_tp_follower_consumes_input_owner_contract(self) -> None:
+        manifest = _build_tp_manifest(
+            stage_ranges=[(0, 35)],
+            tp_degrees=[2],
+            modality="multimodal",
+        )
+        startup_contract = _build_mm_startup_contract(num_stages=1)
+        startup_meta, startup_tensors = pack_mm_startup_transport(
+            select_mm_startup_contract(startup_contract, local_stage_indices=[0]),
+            include_stage_output=False,
+            include_derived_shared=False,
+        )
+        scaffold = {
+            "save_dtype": "float32",
+            "stage_idx": 0,
+            "start_idx": 0,
+            "end_idx": 35,
+            "layers": [],
+        }
+        local_state = {
+            "save_dtype": "float32",
+            "stage_idx": 0,
+            "start_idx": 0,
+            "end_idx": 35,
+            "layers": [],
+        }
+
+        with patch(
+            "qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel.DirectStageStateBuilder",
+        ) as builder_cls, patch(
+            "qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel.broadcast_object_cpu",
+            return_value=startup_meta,
+        ) as bcast_meta_mock, patch(
+            "qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel.broadcast_tensor_payload_cpu",
+            return_value=startup_tensors,
+        ) as bcast_tensor_mock, patch(
+            "qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel.build_direct_stage_state",
+            return_value=scaffold,
+        ) as build_mock, patch(
+            "qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel.materialize_text_stage_state",
+            return_value=local_state,
+        ) as materialize_mock, patch(
+            "qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel.move_bundle",
+            return_value=local_state,
+        ):
+            stage_state, compute_dtype = load_stage_state_for_tp_rank(
+                manifest,
+                rank=1,
+                world_size=2,
+                device=torch.device("cpu"),
+                compute_dtype_arg="float32",
+            )
+
+        builder_cls.assert_not_called()
+        bcast_meta_mock.assert_called_once()
+        self.assertEqual(bcast_meta_mock.call_args.kwargs["src"], 0)
+        self.assertEqual(
+            bcast_meta_mock.call_args.kwargs["label"],
+            "tp_multimodal_startup_contract_meta stage_idx=0",
+        )
+        bcast_tensor_mock.assert_called_once()
+        self.assertEqual(bcast_tensor_mock.call_args.kwargs["src"], 0)
+        self.assertEqual(
+            bcast_tensor_mock.call_args.kwargs["label"],
+            "tp_multimodal_startup_contract_tensors stage_idx=0",
+        )
+        build_mock.assert_called_once()
+        self.assertFalse(build_mock.call_args.kwargs["mm_activate_frontend"])
+        build_runtime_config = build_mock.call_args.kwargs["runtime_config"]
+        self.assertTrue(build_runtime_config["_mm_startup_contract_ready"])
+        self.assertEqual(sorted(build_runtime_config["_mm_startup_stage_handoffs"]), [0])
+        self.assertNotIn("_mm_startup_root_input", build_runtime_config)
+        self.assertNotIn("_mm_startup_boundaries", build_runtime_config)
+        materialize_mock.assert_called_once()
+        self.assertEqual(materialize_mock.call_args.kwargs["tp_shard_rank"], 1)
+        self.assertEqual(materialize_mock.call_args.kwargs["tp_shard_world_size"], 2)
+        self.assertIs(stage_state, local_state)
+        self.assertEqual(compute_dtype, torch.float32)
 
 
 if __name__ == "__main__":

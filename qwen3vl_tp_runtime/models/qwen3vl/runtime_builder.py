@@ -63,10 +63,13 @@ from .runtime_text_stage import (
     assert_text_tp_shard_shapes,
     assert_text_weight_scope,
     build_text_stage_state,
+    compact_multimodal_runtime_scaffold,
     compact_text_stage_state,
     compact_text_scaffold,
     materialize_text_stage_state as _materialize_text_stage_state,
+    pack_runtime_input_transport,
     pack_text_scaffold_transport,
+    restore_runtime_input_transport,
     restore_text_scaffold_transport,
 )
 from .weights import (
@@ -3187,6 +3190,8 @@ class DirectStageStateBuilder:
                     return compact_text_scaffold(stage_state)
                 if stage_state.get("runtime_only_generate") and self.modality == "text":
                     return compact_text_stage_state(stage_state)
+                if stage_state.get("runtime_only_generate") and self.modality == "multimodal":
+                    return compact_multimodal_runtime_scaffold(stage_state)
             assert_text_weight_scope(stage_state)
             assert_text_tp_shard_shapes(stage_state)
             return stage_state

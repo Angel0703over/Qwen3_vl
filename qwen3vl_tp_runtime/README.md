@@ -39,17 +39,28 @@
 - `backend=tp` 已有独立入口 `hexgen_core/modules/tensor_parallel.py`：先在 TP 模块内校验单 stage TP layout，再复用共享的 `StageState` 执行引擎。
 - TP 主路径公开名已收口为 `TensorParallelRunner`、`run_tensor_parallel_rank`、`run_stage_state_tp`；无引用的旧 text-specific TP wrapper 已删除。
 - text `TP` 主路径不再让每张卡加载完整 decoder projection 权重再计算时切分。`tp_degree > 1` 的 direct stage 会先广播无权重 scaffold，然后每个 rank 从 `model_path` materialize 自己的本地 shard。
+- multimodal `TP` 主路径已经采用 input-owner 启动：rank0 准备 compact multimodal startup contract，其他 TP rank 不再重新跑视觉 frontend；所有 TP rank 仍从 `model_path` materialize 自己的权重 shard。
 - `backend=tp` text generate 已通过真实 Jetson 冒烟验证：两个 rank 都是 `weight_load.tp_weight_sharded=true`，分别为 `tp_shard_rank=0/2` 和 `1/2`，projection 形状是 shard 后大小，`loaded_weight_tensor_bytes` 完全一致。
 - `backend=hybrid` text generate 已通过真实 Jetson 冒烟验证：stage0 使用 rank-local TP shard，stage1 只加载自己的 PP stage 权重。
 - `pp / hybrid` multimodal direct runtime 已在只依赖运行时构建的主路径通过真实 Jetson 冒烟验证。所有 rank 生成一致的 `generated_token_ids=[87140, 15946, 3837, 101177]`，summary 能证明 stage-local frontend/weight scope 和 hybrid TP shard-local materialization。
 - multimodal startup transport 已经保持 stage-local 且足够薄：只携带 runtime shared metadata/tensor、本地 stage handoff、本地 stage visual 和 frame metadata；root/full/replay payload 会被拒绝。
-- 当前里程碑可以认为已完成：从 `model_path` 直接启动 PP/TP/hybrid、rank-local text decoder shard，以及 `pp / hybrid` multimodal stage-only/shard-only 冒烟验证。runtime summary 已包含 PP stage 权重范围、TP projection shape proof，以及同一 TP stage 内权重字节数一致性证据。
+- HYBRID runtime-only stage-group broadcast 已收口到正式 `hybrid_runtime_inputs_v1` schema；weights、layers、frontend paths、dense derived attention tensors 和 replay/full payload 都不能进入 runtime input broadcast。
+- 2026-04-29 已冻结 step 13 长期目标真实 profile：`tp-mm-generate`、`hybrid-text-generate`、`hybrid-mm-generate --pp 2 --tp-degrees 2 1` 均通过，见 `baseline_runs/20260429-longterm-profile/`。
+- 当前里程碑可以认为已完成：从 `model_path` 直接启动 PP/TP/hybrid、rank-local text decoder shard、multimodal input-owner / startup contract、HYBRID runtime input schema，以及真实 Jetson payload/profile 记录。
 
 仍然保留的尾部工作：
 
 - embedding 和 `lm_head` 目前仍按当前执行语义复制。vocab/embedding parallelism 是后续优化，不属于当前已完成里程碑。
-- 启动时间和峰值显存基线暂时不作为硬验收；当前验收重点是输出 token 和 `weight_load` shard 证据。
-- schema、legacy compatibility、仅调试用 transport 仍可以继续清理，但 replay/capture 路径已经不再是主运行入口。
+- 启动时间、transport payload、TP collective bytes 和 CUDA peak memory 已进入 profile 记录；后续性能优化要保留前后对比。
+- legacy compatibility、仅调试用 transport 仍可以继续清理，但 replay/capture 路径已经不再是主运行入口。
+
+## 文档索引
+
+- `README.md`：当前架构、主路径、目录职责和命名约定。
+- `ROADMAP.md`：后续任务队列；已完成内容只保留关键 checkpoint 和验收口径。
+- `BASELINE.md`：固定回归命令、真实 Jetson baseline、payload/性能表和 checker 输出。
+- `SESSION_HANDOFF.md`：新对话接手用的完整上下文迁移手册。
+- `baseline_runs/*/README.md`：具体某轮真实 profile 的拓扑、结果和文件说明。
 
 ## 调试路径
 

@@ -10,7 +10,7 @@ import qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel as hybrid_module
 import qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel as pipeline_module
 import qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel as tensor_module
 import qwen3vl_tp_runtime.debug.tensor_parallel_replay as tp_replay_module
-from qwen3vl_tp_runtime.hexgen_core.schema import StageState
+from qwen3vl_tp_runtime.hexgen_core.schema import HybridRuntimeInputSchema, StageState
 from qwen3vl_tp_runtime.hexgen_core.transport import StageCommunicator, StageHandoffTransport
 from qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel import prepare_text_generate_hybrid
 from qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel import (
@@ -87,6 +87,7 @@ class CompatPackageExportsTest(unittest.TestCase):
         self.assertIs(core_pkg.load_tp_manifest, tensor_module.load_tp_manifest)
         self.assertIs(core_pkg.run_tensor_parallel_rank, tensor_module.run_tensor_parallel_rank)
         self.assertIs(core_pkg.StageCommunicator, StageCommunicator)
+        self.assertIs(core_pkg.HybridRuntimeInputSchema, HybridRuntimeInputSchema)
         self.assertTrue(issubclass(core_pkg.StageHandoffTransport, StageCommunicator))
         self.assertTrue(issubclass(StageHandoffTransport, StageCommunicator))
         self.assertIn("StageState", core_pkg.__all__)
@@ -102,6 +103,7 @@ class CompatPackageExportsTest(unittest.TestCase):
         self.assertIn("run_tensor_parallel_rank", core_pkg.__all__)
         self.assertIn("run_text_generate_pipeline_rank", core_pkg.__all__)
         self.assertIn("StageCommunicator", core_pkg.__all__)
+        self.assertIn("HybridRuntimeInputSchema", core_pkg.__all__)
         self.assertIn("StageState", core_pkg.DIRECT_RUNTIME_EXPORTS)
         self.assertIn("load_stage_state_for_rank", core_pkg.DIRECT_RUNTIME_EXPORTS)
         self.assertIn("load_stage_state_for_hybrid_rank", core_pkg.DIRECT_RUNTIME_EXPORTS)
@@ -111,6 +113,7 @@ class CompatPackageExportsTest(unittest.TestCase):
         self.assertIn("run_tensor_parallel_rank", core_pkg.DIRECT_RUNTIME_EXPORTS)
         self.assertIn("run_text_generate_pipeline_rank", core_pkg.DIRECT_RUNTIME_EXPORTS)
         self.assertIn("StageCommunicator", core_pkg.DIRECT_RUNTIME_EXPORTS)
+        self.assertIn("HybridRuntimeInputSchema", core_pkg.DIRECT_RUNTIME_EXPORTS)
         self.assertNotIn("StageBundleView", core_pkg.__all__)
         self.assertNotIn("as_stage_bundle_view", core_pkg.__all__)
         self.assertNotIn("build_stage_bundle", core_pkg.__all__)

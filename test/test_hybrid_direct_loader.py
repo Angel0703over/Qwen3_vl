@@ -464,6 +464,366 @@ class HybridDirectLoaderTest(unittest.TestCase):
         self.assertEqual(compute_dtype, torch.float32)
         self.assertEqual(bundle["end_idx"], 17)
 
+    def test_multimodal_tp_leader_strips_prefill_scaffold_tensors_before_broadcast(self) -> None:
+        manifest = _build_manifest(stage_ranges=[(0, 17)], tp_degrees=[2], modality="multimodal")
+        manifest.runtime_config["_mm_startup_contract_ready"] = True
+        rank_stage = HybridRankContext(
+            stage_idx=0,
+            stage_ranks=[0, 1],
+            tp_degree=2,
+            local_rank=0,
+            leader_rank=0,
+            prev_leader_rank=None,
+            next_leader_rank=None,
+            stage_group="fake-group",
+            pp_group_idx=0,
+            current_pp_group=[0],
+            send_list=[],
+            recv_list=[],
+            send_empty_list=[],
+            recv_empty_list=[],
+        )
+
+        leader_scaffold = {
+            "save_dtype": "float32",
+            "stage_idx": 0,
+            "start_idx": 0,
+            "end_idx": 17,
+            "hidden_size": 4,
+            "batch_size": 1,
+            "runtime_only_generate": True,
+            "modality": "multimodal",
+            "num_frames": 2,
+            "frame_paths": ["/tmp/f0.png", "/tmp/f1.png"],
+            "layers": [],
+            "stage_input": torch.ones(1, 3, 4, dtype=torch.float32),
+            "layer_input": torch.ones(1, 3, 4, dtype=torch.float32),
+            "prefill_attention_mask_2d": torch.ones(1, 3, dtype=torch.long),
+            "prefill_attention_mask": torch.zeros(1, 1, 3, 3, dtype=torch.float32),
+            "prefill_position_ids": torch.zeros(4, 1, 3, dtype=torch.long),
+            "prefill_cos": torch.zeros(1, 3, 4, dtype=torch.float32),
+            "prefill_sin": torch.zeros(1, 3, 4, dtype=torch.float32),
+            "rope_deltas": torch.zeros(1, 1, dtype=torch.long),
+        }
+        local_bundle = _fake_tp_sharded_bundle(
+            stage_idx=0,
+            start_idx=0,
+            end_idx=17,
+            tp_shard_rank=0,
+        )
+
+        def _echo_object(payload, **_kwargs):
+            return payload
+
+        def _echo_tensors(payload, **_kwargs):
+            return payload
+
+        with patch(
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.build_direct_stage_state",
+            return_value=leader_scaffold,
+        ) as build_mock, patch(
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.broadcast_object_cpu",
+            side_effect=_echo_object,
+        ) as bcast_mock, patch(
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.broadcast_tensor_payload_cpu",
+            side_effect=_echo_tensors,
+        ) as tensor_bcast_mock, patch(
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.materialize_text_stage_state",
+            return_value=local_bundle,
+        ) as materialize_mock, patch(
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.dist.barrier",
+        ):
+            load_stage_state_for_hybrid_rank(
+                manifest,
+                rank=0,
+                rank_stage=rank_stage,
+                device=torch.device("cpu"),
+                compute_dtype_arg="float32",
+            )
+
+        build_mock.assert_called_once()
+        sent_meta = bcast_mock.call_args.args[0]
+        sent_scaffold_meta = sent_meta["scaffold"]
+        self.assertIn("mm_prefill_runtime_tensors_local_rebuild", sent_scaffold_meta)
+        self.assertIn("mm_frontend_metadata_local_rebuild", sent_scaffold_meta)
+        for field_name in (
+            "prefill_attention_mask_2d",
+            "prefill_attention_mask",
+            "prefill_position_ids",
+            "prefill_cos",
+            "prefill_sin",
+            "num_frames",
+            "frame_paths",
+        ):
+            self.assertNotIn(field_name, sent_scaffold_meta)
+        sent_tensors = tensor_bcast_mock.call_args.args[0]
+        for tensor_key in (
+            "scaffold.prefill_attention_mask_2d",
+            "scaffold.prefill_attention_mask",
+            "scaffold.prefill_position_ids",
+            "scaffold.prefill_cos",
+            "scaffold.prefill_sin",
+        ):
+            self.assertNotIn(tensor_key, sent_tensors)
+        materialize_mock.assert_called_once()
+        restored_scaffold = materialize_mock.call_args.kwargs["stage_state_scaffold"]
+        self.assertNotIn("prefill_attention_mask_2d", restored_scaffold)
+        self.assertNotIn("num_frames", restored_scaffold)
+        self.assertNotIn("frame_paths", restored_scaffold)
+        self.assertIn("stage_input", restored_scaffold)
+
+    def test_multimodal_runtime_only_tp_leader_broadcasts_runtime_inputs_not_scaffold(self) -> None:
+        manifest = _build_manifest(stage_ranges=[(0, 17)], tp_degrees=[2], modality="multimodal")
+        manifest.runtime_config["include_runtime_reference"] = False
+        manifest.runtime_config["_mm_startup_contract_ready"] = True
+        rank_stage = HybridRankContext(
+            stage_idx=0,
+            stage_ranks=[0, 1],
+            tp_degree=2,
+            local_rank=0,
+            leader_rank=0,
+            prev_leader_rank=None,
+            next_leader_rank=None,
+            stage_group="fake-group",
+            pp_group_idx=0,
+            current_pp_group=[0],
+            send_list=[],
+            recv_list=[],
+            send_empty_list=[],
+            recv_empty_list=[],
+        )
+
+        stage_input = torch.ones(1, 3, 4, dtype=torch.float32)
+        input_ids = torch.tensor([[1, 2, 3]], dtype=torch.long)
+        attention_mask_2d = torch.ones(1, 3, dtype=torch.long)
+        rope_deltas = torch.zeros(1, 1, dtype=torch.long)
+        manifest.runtime_config["_mm_startup_shared"] = {
+            "input_ids": input_ids,
+            "attention_mask_2d": attention_mask_2d,
+            "rope_deltas": rope_deltas,
+        }
+        manifest.runtime_config["_mm_startup_stage_handoffs"] = {
+            0: {
+                "stage_input": stage_input,
+                "stage_output": torch.zeros_like(stage_input),
+            },
+        }
+        local_bundle = _fake_tp_sharded_bundle(
+            stage_idx=0,
+            start_idx=0,
+            end_idx=17,
+            tp_shard_rank=0,
+        )
+
+        def _echo_object(payload, **_kwargs):
+            return payload
+
+        def _echo_tensors(payload, **_kwargs):
+            return payload
+
+        with patch(
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.build_direct_stage_state",
+        ) as build_mock, patch(
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.broadcast_object_cpu",
+            side_effect=_echo_object,
+        ) as bcast_mock, patch(
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.broadcast_tensor_payload_cpu",
+            side_effect=_echo_tensors,
+        ) as tensor_bcast_mock, patch(
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.materialize_text_stage_state",
+            return_value=local_bundle,
+        ) as materialize_mock, patch(
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.dist.barrier",
+        ):
+            load_stage_state_for_hybrid_rank(
+                manifest,
+                rank=0,
+                rank_stage=rank_stage,
+                device=torch.device("cpu"),
+                compute_dtype_arg="float32",
+            )
+
+        build_mock.assert_not_called()
+        self.assertEqual(bcast_mock.call_args.kwargs["label"], "runtime_inputs_meta stage_idx=0")
+        sent_meta = bcast_mock.call_args.args[0]
+        self.assertIn("runtime_inputs", sent_meta)
+        self.assertNotIn("scaffold", sent_meta)
+        sent_runtime_inputs_meta = sent_meta["runtime_inputs"]
+        self.assertEqual(sent_runtime_inputs_meta["protocol"], "hybrid_runtime_inputs_v1")
+        for field_name in (
+            "layers",
+            "module_name",
+            "stage_type",
+            "stage_idx",
+            "start_idx",
+            "end_idx",
+            "save_dtype",
+            "hidden_size",
+            "batch_size",
+            "num_frames",
+            "frame_paths",
+            "prefill_attention_mask_2d",
+            "prefill_attention_mask",
+            "prefill_position_ids",
+            "prefill_cos",
+            "prefill_sin",
+            "stage_input",
+            "rope_deltas",
+        ):
+            self.assertNotIn(field_name, sent_runtime_inputs_meta)
+        self.assertEqual(tensor_bcast_mock.call_args.kwargs["label"], "runtime_inputs_tensors stage_idx=0")
+        sent_tensors = tensor_bcast_mock.call_args.args[0]
+        self.assertEqual(
+            set(sent_tensors),
+            {
+                "runtime_inputs.shared.input_ids",
+                "runtime_inputs.shared.attention_mask_2d",
+                "runtime_inputs.shared.rope_deltas",
+                "runtime_inputs.stage_handoff.stage_input",
+            },
+        )
+        materialize_mock.assert_called_once()
+        restored_scaffold = materialize_mock.call_args.kwargs["stage_state_scaffold"]
+        self.assertTrue(restored_scaffold["runtime_inputs_from_broadcast"])
+        self.assertEqual(restored_scaffold["stage_idx"], 0)
+        self.assertEqual(restored_scaffold["start_idx"], 0)
+        self.assertEqual(restored_scaffold["end_idx"], 17)
+        self.assertEqual(restored_scaffold["save_dtype"], "float32")
+        self.assertTrue(torch.equal(restored_scaffold["stage_input"], stage_input))
+        self.assertTrue(torch.equal(restored_scaffold["rope_deltas"], rope_deltas))
+        materialize_runtime_config = materialize_mock.call_args.kwargs["runtime_config"]
+        self.assertTrue(torch.equal(materialize_runtime_config["_mm_startup_shared"]["input_ids"], input_ids))
+        self.assertTrue(
+            torch.equal(
+                materialize_runtime_config["_mm_startup_stage_handoffs"][0]["stage_input"],
+                stage_input,
+            )
+        )
+        self.assertNotIn("layers", sent_runtime_inputs_meta)
+        self.assertEqual(restored_scaffold["layers"], [])
+
+    def test_multimodal_runtime_input_schema_rejects_derived_shared_tensors(self) -> None:
+        runtime_config = {
+            "_mm_startup_shared": {
+                "input_ids": torch.tensor([[1, 2, 3]], dtype=torch.long),
+                "attention_mask_2d": torch.ones(1, 3, dtype=torch.long),
+                "rope_deltas": torch.zeros(1, 1, dtype=torch.long),
+                "attention_mask": torch.zeros(1, 1, 3, 3),
+            },
+            "_mm_startup_stage_handoffs": {
+                0: {
+                    "stage_input": torch.zeros(1, 3, 4),
+                },
+            },
+        }
+
+        with self.assertRaisesRegex(RuntimeError, "禁止广播"):
+            hybrid_parallel_module._build_runtime_input_broadcast_payload(
+                runtime_config,
+                stage_idx=0,
+                runtime_modality="multimodal",
+            )
+
+    def test_text_runtime_only_tp_leader_broadcasts_prompt_runtime_inputs(self) -> None:
+        manifest = _build_manifest(stage_ranges=[(0, 35)], tp_degrees=[2], modality="text")
+        manifest.runtime_config["include_runtime_reference"] = False
+        manifest.runtime_config["_runtime_only_prompt_metadata_ready"] = True
+        input_ids = torch.tensor([[1, 2, 3]], dtype=torch.long)
+        manifest.runtime_config["_runtime_only_input_ids"] = input_ids
+        rank_stage = HybridRankContext(
+            stage_idx=0,
+            stage_ranks=[0, 1],
+            tp_degree=2,
+            local_rank=0,
+            leader_rank=0,
+            prev_leader_rank=None,
+            next_leader_rank=None,
+            stage_group="fake-group",
+            pp_group_idx=0,
+            current_pp_group=[0],
+            send_list=[],
+            recv_list=[],
+            send_empty_list=[],
+            recv_empty_list=[],
+        )
+
+        scaffold = {
+            "save_dtype": "float32",
+            "stage_idx": 0,
+            "start_idx": 0,
+            "end_idx": 35,
+            "hidden_size": 4,
+            "batch_size": 1,
+            "runtime_only_generate": True,
+            "modality": "text",
+            "layers": [],
+        }
+        local_bundle = _fake_tp_sharded_bundle(
+            stage_idx=0,
+            start_idx=0,
+            end_idx=35,
+            tp_shard_rank=0,
+        )
+
+        def _echo_object(payload, **_kwargs):
+            return payload
+
+        def _echo_tensors(payload, **_kwargs):
+            return payload
+
+        with patch(
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.build_direct_stage_state",
+            return_value=scaffold,
+        ) as build_mock, patch(
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.broadcast_object_cpu",
+            side_effect=_echo_object,
+        ) as bcast_mock, patch(
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.broadcast_tensor_payload_cpu",
+            side_effect=_echo_tensors,
+        ) as tensor_bcast_mock, patch(
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.materialize_text_stage_state",
+            return_value=local_bundle,
+        ) as materialize_mock, patch(
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.dist.barrier",
+        ):
+            load_stage_state_for_hybrid_rank(
+                manifest,
+                rank=0,
+                rank_stage=rank_stage,
+                device=torch.device("cpu"),
+                compute_dtype_arg="float32",
+            )
+
+        build_mock.assert_not_called()
+        self.assertEqual(bcast_mock.call_args.kwargs["label"], "runtime_inputs_meta stage_idx=0")
+        sent_meta = bcast_mock.call_args.args[0]
+        self.assertIn("runtime_inputs", sent_meta)
+        self.assertNotIn("scaffold", sent_meta)
+        sent_runtime_inputs_meta = sent_meta["runtime_inputs"]
+        self.assertEqual(sent_runtime_inputs_meta["protocol"], "hybrid_runtime_inputs_v1")
+        for field_name in (
+            "layers",
+            "module_name",
+            "stage_type",
+            "stage_idx",
+            "start_idx",
+            "end_idx",
+            "save_dtype",
+            "hidden_size",
+            "batch_size",
+        ):
+            self.assertNotIn(field_name, sent_runtime_inputs_meta)
+        self.assertEqual(tensor_bcast_mock.call_args.kwargs["label"], "runtime_inputs_tensors stage_idx=0")
+        self.assertEqual(set(tensor_bcast_mock.call_args.args[0]), {"runtime_inputs.input_ids"})
+        restored_scaffold = materialize_mock.call_args.kwargs["stage_state_scaffold"]
+        self.assertTrue(restored_scaffold["runtime_inputs_from_broadcast"])
+        self.assertTrue(restored_scaffold["runtime_only_prompt_local_rebuild"])
+        self.assertEqual(restored_scaffold["start_idx"], 0)
+        self.assertEqual(restored_scaffold["end_idx"], 35)
+        self.assertEqual(restored_scaffold["layers"], [])
+        materialize_runtime_config = materialize_mock.call_args.kwargs["runtime_config"]
+        self.assertTrue(torch.equal(materialize_runtime_config["_runtime_only_input_ids"], input_ids))
+
     def test_single_rank_direct_stage_skips_stage_bundle_broadcast(self) -> None:
         manifest = _build_manifest(stage_ranges=[(18, 35)], tp_degrees=[1], modality="text")
         rank_stage = HybridRankContext(
@@ -628,6 +988,8 @@ class HybridDirectLoaderTest(unittest.TestCase):
             "stage_idx": 0,
             "start_idx": 0,
             "end_idx": 35,
+            "hidden_size": 4,
+            "batch_size": 1,
             "layers": [],
         }
         local_bundle = _fake_tp_sharded_bundle(
@@ -671,9 +1033,21 @@ class HybridDirectLoaderTest(unittest.TestCase):
         self.assertIsNone(build_mock.call_args.kwargs["mm_activate_frontend"])
         bcast_mock.assert_called_once()
         self.assertEqual(bcast_mock.call_args.kwargs["label"], "text_scaffold_meta stage_idx=0")
+        sent_meta = bcast_mock.call_args.args[0]
+        sent_scaffold_meta = sent_meta["scaffold"]
+        for field_name in ("stage_idx", "start_idx", "end_idx", "save_dtype", "hidden_size", "batch_size"):
+            self.assertNotIn(field_name, sent_scaffold_meta)
+        self.assertIn("rank_local_fields_local_rebuild", sent_scaffold_meta)
         tensor_bcast_mock.assert_called_once()
         self.assertEqual(tensor_bcast_mock.call_args.kwargs["label"], "text_scaffold_tensors stage_idx=0")
         materialize_mock.assert_called_once()
+        restored_scaffold = materialize_mock.call_args.kwargs["stage_state_scaffold"]
+        self.assertEqual(restored_scaffold["stage_idx"], 0)
+        self.assertEqual(restored_scaffold["start_idx"], 0)
+        self.assertEqual(restored_scaffold["end_idx"], 35)
+        self.assertEqual(restored_scaffold["save_dtype"], "float32")
+        self.assertNotIn("hidden_size", restored_scaffold)
+        self.assertNotIn("batch_size", restored_scaffold)
         self.assertEqual(materialize_mock.call_args.kwargs["tp_shard_rank"], 0)
         self.assertEqual(materialize_mock.call_args.kwargs["tp_shard_world_size"], 2)
         barrier_mock.assert_called_once()

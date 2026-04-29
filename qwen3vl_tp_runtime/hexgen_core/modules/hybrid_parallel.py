@@ -46,7 +46,9 @@ from .tensor_parallel import (
 )
 from ...debug.tp_debug import TpDebugConfig
 from ..schema import (
+    HYBRID_RUNTIME_INPUT_PROTOCOL,
     HybridRankContext,
+    HybridRuntimeInputSchema,
     StageHandoffPayload,
     StageState,
     TextHybridManifest,
@@ -70,8 +72,10 @@ from ...models.qwen3vl.runtime_builder import (
     DirectStageStateBuilder,
     build_direct_stage_state,
     materialize_text_stage_state,
+    pack_runtime_input_transport,
     pack_text_scaffold_transport,
     prepare_text_prompt_meta,
+    restore_runtime_input_transport,
     restore_text_scaffold_transport,
     restore_mm_startup_transport,
     seed_mm_startup_runtime_config,
@@ -84,8 +88,332 @@ from ...models.qwen3vl.capture import load_bundle, move_bundle
 from ...models.qwen3vl.weights import (
     build_text_rotary_embedding,
     build_text_runtime_aux_tensors,
+    load_model_weight_index,
     load_text_model_config_spec,
+    load_tensors_from_index,
 )
+
+
+_RANK_LOCAL_SCAFFOLD_REBUILD_KEY = "rank_local_fields_local_rebuild"
+_RANK_LOCAL_SCAFFOLD_FIELDS = (
+    "stage_idx",
+    "start_idx",
+    "end_idx",
+    "save_dtype",
+    "hidden_size",
+    "batch_size",
+)
+_COMPUTE_DTYPE_REF_NAMES = (
+    "model.language_model.layers.0.input_layernorm.weight",
+    "model.language_model.norm.weight",
+    "model.language_model.embed_tokens.weight",
+)
+_MM_PREFILL_SCAFFOLD_REBUILD_KEY = "mm_prefill_runtime_tensors_local_rebuild"
+_MM_PREFILL_SCAFFOLD_DERIVED_FIELDS = (
+    "prefill_attention_mask_2d",
+    "prefill_attention_mask",
+    "prefill_position_ids",
+    "prefill_cos",
+    "prefill_sin",
+)
+_MM_FRONTEND_METADATA_SCAFFOLD_REBUILD_KEY = "mm_frontend_metadata_local_rebuild"
+_MM_FRONTEND_METADATA_SCAFFOLD_FIELDS = (
+    "num_frames",
+    "frame_paths",
+)
+
+
+def _dtype_name(dtype: torch.dtype) -> str:
+    return str(dtype).replace("torch.", "")
+
+
+def _strip_rank_local_scaffold_fields(scaffold: StageState) -> StageState:
+    compact = dict(scaffold)
+    removed_any = False
+    for field_name in _RANK_LOCAL_SCAFFOLD_FIELDS:
+        if field_name in compact:
+            compact.pop(field_name)
+            removed_any = True
+    if removed_any:
+        compact[_RANK_LOCAL_SCAFFOLD_REBUILD_KEY] = True
+    return compact
+
+
+def _strip_multimodal_prefill_scaffold_tensors(scaffold: StageState) -> StageState:
+    if not bool(scaffold.get("runtime_only_generate")):
+        return scaffold
+    if str(scaffold.get("modality", "text")) != "multimodal":
+        return scaffold
+    compact = dict(scaffold)
+    removed_any = False
+    for field_name in _MM_PREFILL_SCAFFOLD_DERIVED_FIELDS:
+        if field_name in compact:
+            compact.pop(field_name)
+            removed_any = True
+    if removed_any:
+        compact[_MM_PREFILL_SCAFFOLD_REBUILD_KEY] = True
+    return compact
+
+
+def _strip_multimodal_frontend_scaffold_metadata(scaffold: StageState) -> StageState:
+    if not bool(scaffold.get("runtime_only_generate")):
+        return scaffold
+    if str(scaffold.get("modality", "text")) != "multimodal":
+        return scaffold
+    compact = dict(scaffold)
+    removed_any = False
+    for field_name in _MM_FRONTEND_METADATA_SCAFFOLD_FIELDS:
+        if field_name in compact:
+            compact.pop(field_name)
+            removed_any = True
+    if removed_any:
+        compact[_MM_FRONTEND_METADATA_SCAFFOLD_REBUILD_KEY] = True
+    return compact
+
+
+def _compact_hybrid_scaffold_broadcast(scaffold: StageState) -> StageState:
+    return _strip_rank_local_scaffold_fields(
+        _strip_multimodal_frontend_scaffold_metadata(
+            _strip_multimodal_prefill_scaffold_tensors(scaffold)
+        )
+    )
+
+
+def _use_runtime_input_broadcast(manifest: TextHybridManifest) -> bool:
+    runtime_config = manifest.runtime_config
+    return (
+        str(runtime_config.get("mode", "")) == "generate"
+        and not bool(runtime_config.get("include_runtime_reference", True))
+    )
+
+
+def _build_runtime_input_broadcast_payload(
+    runtime_config: dict[str, object],
+    *,
+    stage_idx: int,
+    runtime_modality: str,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "protocol": HYBRID_RUNTIME_INPUT_PROTOCOL,
+        "modality": runtime_modality,
+        "mode": "generate",
+        "runtime_only_generate": True,
+    }
+    if runtime_modality == "text":
+        input_ids = runtime_config.get("_runtime_only_input_ids")
+        if not torch.is_tensor(input_ids):
+            raise RuntimeError("HYBRID text runtime input 缺少 _runtime_only_input_ids。")
+        payload["input_ids"] = input_ids
+        attention_mask = runtime_config.get("_runtime_only_attention_mask")
+        if torch.is_tensor(attention_mask):
+            payload["attention_mask_2d"] = attention_mask
+        payload["runtime_only_prompt_local_rebuild"] = True
+        HybridRuntimeInputSchema.validate(
+            payload,
+            context=f"build stage_idx={int(stage_idx)}",
+        )
+        return payload
+
+    if runtime_modality != "multimodal":
+        raise RuntimeError(f"不支持的 HYBRID runtime input modality={runtime_modality!r}。")
+
+    shared = runtime_config.get("_mm_startup_shared")
+    stage_handoffs = runtime_config.get("_mm_startup_stage_handoffs")
+    if not isinstance(shared, dict):
+        raise RuntimeError("HYBRID multimodal runtime input 缺少 _mm_startup_shared。")
+    if not isinstance(stage_handoffs, dict):
+        raise RuntimeError("HYBRID multimodal runtime input 缺少 _mm_startup_stage_handoffs。")
+
+    stage_payload = stage_handoffs.get(int(stage_idx))
+    if not isinstance(stage_payload, dict):
+        raise RuntimeError(f"HYBRID multimodal runtime input 缺少 stage_idx={stage_idx} 的 handoff。")
+    stage_input = stage_payload.get("stage_input")
+    if not torch.is_tensor(stage_input):
+        raise RuntimeError("HYBRID multimodal runtime input 缺少 stage_input。")
+    payload["shared"] = dict(shared)
+    payload["stage_handoff"] = {
+        "stage_input": stage_input,
+    }
+
+    stage_visuals = runtime_config.get("_mm_startup_stage_visuals")
+    stage_visual_payload = None
+    if isinstance(stage_visuals, dict):
+        maybe_stage_visual_payload = stage_visuals.get(int(stage_idx))
+        if isinstance(maybe_stage_visual_payload, dict):
+            stage_visual_payload = maybe_stage_visual_payload
+    if stage_visual_payload is not None:
+        payload["stage_visuals"] = {
+            "visual_pos_masks": stage_visual_payload.get("visual_pos_masks"),
+            "deepstack_by_layer": {
+                int(layer_idx): deepstack
+                for layer_idx, deepstack in (stage_visual_payload.get("deepstack_by_layer") or {}).items()
+            },
+        }
+    HybridRuntimeInputSchema.validate(
+        payload,
+        context=f"build stage_idx={int(stage_idx)}",
+    )
+    return payload
+
+
+def _restore_stage_scaffold_from_runtime_inputs(
+    runtime_inputs: dict[str, object],
+    *,
+    stage_meta,
+    runtime_config: dict[str, object],
+    compute_dtype: torch.dtype,
+) -> StageState:
+    HybridRuntimeInputSchema.validate(
+        runtime_inputs,
+        context=f"restore stage_idx={int(stage_meta.stage_idx)}",
+    )
+    modality = str(runtime_inputs.get("modality", runtime_config.get("modality", "text")))
+    restored: StageState = {
+        "module_name": f"{modality}_generate_stage",
+        "stage_type": f"{modality}_generate_runtime_only",
+        "runtime_only_generate": True,
+        "modality": modality,
+        "stage_idx": int(stage_meta.stage_idx),
+        "start_idx": int(stage_meta.start_idx),
+        "end_idx": int(stage_meta.end_idx),
+        "save_dtype": _dtype_name(compute_dtype),
+        "max_new_tokens": int(runtime_config.get("max_new_tokens", 4)),
+        "layers": [],
+        "runtime_inputs_from_broadcast": True,
+    }
+    if modality == "text":
+        input_ids = runtime_inputs.get("input_ids")
+        if torch.is_tensor(input_ids):
+            runtime_config["_runtime_only_input_ids"] = input_ids
+            attention_mask_2d = runtime_inputs.get("attention_mask_2d")
+            if torch.is_tensor(attention_mask_2d):
+                runtime_config["_runtime_only_attention_mask"] = attention_mask_2d
+            else:
+                runtime_config.pop("_runtime_only_attention_mask", None)
+            runtime_config["_runtime_only_prompt_metadata_ready"] = True
+        restored["runtime_only_prompt_local_rebuild"] = True
+        return restored
+
+    if modality != "multimodal":
+        raise RuntimeError(f"不支持的 HYBRID runtime input modality={modality!r}。")
+
+    shared = runtime_inputs.get("shared")
+    stage_handoff = runtime_inputs.get("stage_handoff")
+    if not isinstance(shared, dict):
+        raise RuntimeError("HYBRID multimodal runtime input 恢复时缺少 shared。")
+    if not isinstance(stage_handoff, dict):
+        raise RuntimeError("HYBRID multimodal runtime input 恢复时缺少 stage_handoff。")
+    stage_input = stage_handoff.get("stage_input")
+    if not torch.is_tensor(stage_input):
+        raise RuntimeError("HYBRID multimodal runtime input 恢复时缺少 stage_input。")
+    stage_idx = int(stage_meta.stage_idx)
+    runtime_config["_mm_startup_shared"] = dict(shared)
+    runtime_config["_mm_startup_stage_handoffs"] = {
+        stage_idx: {
+            "stage_input": stage_input,
+        }
+    }
+    runtime_config["_mm_startup_contract_ready"] = True
+    runtime_config["_mm_frontend_state_ready"] = True
+    restored["stage_input"] = stage_input
+    if shared.get("rope_deltas") is not None:
+        restored["rope_deltas"] = shared["rope_deltas"]
+    stage_visuals = runtime_inputs.get("stage_visuals")
+    if isinstance(stage_visuals, dict):
+        runtime_config["_mm_startup_stage_visuals"] = {
+            stage_idx: dict(stage_visuals),
+        }
+        if stage_visuals.get("visual_pos_masks") is not None:
+            restored["visual_pos_masks"] = stage_visuals["visual_pos_masks"]
+        deepstack_by_layer = stage_visuals.get("deepstack_by_layer")
+    else:
+        runtime_config.pop("_mm_startup_stage_visuals", None)
+        deepstack_by_layer = None
+    if isinstance(deepstack_by_layer, dict) and deepstack_by_layer:
+        restored["deepstack_by_layer"] = {
+            int(layer_idx): deepstack
+            for layer_idx, deepstack in deepstack_by_layer.items()
+        }
+        restored["deepstack_layer_indices"] = sorted(restored["deepstack_by_layer"])
+    return restored
+
+
+def _first_floating_tensor_dtype(value) -> torch.dtype | None:
+    if torch.is_tensor(value):
+        return value.dtype if value.is_floating_point() else None
+    if isinstance(value, dict):
+        for item in value.values():
+            dtype = _first_floating_tensor_dtype(item)
+            if dtype is not None:
+                return dtype
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            dtype = _first_floating_tensor_dtype(item)
+            if dtype is not None:
+                return dtype
+    return None
+
+
+def _infer_model_compute_dtype(model_path: str) -> torch.dtype:
+    weight_index = load_model_weight_index(model_path)
+    for tensor_name in _COMPUTE_DTYPE_REF_NAMES:
+        if not weight_index.has_tensor(tensor_name):
+            continue
+        tensors = load_tensors_from_index(
+            weight_index,
+            [tensor_name],
+            device=torch.device("cpu"),
+            compute_dtype=None,
+            strict=True,
+        )
+        tensor = tensors.get(tensor_name)
+        if tensor is not None:
+            return tensor.dtype
+    raise RuntimeError("无法从本地模型权重推导 HYBRID scaffold compute dtype。")
+
+
+def _resolve_scaffold_compute_dtype(
+    scaffold: StageState,
+    *,
+    manifest: TextHybridManifest,
+    stage_meta,
+    compute_dtype_arg: str,
+) -> torch.dtype:
+    if compute_dtype_arg != "auto":
+        return dtype_from_name(compute_dtype_arg)
+
+    scaffold_save_dtype = scaffold.get("save_dtype")
+    if isinstance(scaffold_save_dtype, str):
+        return dtype_from_name(scaffold_save_dtype)
+
+    for configured in (
+        getattr(stage_meta, "save_dtype", None),
+        manifest.runtime_config.get("save_dtype"),
+        manifest.save_dtype,
+    ):
+        if isinstance(configured, str) and configured != "auto":
+            return dtype_from_name(configured)
+
+    tensor_dtype = _first_floating_tensor_dtype(scaffold)
+    if tensor_dtype is not None:
+        return tensor_dtype
+
+    return _infer_model_compute_dtype(str(manifest.runtime_config["model_path"]))
+
+
+def _restore_rank_local_scaffold_fields(
+    scaffold: StageState,
+    *,
+    stage_meta,
+    compute_dtype: torch.dtype,
+) -> StageState:
+    restored = dict(scaffold)
+    restored.pop(_RANK_LOCAL_SCAFFOLD_REBUILD_KEY, None)
+    restored.setdefault("stage_idx", int(stage_meta.stage_idx))
+    restored.setdefault("start_idx", int(stage_meta.start_idx))
+    restored.setdefault("end_idx", int(stage_meta.end_idx))
+    restored.setdefault("save_dtype", _dtype_name(compute_dtype))
+    return restored
 
 
 def _build_rank_group_index(rank_groups: list[list[int]], world_size: int) -> list[int]:
@@ -382,54 +710,105 @@ def load_stage_state_for_hybrid_rank(
         return move_bundle(stage_state, device, compute_dtype), compute_dtype
 
     if use_rank_local_sharded_state:
+        use_runtime_inputs = _use_runtime_input_broadcast(manifest)
         scaffold_label_prefix = "text_scaffold" if runtime_modality == "text" else "stage_scaffold"
-        scaffold_kind = "text scaffold" if runtime_modality == "text" else "stage scaffold"
+        transport_label_prefix = "runtime_inputs" if use_runtime_inputs else scaffold_label_prefix
+        scaffold_kind = (
+            "runtime input"
+            if use_runtime_inputs
+            else ("text scaffold" if runtime_modality == "text" else "stage scaffold")
+        )
         if rank_stage.local_rank == 0:
             startup_log(
                 "hybrid-direct-loader",
                 f"rank={rank} stage_idx={rank_stage.stage_idx} leader building shared {scaffold_kind} "
                 f"range={stage_meta.start_idx}:{stage_meta.end_idx}",
             )
-            leader_scaffold = build_direct_stage_state(
-                stage_idx=stage_meta.stage_idx,
-                start_idx=stage_meta.start_idx,
-                end_idx=stage_meta.end_idx,
-                runtime_config=manifest.runtime_config,
-                include_text_weights=False,
-                mm_activate_frontend=(
-                    stage_meta.start_idx == 0 if runtime_modality == "multimodal" else None
-                ),
-            )
+            if use_runtime_inputs:
+                leader_scaffold = None
+                leader_runtime_inputs = _build_runtime_input_broadcast_payload(
+                    manifest.runtime_config,
+                    stage_idx=rank_stage.stage_idx,
+                    runtime_modality=runtime_modality,
+                )
+            else:
+                leader_scaffold = build_direct_stage_state(
+                    stage_idx=stage_meta.stage_idx,
+                    start_idx=stage_meta.start_idx,
+                    end_idx=stage_meta.end_idx,
+                    runtime_config=manifest.runtime_config,
+                    include_text_weights=False,
+                    mm_activate_frontend=(
+                        stage_meta.start_idx == 0 if runtime_modality == "multimodal" else None
+                    ),
+                )
+                leader_scaffold = _compact_hybrid_scaffold_broadcast(leader_scaffold)
+                leader_runtime_inputs = None
         else:
             leader_scaffold = None
+            leader_runtime_inputs = None
 
         startup_log(
             "hybrid-direct-loader",
             f"rank={rank} stage_idx={rank_stage.stage_idx} waiting {scaffold_kind} broadcast from leader="
             f"{rank_stage.leader_rank}",
         )
-        scaffold_meta = None
-        scaffold_tensors = None
-        if leader_scaffold is not None:
-            scaffold_meta, scaffold_tensors = pack_text_scaffold_transport(leader_scaffold)
-        scaffold_meta = broadcast_object_cpu(
-            scaffold_meta,
+        transport_meta = None
+        transport_tensors = None
+        if use_runtime_inputs:
+            if leader_runtime_inputs is not None:
+                transport_meta, transport_tensors = pack_runtime_input_transport(leader_runtime_inputs)
+        elif leader_scaffold is not None:
+            transport_meta, transport_tensors = pack_text_scaffold_transport(leader_scaffold)
+        transport_meta = broadcast_object_cpu(
+            transport_meta,
             src=rank_stage.leader_rank,
             group=rank_stage.stage_group,
-            label=f"{scaffold_label_prefix}_meta stage_idx={rank_stage.stage_idx}",
+            label=f"{transport_label_prefix}_meta stage_idx={rank_stage.stage_idx}",
         )
-        scaffold_tensors = broadcast_tensor_payload_cpu(
-            scaffold_tensors,
+        transport_tensors = broadcast_tensor_payload_cpu(
+            transport_tensors,
             src=rank_stage.leader_rank,
             group=rank_stage.stage_group,
-            label=f"{scaffold_label_prefix}_tensors stage_idx={rank_stage.stage_idx}",
+            label=f"{transport_label_prefix}_tensors stage_idx={rank_stage.stage_idx}",
         )
-        scaffold = restore_text_scaffold_transport(
-            scaffold_meta,
-            scaffold_tensors,
-        )
-        compute_dtype_name = scaffold["save_dtype"] if compute_dtype_arg == "auto" else compute_dtype_arg
-        compute_dtype = dtype_from_name(compute_dtype_name)
+        if use_runtime_inputs:
+            runtime_inputs = restore_runtime_input_transport(
+                transport_meta,
+                transport_tensors,
+            )
+            HybridRuntimeInputSchema.validate(
+                runtime_inputs,
+                context=f"broadcast stage_idx={rank_stage.stage_idx}",
+            )
+            compute_dtype = _resolve_scaffold_compute_dtype(
+                runtime_inputs,
+                manifest=manifest,
+                stage_meta=stage_meta,
+                compute_dtype_arg=compute_dtype_arg,
+            )
+            scaffold = _restore_stage_scaffold_from_runtime_inputs(
+                runtime_inputs,
+                stage_meta=stage_meta,
+                runtime_config=manifest.runtime_config,
+                compute_dtype=compute_dtype,
+            )
+        else:
+            scaffold = restore_text_scaffold_transport(
+                transport_meta,
+                transport_tensors,
+            )
+            compute_dtype = _resolve_scaffold_compute_dtype(
+                scaffold,
+                manifest=manifest,
+                stage_meta=stage_meta,
+                compute_dtype_arg=compute_dtype_arg,
+            )
+            scaffold = _restore_rank_local_scaffold_fields(
+                scaffold,
+                stage_meta=stage_meta,
+                compute_dtype=compute_dtype,
+            )
         startup_log(
             "hybrid-direct-loader",
             f"rank={rank} stage_idx={rank_stage.stage_idx} materializing local direct shard "
