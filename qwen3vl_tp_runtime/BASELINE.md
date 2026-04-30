@@ -21,15 +21,25 @@
 
 ## 当前性能快照
 
-来自 `baseline_runs/20260430-bfloat16-default/runtime-perf-table.md`。
+主要来自 `baseline_runs/20260430-bfloat16-default/runtime-perf-table.md`。
 
-| case | rank | total s | startup bytes | scaffold bytes | handoff bytes | TP collective | CUDA peak | loaded weights |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `tp-text-generate-default` | 0/1 | `8.9s` | `0 B` | `0 B` | `0 B` | `6.68 MiB` | `4.91 GiB` | `4.83 GiB` |
-| `tp-mm-generate-default` | 0/1 | `53.4s` | `11.53 MiB` | `0 B` | `0 B` | `221.48 MiB` | `6.52-6.53 GiB` | `4.83 GiB` |
-| `hybrid-mm-generate-default` stage0 | 0/1 | `32.6-32.9s` | `3.10 MiB / 0 B` | `11.53 MiB` | `3.08 MiB / 0 B` | `113.82 MiB` | `3.22-3.73 GiB` | `2.42 GiB` |
-| `hybrid-mm-generate-default` stage1 | 2 | `32.7s` | `3.10 MiB` | `0 B` | `3.08 MiB` | `0 B` | `5.46 GiB` | `4.11 GiB` |
-| `tp-mm-generate-long-default-bfloat16` | 0/1 | `62.6s` | `11.53 MiB` | `0 B` | `0 B` | `225.70 MiB` | `6.52-6.53 GiB` | `4.83 GiB` |
+| case | rank | total s | startup bytes | scaffold bytes | handoff bytes | TP coll s | TP coll bytes | CUDA peak | loaded weights |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `pp3-text-generate` | 0 | `5.92` | `0 B` | `0 B` | `190.00 KiB` | `0.00` | `0 B` | `3.03 GiB` | `2.98 GiB` |
+| `pp3-text-generate` | 1 | `5.89` | `0 B` | `0 B` | `285.00 KiB` | `0.00` | `0 B` | `2.30 GiB` | `2.26 GiB` |
+| `pp3-text-generate` | 2 | `5.95` | `0 B` | `0 B` | `95.00 KiB` | `0.00` | `0 B` | `3.03 GiB` | `2.98 GiB` |
+| `pp3-mm-generate` | 0 | `31.91` | `14.43 MiB` | `0 B` | `6.15 MiB` | `0.00` | `0 B` | `3.86 GiB` | `2.98 GiB` |
+| `pp3-mm-generate` | 1 | `31.98` | `7.21 MiB` | `0 B` | `9.23 MiB` | `0.00` | `0 B` | `3.12 GiB` | `2.26 GiB` |
+| `pp3-mm-generate` | 2 | `32.03` | `7.21 MiB` | `0 B` | `3.08 MiB` | `0.00` | `0 B` | `3.95 GiB` | `2.98 GiB` |
+| `tp-text-generate-default` | 0 | `8.96` | `0 B` | `0 B` | `0 B` | `2.16` | `6.68 MiB` | `4.91 GiB` | `4.83 GiB` |
+| `tp-text-generate-default` | 1 | `8.89` | `0 B` | `0 B` | `0 B` | `2.03` | `6.68 MiB` | `4.91 GiB` | `4.83 GiB` |
+| `tp-mm-generate-default` | 0 | `53.44` | `11.53 MiB` | `0 B` | `0 B` | `24.51` | `221.48 MiB` | `6.53 GiB` | `4.83 GiB` |
+| `tp-mm-generate-default` | 1 | `53.43` | `11.53 MiB` | `0 B` | `0 B` | `23.77` | `221.48 MiB` | `6.52 GiB` | `4.83 GiB` |
+| `hybrid-mm-generate-default` | 0 | `32.58` | `3.10 MiB` | `11.53 MiB` | `3.08 MiB` | `2.08` | `113.82 MiB` | `3.73 GiB` | `2.42 GiB` |
+| `hybrid-mm-generate-default` | 1 | `32.86` | `0 B` | `11.53 MiB` | `0 B` | `1.63` | `113.82 MiB` | `3.22 GiB` | `2.42 GiB` |
+| `hybrid-mm-generate-default` | 2 | `32.66` | `3.10 MiB` | `0 B` | `3.08 MiB` | `0.00` | `0 B` | `5.46 GiB` | `4.11 GiB` |
+| `tp-mm-generate-long-default-bfloat16` | 0 | `62.66` | `11.53 MiB` | `0 B` | `0 B` | `28.84` | `225.70 MiB` | `6.53 GiB` | `4.83 GiB` |
+| `tp-mm-generate-long-default-bfloat16` | 1 | `62.56` | `11.53 MiB` | `0 B` | `0 B` | `28.07` | `225.70 MiB` | `6.52 GiB` | `4.83 GiB` |
 
 ## 关键 Before / After
 

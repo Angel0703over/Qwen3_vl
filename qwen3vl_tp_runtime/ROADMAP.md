@@ -56,11 +56,11 @@
 
 | step | 任务 | 目标 | 验收重点 |
 | --- | --- | --- | --- |
-| 17 | PP handoff overlap | 尝试让 PP handoff 与本地计算重叠 | correctness 不变，wait 时间下降，无死锁 |
-| 18 | Stage partition 搜索 | 搜索更好的 stage range，支持异构 Jetson | 每组有 correctness + perf |
-| 20 | Embedding / lm_head vocab parallelism | 研究 vocab parallel embedding / lm_head | token/logits/top-k 语义稳定 |
-| 21 | KV cache session 化 | stage-local cache manager，prefill 后 decode 复用 | cache 行为可测 |
-| 22 | Serving engine 方向 | scheduler、paged KV、batching、streaming | correctness/baseline 稳定后再推进 |
+| 17（这条先不需要做） | PP handoff overlap | 尝试让 PP handoff 与本地计算重叠 | correctness 不变，wait 时间下降，无死锁 |
+| 18（这条先不需要做） | Stage partition 搜索 | 搜索更好的 stage range，支持异构 Jetson | 每组有 correctness + perf |
+| 19（这条先不需要做） | | Embedding / lm_head vocab parallelism | 研究 vocab parallel embedding / lm_head | token/logits/top-k 语义稳定 |
+| 20 | KV cache session 化 | stage-local cache manager，prefill 后 decode 复用 | cache 行为可测 |
+| 21 | Serving engine 方向 | scheduler、paged KV、batching、streaming | correctness/baseline 稳定后再推进 |
 
 ## 固定规则
 
