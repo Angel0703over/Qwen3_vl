@@ -11,7 +11,7 @@ import qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel as pipeline_modu
 import qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel as tensor_module
 import qwen3vl_tp_runtime.debug.tensor_parallel_replay as tp_replay_module
 from qwen3vl_tp_runtime.hexgen_core.schema import HybridRuntimeInputSchema, StageState
-from qwen3vl_tp_runtime.hexgen_core.transport import StageCommunicator, StageHandoffTransport
+from qwen3vl_tp_runtime.hexgen_core.transport import StageCommunicator
 from qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel import prepare_text_generate_hybrid
 from qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel import (
     prepare_text_generate_pipeline,
@@ -88,8 +88,8 @@ class CompatPackageExportsTest(unittest.TestCase):
         self.assertIs(core_pkg.run_tensor_parallel_rank, tensor_module.run_tensor_parallel_rank)
         self.assertIs(core_pkg.StageCommunicator, StageCommunicator)
         self.assertIs(core_pkg.HybridRuntimeInputSchema, HybridRuntimeInputSchema)
-        self.assertTrue(issubclass(core_pkg.StageHandoffTransport, StageCommunicator))
-        self.assertTrue(issubclass(StageHandoffTransport, StageCommunicator))
+        self.assertNotIn("StageHandoffTransport", core_pkg.__all__)
+        self.assertFalse(hasattr(core_pkg, "StageHandoffTransport"))
         self.assertIn("StageState", core_pkg.__all__)
         self.assertIn("StageStateView", core_pkg.__all__)
         self.assertIn("as_stage_state_view", core_pkg.__all__)
@@ -131,9 +131,12 @@ class CompatPackageExportsTest(unittest.TestCase):
         self.assertIn("load_stage_state_for_rank", pipeline_module.DIRECT_RUNTIME_EXPORTS)
         self.assertIn("run_text_generate_pipeline_rank", pipeline_module.__all__)
         self.assertIn("run_text_generate_pipeline_rank", pipeline_module.DIRECT_RUNTIME_EXPORTS)
-        self.assertIn("StageRunner", pipeline_module.__all__)
-        self.assertIn("GenerateWorker", pipeline_module.__all__)
-        self.assertIn("DecodeWorker", pipeline_module.__all__)
+        self.assertNotIn("StageRunner", pipeline_module.__all__)
+        self.assertNotIn("GenerateWorker", pipeline_module.__all__)
+        self.assertNotIn("DecodeWorker", pipeline_module.__all__)
+        self.assertFalse(hasattr(pipeline_module, "StageRunner"))
+        self.assertFalse(hasattr(pipeline_module, "GenerateWorker"))
+        self.assertFalse(hasattr(pipeline_module, "DecodeWorker"))
         self.assertNotIn("load_stage_bundle_by_index", pipeline_module.__all__)
         self.assertNotIn("load_stage_bundle_for_rank", pipeline_module.__all__)
         self.assertIn("load_stage_bundle_by_index", pipeline_module.LEGACY_REPLAY_EXPORTS)
@@ -145,9 +148,12 @@ class CompatPackageExportsTest(unittest.TestCase):
         self.assertIn("load_stage_state_for_hybrid_rank", hybrid_module.DIRECT_RUNTIME_EXPORTS)
         self.assertIn("run_text_hybrid_rank", hybrid_module.__all__)
         self.assertIn("run_text_hybrid_rank", hybrid_module.DIRECT_RUNTIME_EXPORTS)
-        self.assertIn("StageRunner", hybrid_module.__all__)
-        self.assertIn("GenerateWorker", hybrid_module.__all__)
-        self.assertIn("DecodeWorker", hybrid_module.__all__)
+        self.assertNotIn("StageRunner", hybrid_module.__all__)
+        self.assertNotIn("GenerateWorker", hybrid_module.__all__)
+        self.assertNotIn("DecodeWorker", hybrid_module.__all__)
+        self.assertFalse(hasattr(hybrid_module, "StageRunner"))
+        self.assertFalse(hasattr(hybrid_module, "GenerateWorker"))
+        self.assertFalse(hasattr(hybrid_module, "DecodeWorker"))
         self.assertNotIn("prepare_text_generate_hybrid", hybrid_module.__all__)
         self.assertIn("prepare_text_generate_hybrid", hybrid_module.LEGACY_REPLAY_EXPORTS)
 

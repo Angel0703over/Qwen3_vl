@@ -35,6 +35,7 @@ bash sync-to-jetson2.sh --host 10.126.126.4 --git-changed
 - `hexgen_core/modules/` 只放三种并行后端。
 - 主路径对象叫 `StageState`。
 - `bundle` 只保留给 replay/debug/capture。
+- 内部 helper 优先用 vLLM-style `model_input`；wire key/protocol 仍保留 `runtime_inputs`。
 - `--manifest-path`、capture、trace、dump 都属于 debug/replay 路径。
 
 ## 当前状态
@@ -60,6 +61,8 @@ bash sync-to-jetson2.sh --host 10.126.126.4 --git-changed
 | comm dtype | `float32`，`tp-mm` 约 `449.12 MiB` | 默认 `bfloat16`，约 `221.48 MiB` | TP collective bytes 约减半 |
 | pure TP runtime input | `4` broadcast events / rank | `0` | 本地 embedding 或 local stage input |
 | Step 15 derived shared | `11` keys / `12,093,371` bytes | `9` keys / `12,068,291` bytes | affected payload 少 `25,080` bytes |
+| 代码冗余清理 | PP/HYBRID worker wrapper + `StageHandoffTransport` | 直接 phase impl + `StageCommunicator` | 主路径 API 更窄 |
+| vLLM-style 命名 | HYBRID `runtime_input` helper | 内部 `model_input` helper | 代码更直观，wire protocol 不变 |
 
 ## Step 15 结论
 

@@ -26,6 +26,8 @@
 | Step 15 空 slot | payload 带 `None` tensor slot | 跳过 `None` slot | key count 下降，bytes 不变 |
 | Step 15 derived shared | 传 `attention_mask_2d/position_ids` | 可重建时本地恢复 | affected payload 少 `25,080` bytes |
 | Step 15 大 payload | `stage_input/deepstack` 语义未冻结 | owner/rebuild 规则写清楚 | 后续删大 tensor 有安全边界 |
+| 代码冗余清理 | PP/HYBRID 有 worker 薄封装和 transport 旧别名 | 直接 phase impl + `StageCommunicator` | 主路径 API 更窄 |
+| vLLM-style 命名 | HYBRID helper 叫 `runtime_input` | 内部 helper 改为 `model_input` | 代码更直观，wire protocol 不变 |
 
 ## 当前任务：16. Buffer reuse / pinned memory
 
@@ -67,6 +69,7 @@
 - payload/transport 改动必须记录 before/after keys、tensor count、bytes。
 - 性能改动必须保留 before/after runtime records。
 - `StageState` 是主路径术语；`bundle` 只保留给 replay/debug/capture。
+- 内部函数名优先用 vLLM-style `model_input`；已有 wire key/protocol 不为命名重构单独改动。
 - `hexgen_core/modules/` 只放 `pipeline_parallel.py`、`tensor_parallel.py`、`hybrid_parallel.py`。
 - HYBRID 可以调用 PP/TP helper；TP 不能反向依赖 HYBRID。
 

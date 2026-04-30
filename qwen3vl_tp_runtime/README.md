@@ -53,11 +53,15 @@ Qwen3-VL 分布式推理 runtime 原型。主路径支持 `pp`、`tp`、`hybrid`
 | pure TP comm dtype | `449.12 MiB` collective | `221.48 MiB` collective |
 | pure TP runtime input broadcast | `4` events / rank | `0` events |
 | Step 15 derived shared payload | `12,093,371` bytes | `12,068,291` bytes |
+| PP/HYBRID worker wrapper | `GenerateWorker/DecodeWorker` 薄封装 | 直接调用 phase impl |
+| transport 旧别名 | `StageHandoffTransport` 兼容 subclass | 统一 `StageCommunicator` |
+| HYBRID helper 命名 | `runtime_input` helper | vLLM-style `model_input` helper |
 
 ## 固定术语
 
 - 主路径执行对象叫 `StageState`。
 - `bundle` 只保留给 replay、capture、debug 路径。
+- 内部 helper 用 `model_input` 对齐 vLLM；wire protocol 暂保留 `runtime_inputs`。
 - `PP` 和 `TP` 是基础后端；`HYBRID` 是组合后端。
 - HYBRID 可以调用 PP/TP helper；TP 不能反向依赖 HYBRID。
 
@@ -88,4 +92,5 @@ Qwen3-VL 分布式推理 runtime 原型。主路径支持 `pp`、`tp`、`hybrid`
 - `ROADMAP.md`：当前任务和后续队列。
 - `BASELINE.md`：当前 baseline、before/after 效果、验收字段。
 - `SESSION_HANDOFF.md`：新对话接手用的简明上下文。
+- `QWEN3VL_VIDEO_INPUT.md`：Qwen3-VL 完整视频输入、抽帧、processor 和 frontend 流程。
 - `baseline_runs/*/README.md`：具体某轮真实 Jetson profile。

@@ -724,7 +724,7 @@ class HybridDirectLoaderTest(unittest.TestCase):
             },
         }
 
-        payload = hybrid_parallel_module._build_runtime_input_broadcast_payload(
+        payload = hybrid_parallel_module._build_model_input_broadcast_payload(
             runtime_config,
             stage_idx=0,
             runtime_modality="multimodal",

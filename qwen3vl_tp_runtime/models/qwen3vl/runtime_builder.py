@@ -67,9 +67,9 @@ from .runtime_text_stage import (
     compact_text_stage_state,
     compact_text_scaffold,
     materialize_text_stage_state as _materialize_text_stage_state,
-    pack_runtime_input_transport,
+    pack_model_input_transport,
     pack_text_scaffold_transport,
-    restore_runtime_input_transport,
+    restore_model_input_transport,
     restore_text_scaffold_transport,
 )
 from .weights import (

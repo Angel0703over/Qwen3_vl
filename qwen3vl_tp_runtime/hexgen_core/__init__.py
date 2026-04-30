@@ -68,7 +68,6 @@ DIRECT_RUNTIME_EXPORTS = [
     "trace_stage_tp",
     "StageHandoffMessage",
     "StageCommunicator",
-    "StageHandoffTransport",
     "TensorPayload",
     "send_payload",
     "recv_payload",
@@ -227,7 +226,6 @@ _MODULE_EXPORTS = {
     "qwen3vl_tp_runtime.hexgen_core.transport": [
         "StageHandoffMessage",
         "StageCommunicator",
-        "StageHandoffTransport",
         "TensorPayload",
         "send_payload",
         "recv_payload",

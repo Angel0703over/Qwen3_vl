@@ -495,13 +495,13 @@ def restore_text_scaffold_transport(
     )
 
 
-def pack_runtime_input_transport(
-    runtime_inputs: dict[str, Any],
+def pack_model_input_transport(
+    model_input: dict[str, Any],
 ) -> tuple[dict[str, Any], dict[str, torch.Tensor | None]]:
-    return pack_named_tensor_dict_transport(runtime_inputs, root_key="runtime_inputs")
+    return pack_named_tensor_dict_transport(model_input, root_key="runtime_inputs")
 
 
-def restore_runtime_input_transport(
+def restore_model_input_transport(
     meta: dict[str, Any],
     tensor_payload: dict[str, torch.Tensor | None] | None,
 ) -> dict[str, Any]:

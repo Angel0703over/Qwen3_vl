@@ -73,10 +73,10 @@ from ...models.qwen3vl.runtime_builder import (
     build_direct_stage_state,
     compact_mm_shared_for_transport,
     materialize_text_stage_state,
-    pack_runtime_input_transport,
+    pack_model_input_transport,
     pack_text_scaffold_transport,
     prepare_text_prompt_meta,
-    restore_runtime_input_transport,
+    restore_model_input_transport,
     restore_text_scaffold_transport,
     restore_mm_startup_transport,
     seed_mm_startup_runtime_config,
@@ -180,7 +180,7 @@ def _compact_hybrid_scaffold_broadcast(scaffold: StageState) -> StageState:
     )
 
 
-def _use_runtime_input_broadcast(manifest: TextHybridManifest) -> bool:
+def _use_model_input_broadcast(manifest: TextHybridManifest) -> bool:
     runtime_config = manifest.runtime_config
     return (
         str(runtime_config.get("mode", "")) == "generate"
@@ -188,7 +188,7 @@ def _use_runtime_input_broadcast(manifest: TextHybridManifest) -> bool:
     )
 
 
-def _build_runtime_input_broadcast_payload(
+def _build_model_input_broadcast_payload(
     runtime_config: dict[str, object],
     *,
     stage_idx: int,
@@ -260,18 +260,18 @@ def _build_runtime_input_broadcast_payload(
     return payload
 
 
-def _restore_stage_scaffold_from_runtime_inputs(
-    runtime_inputs: dict[str, object],
+def _restore_stage_state_from_model_input(
+    model_input: dict[str, object],
     *,
     stage_meta,
     runtime_config: dict[str, object],
     compute_dtype: torch.dtype,
 ) -> StageState:
     HybridRuntimeInputSchema.validate(
-        runtime_inputs,
+        model_input,
         context=f"restore stage_idx={int(stage_meta.stage_idx)}",
     )
-    modality = str(runtime_inputs.get("modality", runtime_config.get("modality", "text")))
+    modality = str(model_input.get("modality", runtime_config.get("modality", "text")))
     restored: StageState = {
         "module_name": f"{modality}_generate_stage",
         "stage_type": f"{modality}_generate_runtime_only",
@@ -286,10 +286,10 @@ def _restore_stage_scaffold_from_runtime_inputs(
         "runtime_inputs_from_broadcast": True,
     }
     if modality == "text":
-        input_ids = runtime_inputs.get("input_ids")
+        input_ids = model_input.get("input_ids")
         if torch.is_tensor(input_ids):
             runtime_config["_runtime_only_input_ids"] = input_ids
-            attention_mask_2d = runtime_inputs.get("attention_mask_2d")
+            attention_mask_2d = model_input.get("attention_mask_2d")
             if torch.is_tensor(attention_mask_2d):
                 runtime_config["_runtime_only_attention_mask"] = attention_mask_2d
             else:
@@ -301,8 +301,8 @@ def _restore_stage_scaffold_from_runtime_inputs(
     if modality != "multimodal":
         raise RuntimeError(f"不支持的 HYBRID runtime input modality={modality!r}。")
 
-    shared = runtime_inputs.get("shared")
-    stage_handoff = runtime_inputs.get("stage_handoff")
+    shared = model_input.get("shared")
+    stage_handoff = model_input.get("stage_handoff")
     if not isinstance(shared, dict):
         raise RuntimeError("HYBRID multimodal runtime input 恢复时缺少 shared。")
     if not isinstance(stage_handoff, dict):
@@ -322,7 +322,7 @@ def _restore_stage_scaffold_from_runtime_inputs(
     restored["stage_input"] = stage_input
     if shared.get("rope_deltas") is not None:
         restored["rope_deltas"] = shared["rope_deltas"]
-    stage_visuals = runtime_inputs.get("stage_visuals")
+    stage_visuals = model_input.get("stage_visuals")
     if isinstance(stage_visuals, dict):
         runtime_config["_mm_startup_stage_visuals"] = {
             stage_idx: dict(stage_visuals),
@@ -714,12 +714,12 @@ def load_stage_state_for_hybrid_rank(
         return move_bundle(stage_state, device, compute_dtype), compute_dtype
 
     if use_rank_local_sharded_state:
-        use_runtime_inputs = _use_runtime_input_broadcast(manifest)
+        use_model_input = _use_model_input_broadcast(manifest)
         scaffold_label_prefix = "text_scaffold" if runtime_modality == "text" else "stage_scaffold"
-        transport_label_prefix = "runtime_inputs" if use_runtime_inputs else scaffold_label_prefix
+        transport_label_prefix = "runtime_inputs" if use_model_input else scaffold_label_prefix
         scaffold_kind = (
-            "runtime input"
-            if use_runtime_inputs
+            "model input"
+            if use_model_input
             else ("text scaffold" if runtime_modality == "text" else "stage scaffold")
         )
         if rank_stage.local_rank == 0:
@@ -728,9 +728,9 @@ def load_stage_state_for_hybrid_rank(
                 f"rank={rank} stage_idx={rank_stage.stage_idx} leader building shared {scaffold_kind} "
                 f"range={stage_meta.start_idx}:{stage_meta.end_idx}",
             )
-            if use_runtime_inputs:
+            if use_model_input:
                 leader_scaffold = None
-                leader_runtime_inputs = _build_runtime_input_broadcast_payload(
+                leader_model_input = _build_model_input_broadcast_payload(
                     manifest.runtime_config,
                     stage_idx=rank_stage.stage_idx,
                     runtime_modality=runtime_modality,
@@ -747,10 +747,10 @@ def load_stage_state_for_hybrid_rank(
                     ),
                 )
                 leader_scaffold = _compact_hybrid_scaffold_broadcast(leader_scaffold)
-                leader_runtime_inputs = None
+                leader_model_input = None
         else:
             leader_scaffold = None
-            leader_runtime_inputs = None
+            leader_model_input = None
 
         startup_log(
             "hybrid-direct-loader",
@@ -759,9 +759,9 @@ def load_stage_state_for_hybrid_rank(
         )
         transport_meta = None
         transport_tensors = None
-        if use_runtime_inputs:
-            if leader_runtime_inputs is not None:
-                transport_meta, transport_tensors = pack_runtime_input_transport(leader_runtime_inputs)
+        if use_model_input:
+            if leader_model_input is not None:
+                transport_meta, transport_tensors = pack_model_input_transport(leader_model_input)
         elif leader_scaffold is not None:
             transport_meta, transport_tensors = pack_text_scaffold_transport(leader_scaffold)
         transport_meta = broadcast_object_cpu(
@@ -776,23 +776,23 @@ def load_stage_state_for_hybrid_rank(
             group=rank_stage.stage_group,
             label=f"{transport_label_prefix}_tensors stage_idx={rank_stage.stage_idx}",
         )
-        if use_runtime_inputs:
-            runtime_inputs = restore_runtime_input_transport(
+        if use_model_input:
+            model_input = restore_model_input_transport(
                 transport_meta,
                 transport_tensors,
             )
             HybridRuntimeInputSchema.validate(
-                runtime_inputs,
+                model_input,
                 context=f"broadcast stage_idx={rank_stage.stage_idx}",
             )
             compute_dtype = _resolve_scaffold_compute_dtype(
-                runtime_inputs,
+                model_input,
                 manifest=manifest,
                 stage_meta=stage_meta,
                 compute_dtype_arg=compute_dtype_arg,
             )
-            scaffold = _restore_stage_scaffold_from_runtime_inputs(
-                runtime_inputs,
+            scaffold = _restore_stage_state_from_model_input(
+                model_input,
                 stage_meta=stage_meta,
                 runtime_config=manifest.runtime_config,
                 compute_dtype=compute_dtype,
@@ -1668,100 +1668,6 @@ def _run_text_generate_hybrid_phase_impl(
     return stats, updated_cache
 
 
-class StageRunner:
-    """Base worker context for one hybrid PP+TP rank."""
-
-    def __init__(
-        self,
-        *,
-        rank: int,
-        rank_stage: HybridRankContext,
-        manifest: TextHybridManifest,
-        handoff_transport: StageCommunicator,
-        comm_dtype: torch.dtype,
-        tp_attn_math_mode: str,
-        tp_mlp_math_mode: str,
-        return_tensor: bool,
-    ) -> None:
-        self.rank = rank
-        self.rank_stage = rank_stage
-        self.manifest = manifest
-        self.handoff_transport = handoff_transport
-        self.comm_dtype = comm_dtype
-        self.tp_attn_math_mode = tp_attn_math_mode
-        self.tp_mlp_math_mode = tp_mlp_math_mode
-        self.return_tensor = return_tensor
-
-
-class GenerateWorker(StageRunner):
-    """Runs one prefill/decode phase for hybrid greedy generation."""
-
-    def run_phase(
-        self,
-        *,
-        runtime_state: StageState,
-        phase_kind: str,
-        current_token_id: int | None,
-        cache_by_layer: dict[int, tuple[torch.Tensor | None, torch.Tensor | None]] | None,
-    ) -> tuple[dict, dict[int, tuple[torch.Tensor | None, torch.Tensor | None]] | None]:
-        return _run_text_generate_hybrid_phase_impl(
-            rank=self.rank,
-            rank_stage=self.rank_stage,
-            manifest=self.manifest,
-            runtime_state=runtime_state,
-            handoff_transport=self.handoff_transport,
-            phase_kind=phase_kind,
-            current_token_id=current_token_id,
-            cache_by_layer=cache_by_layer,
-            comm_dtype=self.comm_dtype,
-            tp_attn_math_mode=self.tp_attn_math_mode,
-            tp_mlp_math_mode=self.tp_mlp_math_mode,
-            return_tensor=self.return_tensor,
-        )
-
-    def run_prefill(
-        self,
-        runtime_state: StageState,
-    ) -> tuple[dict, dict[int, tuple[torch.Tensor | None, torch.Tensor | None]] | None]:
-        return self.run_phase(
-            runtime_state=runtime_state,
-            phase_kind="prefill",
-            current_token_id=None,
-            cache_by_layer=None,
-        )
-
-    def run_decode(
-        self,
-        *,
-        runtime_state: StageState,
-        current_token_id: int,
-        cache_by_layer: dict[int, tuple[torch.Tensor | None, torch.Tensor | None]] | None,
-    ) -> tuple[dict, dict[int, tuple[torch.Tensor | None, torch.Tensor | None]] | None]:
-        return self.run_phase(
-            runtime_state=runtime_state,
-            phase_kind="decode",
-            current_token_id=current_token_id,
-            cache_by_layer=cache_by_layer,
-        )
-
-
-class DecodeWorker(GenerateWorker):
-    """Narrow hybrid worker for a single decode step."""
-
-    def run_step(
-        self,
-        *,
-        runtime_state: StageState,
-        current_token_id: int,
-        cache_by_layer: dict[int, tuple[torch.Tensor | None, torch.Tensor | None]] | None,
-    ) -> tuple[dict, dict[int, tuple[torch.Tensor | None, torch.Tensor | None]] | None]:
-        return self.run_decode(
-            runtime_state=runtime_state,
-            current_token_id=current_token_id,
-            cache_by_layer=cache_by_layer,
-        )
-
-
 def _run_text_generate_hybrid_phase(
     *,
     rank: int,
@@ -1777,20 +1683,19 @@ def _run_text_generate_hybrid_phase(
     tp_mlp_math_mode: str,
     return_tensor: bool,
 ) -> tuple[dict, dict[int, tuple[torch.Tensor | None, torch.Tensor | None]] | None]:
-    return GenerateWorker(
+    return _run_text_generate_hybrid_phase_impl(
         rank=rank,
         rank_stage=rank_stage,
         manifest=manifest,
+        runtime_state=runtime_state,
         handoff_transport=handoff_transport,
+        phase_kind=phase_kind,
+        current_token_id=current_token_id,
+        cache_by_layer=cache_by_layer,
         comm_dtype=comm_dtype,
         tp_attn_math_mode=tp_attn_math_mode,
         tp_mlp_math_mode=tp_mlp_math_mode,
         return_tensor=return_tensor,
-    ).run_phase(
-        runtime_state=runtime_state,
-        phase_kind=phase_kind,
-        current_token_id=current_token_id,
-        cache_by_layer=cache_by_layer,
     )
 
 
@@ -2173,9 +2078,6 @@ def run_text_hybrid_rank(
 
 
 DIRECT_RUNTIME_EXPORTS = [
-    "StageRunner",
-    "GenerateWorker",
-    "DecodeWorker",
     "TextHybridManifest",
     "HybridRankContext",
     "init_stage_groups",

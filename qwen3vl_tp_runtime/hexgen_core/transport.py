@@ -138,10 +138,6 @@ class StageCommunicator:
         )
 
 
-class StageHandoffTransport(StageCommunicator):
-    """Compatibility name for the old stage handoff transport wrapper."""
-
-
 def _send_scalar(value: int, dst: int) -> None:
     dist.send(torch.tensor([value], dtype=torch.int64), dst=dst)
 
@@ -493,7 +489,6 @@ __all__ = [
     "TensorPayload",
     "StageHandoffMessage",
     "StageCommunicator",
-    "StageHandoffTransport",
     "PayloadSummary",
     "broadcast_payload",
     "send_payload",

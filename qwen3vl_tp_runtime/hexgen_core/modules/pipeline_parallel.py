@@ -1234,91 +1234,6 @@ def _run_text_generate_phase_impl(
     return stats, updated_cache
 
 
-class StageRunner:
-    """Base worker context for one PP rank's stage execution."""
-
-    def __init__(
-        self,
-        *,
-        rank: int,
-        world_size: int,
-        manifest: TextPipelineManifest,
-        handoff_transport: StageCommunicator,
-        return_tensor: bool,
-    ) -> None:
-        self.rank = rank
-        self.world_size = world_size
-        self.manifest = manifest
-        self.handoff_transport = handoff_transport
-        self.return_tensor = return_tensor
-
-
-class GenerateWorker(StageRunner):
-    """Runs one prefill/decode phase for PP greedy generation."""
-
-    def run_phase(
-        self,
-        *,
-        runtime_state: StageState,
-        phase_kind: str,
-        current_token_id: int | None,
-        cache_by_layer: dict[int, tuple[torch.Tensor | None, torch.Tensor | None]] | None,
-    ) -> tuple[dict, dict[int, tuple[torch.Tensor | None, torch.Tensor | None]] | None]:
-        return _run_text_generate_phase_impl(
-            rank=self.rank,
-            world_size=self.world_size,
-            manifest=self.manifest,
-            runtime_state=runtime_state,
-            handoff_transport=self.handoff_transport,
-            phase_kind=phase_kind,
-            current_token_id=current_token_id,
-            cache_by_layer=cache_by_layer,
-            return_tensor=self.return_tensor,
-        )
-
-    def run_prefill(
-        self,
-        runtime_state: StageState,
-    ) -> tuple[dict, dict[int, tuple[torch.Tensor | None, torch.Tensor | None]] | None]:
-        return self.run_phase(
-            runtime_state=runtime_state,
-            phase_kind="prefill",
-            current_token_id=None,
-            cache_by_layer=None,
-        )
-
-    def run_decode(
-        self,
-        *,
-        runtime_state: StageState,
-        current_token_id: int,
-        cache_by_layer: dict[int, tuple[torch.Tensor | None, torch.Tensor | None]] | None,
-    ) -> tuple[dict, dict[int, tuple[torch.Tensor | None, torch.Tensor | None]] | None]:
-        return self.run_phase(
-            runtime_state=runtime_state,
-            phase_kind="decode",
-            current_token_id=current_token_id,
-            cache_by_layer=cache_by_layer,
-        )
-
-
-class DecodeWorker(GenerateWorker):
-    """Narrow PP worker for a single decode step."""
-
-    def run_step(
-        self,
-        *,
-        runtime_state: StageState,
-        current_token_id: int,
-        cache_by_layer: dict[int, tuple[torch.Tensor | None, torch.Tensor | None]] | None,
-    ) -> tuple[dict, dict[int, tuple[torch.Tensor | None, torch.Tensor | None]] | None]:
-        return self.run_decode(
-            runtime_state=runtime_state,
-            current_token_id=current_token_id,
-            cache_by_layer=cache_by_layer,
-        )
-
-
 def _run_text_generate_phase(
     *,
     rank: int,
@@ -1331,17 +1246,16 @@ def _run_text_generate_phase(
     cache_by_layer: dict[int, tuple[torch.Tensor | None, torch.Tensor | None]] | None,
     return_tensor: bool,
 ) -> tuple[dict, dict[int, tuple[torch.Tensor | None, torch.Tensor | None]] | None]:
-    return GenerateWorker(
+    return _run_text_generate_phase_impl(
         rank=rank,
         world_size=world_size,
         manifest=manifest,
-        handoff_transport=handoff_transport,
-        return_tensor=return_tensor,
-    ).run_phase(
         runtime_state=runtime_state,
+        handoff_transport=handoff_transport,
         phase_kind=phase_kind,
         current_token_id=current_token_id,
         cache_by_layer=cache_by_layer,
+        return_tensor=return_tensor,
     )
 
 
@@ -1637,9 +1551,6 @@ def run_text_pipeline_rank(
 DIRECT_RUNTIME_EXPORTS = [
     "StageSpec",
     "BoundaryStats",
-    "StageRunner",
-    "GenerateWorker",
-    "DecodeWorker",
     "TextPipelineManifest",
     "TextGeneratePipelineRunner",
     "TextPipelineRunner",

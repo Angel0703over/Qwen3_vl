@@ -44,6 +44,7 @@
 | Step 15 空 tensor slot | `tp-mm`: `12` keys / `12,093,371` bytes | `11` keys / `12,093,371` bytes | key count 下降，bytes 不变 |
 | Step 15 derived shared | `tp-mm`: `11` keys / `12,093,371` bytes | `9` keys / `12,068,291` bytes | 少 `25,080` bytes |
 | Step 15 hybrid stage1 startup | `7` keys / `3,245,384` bytes | `5` keys / `3,220,304` bytes | 少 `25,080` bytes |
+| vLLM-style 函数命名 | HYBRID helper 叫 `runtime_input` | 内部 helper 改为 `model_input` | wire protocol 和 bytes 不变 |
 
 ## Step 15 Payload 结论
 
