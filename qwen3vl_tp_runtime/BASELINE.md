@@ -935,6 +935,362 @@ Perf table：
 | `hybrid-mm-generate` | 1 | 35.36 | 0 B | 11.53 MiB | 227.64 MiB | 3.22 GiB | 2.42 GiB |
 | `hybrid-mm-generate` | 2 | 35.14 | 3.10 MiB | 0 B | 648.46 MiB | 5.46 GiB | 4.11 GiB |
 
+## 2026-04-29 TP collective profiling 第一刀记录
+
+本轮是 `ROADMAP.md` step 14 的第一刀，只补观测，不改 TP 计算语义。
+
+已落地：
+
+- `all_reduce_cpu` / `all_gather_cpu` / `broadcast_cpu` 支持 `profile_context`。
+- attention / MLP / runtime input broadcast 会给 TP collective event 标注：
+  - `phase`
+  - `layer_idx`
+  - `module`
+  - `reason`
+- `collect_runtime_perf.py` 输出 `payload.tp_collective_breakdown`，按 `phase/module/reason/operation` 聚合：
+  - `event_count`
+  - `elapsed_seconds`
+  - `tensor_bytes`
+
+当前 before/after：
+
+- generated ids/text：真实 Jetson profile 已确认不变。
+- payload total bytes：理论不变，本轮只增加事件 metadata；`broadcast_cpu` / `all_reduce_cpu` / `all_gather_cpu` 的 tensor payload 计算方式不变。
+- payload keys：TP collective 仍使用单 tensor key `tensor`；本轮只新增事件标签字段。
+- tensor count：TP collective event 仍按原有 single tensor profile 记录。
+
+真实 Jetson profile：
+
+- 输出目录：`baseline_runs/20260429-step14-profile/`。
+- `tp-text-generate`: PASS，generated ids `[104455, 9909, 9286, 16488]`，text `人工智能（Artificial`。
+- `tp-mm-generate`: PASS，generated ids `[87140, 15946, 3837, 101177]`，text `视频中，一名`。
+- `hybrid-mm-generate`: PASS，generated ids `[87140, 15946, 3837, 101177]`，text `视频中，一名`。
+- checker：`baseline_runs/20260429-step14-profile/check-step14-baseline.txt`。
+- perf records：`baseline_runs/20260429-step14-profile/runtime-perf-records.json`。
+- perf table：`baseline_runs/20260429-step14-profile/runtime-perf-table.md`。
+
+关键 breakdown 观察：
+
+- `tp-text-generate`: 每 rank 36 次 prefill attention all-reduce + 36 次 prefill MLP all-reduce，各约 `5.63 MiB`；decode attention/MLP 各 108 次，但各约 `1.05 MiB`。
+- `tp-mm-generate`: 每 rank 36 次 prefill attention all-reduce + 36 次 prefill MLP all-reduce，各约 `220.43 MiB`，各约 `21s`；decode 仍是各 108 次但 bytes 很小。
+- `hybrid-mm-generate` stage0 rank0/rank1：18 次 prefill attention all-reduce + 18 次 prefill MLP all-reduce，各约 `110.21 MiB`。
+- `hybrid-mm-generate` stage1 rank2：TP degree 是 1，但当前 generic path 仍记录 fallback MLP all-gather 和 leader broadcast；其中 prefill MLP all-gather 约 `418.82 MiB`，这是下一刀最值得检查的低风险候选。
+
+## 2026-04-29 TP degree=1 collective bypass 记录
+
+本轮是 `ROADMAP.md` step 14 的第二刀，对照 vLLM 的 `world_size == 1` collective wrapper bypass。
+
+已落地：
+
+- `all_reduce_cpu` / `all_gather_cpu` / `broadcast_cpu` 在 group world size 为 1 时直接返回本地 tensor。
+- 单 rank 旁路不调用 `dist.all_reduce` / `dist.all_gather` / `dist.broadcast`。
+- 单 rank 旁路不记录 TP collective event；真实 TP group 的 profiling 行为不变。
+
+真实 Jetson profile：
+
+- 输出目录：`baseline_runs/20260429-step14-tp1-bypass/`。
+- 复测 case：`hybrid-mm-generate --pp 2 --tp-degrees 2 1`。
+- checker：`baseline_runs/20260429-step14-tp1-bypass/check-hybrid-mm-baseline.txt`。
+- perf records：`baseline_runs/20260429-step14-tp1-bypass/runtime-perf-records.json`。
+- perf table：`baseline_runs/20260429-step14-tp1-bypass/runtime-perf-table.md`。
+- 结果：PASS，generated ids `[87140, 15946, 3837, 101177]`，text `视频中，一名`。
+
+before / after：
+
+| case | rank | 指标 | before `20260429-step14-profile` | after `20260429-step14-tp1-bypass` |
+| --- | ---: | --- | ---: | ---: |
+| `hybrid-mm-generate` | 0 | TP collective bytes | `227.64 MiB` | `227.64 MiB` |
+| `hybrid-mm-generate` | 1 | TP collective bytes | `227.64 MiB` | `227.64 MiB` |
+| `hybrid-mm-generate` | 2 | TP collective bytes | `648.46 MiB` | `0 B` |
+| `hybrid-mm-generate` | 2 | TP collective seconds | `1.525232s` | `0.0s` |
+| `hybrid-mm-generate` | 2 | startup contract bytes | `3,245,806` | `3,245,806` |
+| `hybrid-mm-generate` | 2 | stage handoff bytes | `3,225,600` | `3,225,600` |
+| `hybrid-mm-generate` | 2 | loaded weight bytes | `4,411,426,816` | `4,411,426,816` |
+
+rank2 TP collective payload 变化：
+
+- before：`220` 个 TP collective event，payload key 为 `tensor`，总 tensor bytes `679,956,480`。
+- after：`0` 个 TP collective event，payload keys 为空，总 tensor bytes `0`。
+- before breakdown 中被移除的主要项：
+  - prefill MLP `column_parallel_gather`: `18` events / `439,160,832` bytes。
+  - prefill attention `full_weight_leader_broadcast`: `18` events / `115,568,640` bytes。
+  - prefill MLP `full_weight_leader_broadcast`: `18` events / `115,568,640` bytes。
+
+本地验证：
+
+- `test/test_runtime_summary.py`
+- `test/test_collect_runtime_perf.py`
+- `test/test_distributed_single_rank_bypass.py`
+- `test/test_tensor_parallel_direct.py`
+- `test/test_hybrid_direct_loader.py`
+- `test/test_model_weight_loader.py`
+- `test/test_distributed_serialization.py`
+
+## 2026-04-30 TP collective substage profiling 记录
+
+本轮是 `ROADMAP.md` step 14 的收口 profiling，用来判断 `tp-mm-generate` 的 `44-45s` TP collective 时间主要卡在 gloo 还是 device/CPU copy。
+
+已落地：
+
+- `all_reduce_cpu` / `all_gather_cpu` / `broadcast_cpu` 的 TP collective event 增加：
+  - `payload_prepare_seconds`
+  - `device_to_cpu_seconds`
+  - `gloo_collective_seconds`
+  - `cpu_to_device_seconds`
+  - `source_dtype`
+  - `reference_dtype`
+  - `comm_dtype`
+  - `target_dtype`
+  - `source_device`
+  - `target_device`
+  - `world_size`
+- `collect_runtime_perf.py` 输出：
+  - `payload.tp_collective_substage_seconds`
+  - `payload.tp_collective_breakdown[*]` 中的 substage seconds。
+
+真实 Jetson profile：
+
+- 输出目录：`baseline_runs/20260430-step14-substage-profile/`。
+- `tp-mm-generate`: PASS，generated ids `[87140, 15946, 3837, 101177]`，text `视频中，一名`。
+- `hybrid-mm-generate`: PASS，generated ids `[87140, 15946, 3837, 101177]`，text `视频中，一名`。
+- checker：
+  - `baseline_runs/20260430-step14-substage-profile/check-tp-mm-baseline.txt`
+  - `baseline_runs/20260430-step14-substage-profile/check-hybrid-mm-baseline.txt`
+- perf records：`baseline_runs/20260430-step14-substage-profile/runtime-perf-records.json`。
+- perf table：`baseline_runs/20260430-step14-substage-profile/runtime-perf-table.md`。
+
+关键结论：
+
+- `tp-mm-generate` 的 `44-45s` 主要卡在 gloo collective，不是 device/CPU copy。
+- `tp-mm-generate` rank0：
+  - TP collective total `45.646768s`
+  - gloo `43.010443s`，约 `94.2%`
+  - device->CPU `2.108236s`，约 `4.6%`
+  - CPU->device `0.521141s`，约 `1.1%`
+- `tp-mm-generate` rank1：
+  - TP collective total `44.913286s`
+  - gloo `42.215497s`，约 `94.0%`
+  - device->CPU `2.083570s`，约 `4.6%`
+  - CPU->device `0.606738s`，约 `1.4%`
+- `hybrid-mm-generate` stage0 是同机 TP，gloo 占比明显低：
+  - rank0 TP collective total `2.234700s`，gloo `1.020526s`，约 `45.7%`
+  - rank1 TP collective total `1.734920s`，gloo `0.497019s`，约 `28.6%`
+- `hybrid-mm-generate` rank2 仍是 `tp_degree=1`，TP collective bytes/time 保持 `0`。
+
+代表性 `tp-mm-generate` prefill row-reduce：
+
+- shape：`(1, 627, 2560)`
+- source/target dtype：`torch.bfloat16`
+- comm dtype：`torch.float32`
+- 单 event bytes 按 comm dtype 计约 `6.12 MiB`
+- attention prefill rank0：`21.401131s` total，其中 gloo `20.675566s`
+- MLP prefill rank0：`21.670656s` total，其中 gloo `20.332145s`
+
+step 14 收口判断：
+
+- 已清掉 `tp_degree=1` 伪 collective。
+- 已确认 pure TP 的大头是真实 RowParallel all-reduce。
+- 已确认跨 Jetson pure TP 的主要瓶颈是 gloo collective。
+- 后续不要继续在 step 14 里扩展大改；下一阶段应转入 opt-in 通信 dtype 实验、runtime input broadcast 减量，或更大的通信后端/执行结构实验。
+
+## 2026-04-30 opt-in comm dtype 实验
+
+本轮只做 opt-in 实验，不修改默认值。对照对象是 `baseline_runs/20260430-step14-substage-profile/` 里的默认 `comm_dtype=torch.float32`。
+
+真实 Jetson profile：
+
+- 输出目录：`baseline_runs/20260430-comm-dtype-profile/`。
+- 复测 case：
+  - `tp-mm-generate-comm-bfloat16`: `run-tp-mm-generate.sh --comm-dtype bfloat16`
+  - `tp-mm-generate-comm-float16`: `run-tp-mm-generate.sh --comm-dtype float16`
+- checker：
+  - `baseline_runs/20260430-comm-dtype-profile/check-tp-mm-generate-comm-bfloat16.txt`
+  - `baseline_runs/20260430-comm-dtype-profile/check-tp-mm-generate-comm-float16.txt`
+- perf records：`baseline_runs/20260430-comm-dtype-profile/runtime-perf-records.json`。
+- perf table：`baseline_runs/20260430-comm-dtype-profile/runtime-perf-table.md`。
+- 说明：`.ssh.stderr` 文件为空，没有发现非空 SSH stderr。
+
+结果对比：
+
+| variant | rank | generated_token_ids | generated_text | total s | TP collective s | TP collective bytes | gloo s |
+| --- | ---: | --- | --- | ---: | ---: | ---: | ---: |
+| default float32 | 0 | `[87140, 15946, 3837, 101177]` | `视频中，一名` | `74.781979` | `45.646768` | `449.12 MiB` | `43.010443` |
+| default float32 | 1 | `[87140, 15946, 3837, 101177]` | `视频中，一名` | `74.715201` | `44.913286` | `449.12 MiB` | `42.215497` |
+| `--comm-dtype bfloat16` | 0 | `[87140, 15946, 3837, 101177]` | `视频中，一名` | `53.682284` | `24.773918` | `224.56 MiB` | `22.552867` |
+| `--comm-dtype bfloat16` | 1 | `[87140, 15946, 3837, 101177]` | `视频中，一名` | `53.624671` | `24.117012` | `224.56 MiB` | `21.820210` |
+| `--comm-dtype float16` | 0 | `[87140, 15946, 3837, 101177]` | `视频中，一名` | `54.026301` | `24.959947` | `224.56 MiB` | `22.540502` |
+| `--comm-dtype float16` | 1 | `[87140, 15946, 3837, 101177]` | `视频中，一名` | `53.985323` | `24.327708` | `224.56 MiB` | `21.718270` |
+
+结论：
+
+- `bfloat16` 和 `float16` 都保持本轮 smoke 的 generated ids/text 不变。
+- 两者都把 TP collective bytes 减半：`449.12 MiB -> 224.56 MiB`。
+- TP collective seconds 从 `44-45s` 降到 `24-25s`。
+- 端到端 runtime 从约 `74.7s` 降到约 `53.6-54.0s`。
+- 本轮 `bfloat16` 比 `float16` 略快，可以作为 Jetson 上优先推荐的 opt-in 性能参数；默认值暂不改，改默认前需要补 `tp-text-generate`、`hybrid-mm-generate` 和更长 decode 回归。
+
+## 2026-04-30 pure TP runtime input broadcast 减量
+
+本轮只处理 pure TP generate-time runtime input，不改 RowParallel attention/MLP all-reduce。
+
+对照 vLLM：
+
+- vLLM forward 边界使用 compact model input 字段，例如 `input_ids`、`positions`、`inputs_embeds`、`intermediate_tensors`。
+- 对应到本项目：当每个 TP rank 已经有本地 `stage_input`，或可以从已同步 token id + 本地 `embed_tokens_weight` 构建 embeddings 时，不再让 rank0 广播 dense `stage_input`。
+
+已落地：
+
+- pure TP generate prefill：
+  - 优先本地 `input_ids + embed_tokens_weight`。
+  - 否则使用本地 `stage_input` / `layer_input`。
+  - 只有本地路径缺失时才回退到原来的 `broadcast_cpu`。
+- pure TP generate decode：
+  - token id 仍通过已有 token-id broadcast 同步。
+  - 每个 rank 用本地 `embed_tokens_weight` 构建 one-token embedding，不再广播 dense decode `stage_input`。
+- runtime summary 的 phase stats 增加：
+  - `runtime_input_source`
+  - `runtime_input_broadcast_skipped`
+
+真实 Jetson profile：
+
+- 输出目录：`baseline_runs/20260430-runtime-input-local-profile/`。
+- 复测 case：`tp-mm-generate-runtime-input-local`。
+- checker：`baseline_runs/20260430-runtime-input-local-profile/check-tp-mm-generate-runtime-input-local.txt`。
+- perf records：`baseline_runs/20260430-runtime-input-local-profile/runtime-perf-records.json`。
+- perf table：`baseline_runs/20260430-runtime-input-local-profile/runtime-perf-table.md`。
+- 结果：PASS，generated ids `[87140, 15946, 3837, 101177]`，text `视频中，一名`。
+
+before / after：
+
+| metric | before default `tp-mm-generate` | after runtime-input-local |
+| --- | ---: | ---: |
+| runtime input TP events / rank | `4` | `0` |
+| runtime input TP bytes / rank | `6,451,200` | `0` |
+| rank0 runtime input seconds | `1.035093s` | `0s` |
+| rank1 runtime input seconds | `0.563669s` | `0s` |
+| rank0 total TP collective bytes | `449.12 MiB` | `442.97 MiB` |
+| rank1 total TP collective bytes | `449.12 MiB` | `442.97 MiB` |
+| rank0 total TP collective seconds | `45.646768s` | `45.082559s` |
+| rank1 total TP collective seconds | `44.913286s` | `44.431829s` |
+| startup contract bytes / rank | `11.53 MiB` | `11.53 MiB` |
+| loaded weight bytes / rank | `4.83 GiB` | `4.83 GiB` |
+
+summary 证据：
+
+- prefill：`runtime_input_source=local_stage_input`，`runtime_input_broadcast_skipped=true`。
+- decode steps：`runtime_input_source=local_embeddings`，`runtime_input_broadcast_skipped=true`。
+
+结论：
+
+- 已移除 pure TP generate 路径里重复的 dense `stage_input_broadcast`。
+- 这不是当前最大瓶颈，但属于低风险 payload 减量；真正大头仍是每层 attention/MLP RowParallel all-reduce。
+
+## 2026-04-30 bfloat16 默认值候选回归
+
+本轮目的是在考虑把 `--comm-dtype bfloat16` 改成默认值之前，补更宽 correctness / perf 回归。默认值本轮未修改。
+
+真实 Jetson profile：
+
+- 输出目录：`baseline_runs/20260430-bfloat16-default-candidate/`。
+- 短 smoke：
+  - `tp-text-generate-bfloat16`
+  - `tp-mm-generate-bfloat16-wide`
+  - `hybrid-mm-generate-bfloat16-wide`
+- 长 decode：
+  - `tp-mm-generate-long-default`, `MAX_NEW_TOKENS=16`
+  - `tp-mm-generate-long-bfloat16`, `MAX_NEW_TOKENS=16`
+- perf records：`baseline_runs/20260430-bfloat16-default-candidate/runtime-perf-records.json`。
+- perf table：`baseline_runs/20260430-bfloat16-default-candidate/runtime-perf-table.md`。
+- `.ssh.stderr` 文件均为空。
+
+checker：
+
+- `tp-text-generate-bfloat16`: PASS，generated ids `[104455, 9909, 9286, 16488]`，text `人工智能（Artificial`。
+- `tp-mm-generate-bfloat16-wide`: PASS，generated ids `[87140, 15946, 3837, 101177]`，text `视频中，一名`。
+- `hybrid-mm-generate-bfloat16-wide`: PASS，generated ids `[87140, 15946, 3837, 101177]`，text `视频中，一名`。
+- `tp-mm-generate-long-default`: PASS。
+- `tp-mm-generate-long-bfloat16`: PASS。
+
+短 smoke 对比：
+
+| case | rank | TP collective bytes | TP collective seconds | generated ids/text |
+| --- | ---: | ---: | ---: | --- |
+| default `tp-text-generate` | 0 | `13.54 MiB` | `2.631429s` | `[104455, 9909, 9286, 16488]` / `人工智能（Artificial` |
+| default `tp-text-generate` | 1 | `13.54 MiB` | `2.563248s` | same |
+| `tp-text-generate-bfloat16` | 0 | `6.68 MiB` | `2.206259s` | same |
+| `tp-text-generate-bfloat16` | 1 | `6.68 MiB` | `2.028520s` | same |
+| default current `tp-mm-generate` | 0 | `442.97 MiB` | `45.082559s` | `[87140, 15946, 3837, 101177]` / `视频中，一名` |
+| default current `tp-mm-generate` | 1 | `442.97 MiB` | `44.431829s` | same |
+| `tp-mm-generate-bfloat16-wide` | 0 | `221.48 MiB` | `24.365094s` | same |
+| `tp-mm-generate-bfloat16-wide` | 1 | `221.48 MiB` | `23.736783s` | same |
+| default `hybrid-mm-generate` | 0 | `227.64 MiB` | `2.234700s` | `[87140, 15946, 3837, 101177]` / `视频中，一名` |
+| default `hybrid-mm-generate` | 1 | `227.64 MiB` | `1.734920s` | same |
+| default `hybrid-mm-generate` | 2 | `0 B` | `0s` | same |
+| `hybrid-mm-generate-bfloat16-wide` | 0 | `113.82 MiB` | `1.948550s` | same |
+| `hybrid-mm-generate-bfloat16-wide` | 1 | `113.82 MiB` | `1.481880s` | same |
+| `hybrid-mm-generate-bfloat16-wide` | 2 | `0 B` | `0s` | same |
+
+长 decode 对比：
+
+| case | rank | generated_token_ids | generated_text | total s | TP collective bytes | TP collective s |
+| --- | ---: | --- | --- | ---: | ---: | ---: |
+| `tp-mm-generate-long-default` | 0 | `[87140, 15946, 3837, 101177, 105611, 99194, 38035, 113727, 33108, 104362, 38035, 113233, 9370, 104253, 104224, 46944]` | `视频中，一名穿着深色衬衫和浅色裤子的男子站在一个` | `84.236407` | `451.41 MiB` | `50.078444` |
+| `tp-mm-generate-long-default` | 1 | same | same | `84.145172` | `451.41 MiB` | `49.534976` |
+| `tp-mm-generate-long-bfloat16` | 0 | same as default | same as default | `62.997012` | `225.70 MiB` | `29.048884` |
+| `tp-mm-generate-long-bfloat16` | 1 | same as default | same as default | `62.879746` | `225.70 MiB` | `28.288443` |
+
+结论：
+
+- `bfloat16` 已通过本轮更宽矩阵：`tp-text-generate`、`tp-mm-generate`、`hybrid-mm-generate` 和 `tp-mm-generate` 16-token 长 decode。
+- 长 decode 中 default 与 bfloat16 的 generated ids/text 完全一致。
+- `bfloat16` 可以进入“默认值候选”状态；真正改默认值应单独作为下一刀，并保留本轮 profile 作为依据。
+
+## 2026-04-30 bfloat16 默认值落地回归
+
+本轮把 `--comm-dtype` CLI 默认值从 `float32` 改成 `bfloat16`。只改默认值，不改 `all_reduce_cpu` / `all_gather_cpu` / `broadcast_cpu` 的 collective 语义。
+
+真实 Jetson profile：
+
+- 输出目录：`baseline_runs/20260430-bfloat16-default/`。
+- 所有 case 都不显式传 `--comm-dtype`。
+- 短 smoke：
+  - `tp-text-generate-default`
+  - `tp-mm-generate-default`
+  - `hybrid-mm-generate-default`
+- 长 decode：
+  - `tp-mm-generate-long-default-bfloat16`, `MAX_NEW_TOKENS=16`
+- perf records：`baseline_runs/20260430-bfloat16-default/runtime-perf-records.json`。
+- perf table：`baseline_runs/20260430-bfloat16-default/runtime-perf-table.md`。
+- `.ssh.stderr` 文件均为空。
+
+checker：
+
+- `tp-text-generate-default`: PASS，generated ids `[104455, 9909, 9286, 16488]`，text `人工智能（Artificial`。
+- `tp-mm-generate-default`: PASS，generated ids `[87140, 15946, 3837, 101177]`，text `视频中，一名`。
+- `hybrid-mm-generate-default`: PASS，generated ids `[87140, 15946, 3837, 101177]`，text `视频中，一名`。
+- `tp-mm-generate-long-default-bfloat16`: PASS，generated ids `[87140, 15946, 3837, 101177, 105611, 99194, 38035, 113727, 33108, 104362, 38035, 113233, 9370, 104253, 104224, 46944]`，text `视频中，一名穿着深色衬衫和浅色裤子的男子站在一个`。
+
+默认值落地结果：
+
+| case | rank | TP collective bytes | TP collective seconds | comm dtype evidence |
+| --- | ---: | ---: | ---: | --- |
+| `tp-text-generate-default` | 0 | `6.68 MiB` | `2.159819s` | `torch.bfloat16` |
+| `tp-text-generate-default` | 1 | `6.68 MiB` | `2.031675s` | `torch.bfloat16` |
+| `tp-mm-generate-default` | 0 | `221.48 MiB` | `24.513640s` | `torch.bfloat16` |
+| `tp-mm-generate-default` | 1 | `221.48 MiB` | `23.768131s` | `torch.bfloat16` |
+| `hybrid-mm-generate-default` | 0 | `113.82 MiB` | `2.081890s` | `torch.bfloat16` |
+| `hybrid-mm-generate-default` | 1 | `113.82 MiB` | `1.633925s` | `torch.bfloat16` |
+| `hybrid-mm-generate-default` | 2 | `0 B` | `0s` | `tp_degree=1` bypass |
+| `tp-mm-generate-long-default-bfloat16` | 0 | `225.70 MiB` | `28.840353s` | `torch.bfloat16` |
+| `tp-mm-generate-long-default-bfloat16` | 1 | `225.70 MiB` | `28.074485s` | `torch.bfloat16` |
+
+结论：
+
+- `bfloat16` 已正式成为 CLI 默认通信 dtype。
+- 不显式传 `--comm-dtype` 时，TP collective event 的 `comm_dtype` 已是 `torch.bfloat16`。
+- 短 smoke 和 16-token 长 decode generated ids/text 均保持一致。
+- ROADMAP step 14 到此结束，不继续塞结构性通信改动。
+
 ## 下一步
 
 这份文档当前已经记录 20260428 完整 correctness baseline 和 20260429 step 13 长期目标真实 profile。后续动作是：

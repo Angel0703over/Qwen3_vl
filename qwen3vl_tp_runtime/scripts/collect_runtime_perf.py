@@ -107,6 +107,97 @@ def _transport_bucket(transport_metrics: dict[str, Any], kind: str) -> dict[str,
     return bucket if isinstance(bucket, dict) else {}
 
 
+def _summarize_tp_collective_breakdown(transport_metrics: dict[str, Any]) -> list[dict[str, Any]]:
+    events = transport_metrics.get("events")
+    if not isinstance(events, list):
+        return []
+
+    buckets: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    for event in events:
+        if not isinstance(event, dict) or event.get("kind") != "tp_collective":
+            continue
+        key = (
+            str(event.get("phase") or "unknown"),
+            str(event.get("module") or "unknown"),
+            str(event.get("reason") or event.get("label") or "unknown"),
+            str(event.get("operation") or "unknown"),
+        )
+        bucket = buckets.setdefault(
+            key,
+            {
+                "phase": key[0],
+                "module": key[1],
+                "reason": key[2],
+                "operation": key[3],
+                "event_count": 0,
+                "elapsed_seconds": 0.0,
+                "tensor_bytes": 0,
+                "payload_prepare_seconds": 0.0,
+                "device_to_cpu_seconds": 0.0,
+                "gloo_collective_seconds": 0.0,
+                "cpu_to_device_seconds": 0.0,
+            },
+        )
+        bucket["event_count"] += 1
+        bucket["elapsed_seconds"] += float(event.get("elapsed_seconds") or 0.0)
+        bucket["tensor_bytes"] += int(event.get("total_tensor_bytes") or 0)
+        bucket["payload_prepare_seconds"] += float(event.get("payload_prepare_seconds") or 0.0)
+        bucket["device_to_cpu_seconds"] += float(event.get("device_to_cpu_seconds") or 0.0)
+        bucket["gloo_collective_seconds"] += float(event.get("gloo_collective_seconds") or 0.0)
+        bucket["cpu_to_device_seconds"] += float(event.get("cpu_to_device_seconds") or 0.0)
+
+    return [
+        {
+            **payload,
+            "elapsed_seconds": _round_seconds(payload["elapsed_seconds"]),
+            "payload_prepare_seconds": _round_seconds(payload["payload_prepare_seconds"]),
+            "device_to_cpu_seconds": _round_seconds(payload["device_to_cpu_seconds"]),
+            "gloo_collective_seconds": _round_seconds(payload["gloo_collective_seconds"]),
+            "cpu_to_device_seconds": _round_seconds(payload["cpu_to_device_seconds"]),
+        }
+        for payload in sorted(
+            buckets.values(),
+            key=lambda item: (
+                str(item["phase"]),
+                str(item["module"]),
+                str(item["reason"]),
+                str(item["operation"]),
+            ),
+        )
+    ]
+
+
+def _summarize_tp_collective_substages(transport_metrics: dict[str, Any]) -> dict[str, Any]:
+    events = transport_metrics.get("events")
+    if not isinstance(events, list):
+        events = []
+    totals = {
+        "event_count": 0,
+        "elapsed_seconds": 0.0,
+        "payload_prepare_seconds": 0.0,
+        "device_to_cpu_seconds": 0.0,
+        "gloo_collective_seconds": 0.0,
+        "cpu_to_device_seconds": 0.0,
+    }
+    for event in events:
+        if not isinstance(event, dict) or event.get("kind") != "tp_collective":
+            continue
+        totals["event_count"] += 1
+        totals["elapsed_seconds"] += float(event.get("elapsed_seconds") or 0.0)
+        totals["payload_prepare_seconds"] += float(event.get("payload_prepare_seconds") or 0.0)
+        totals["device_to_cpu_seconds"] += float(event.get("device_to_cpu_seconds") or 0.0)
+        totals["gloo_collective_seconds"] += float(event.get("gloo_collective_seconds") or 0.0)
+        totals["cpu_to_device_seconds"] += float(event.get("cpu_to_device_seconds") or 0.0)
+    return {
+        "event_count": int(totals["event_count"]),
+        "elapsed_seconds": _round_seconds(totals["elapsed_seconds"]),
+        "payload_prepare_seconds": _round_seconds(totals["payload_prepare_seconds"]),
+        "device_to_cpu_seconds": _round_seconds(totals["device_to_cpu_seconds"]),
+        "gloo_collective_seconds": _round_seconds(totals["gloo_collective_seconds"]),
+        "cpu_to_device_seconds": _round_seconds(totals["cpu_to_device_seconds"]),
+    }
+
+
 def _parse_real_seconds(text: str) -> float | None:
     for line in reversed(text.splitlines()):
         match = TIME_REAL_RE.match(line.strip())
@@ -204,6 +295,8 @@ def collect_log_record(case_id: str, path: Path) -> dict[str, Any]:
             "stage_handoff_seconds": _transport_bucket(transport_metrics, "stage_handoff").get("elapsed_seconds"),
             "tp_collective_bytes": _transport_bucket(transport_metrics, "tp_collective").get("total_bytes"),
             "tp_collective_seconds": _transport_bucket(transport_metrics, "tp_collective").get("elapsed_seconds"),
+            "tp_collective_breakdown": _summarize_tp_collective_breakdown(transport_metrics),
+            "tp_collective_substage_seconds": _summarize_tp_collective_substages(transport_metrics),
             "transport_event_count": transport_metrics.get("event_count"),
         },
         "weight_load": {

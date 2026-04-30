@@ -1487,6 +1487,12 @@ def _run_text_generate_hybrid_phase_impl(
         src=rank_stage.leader_rank,
         comm_dtype=comm_dtype,
         group=rank_stage.stage_group,
+        profile_context={
+            "phase": phase_kind,
+            "module": "runtime_input",
+            "reason": "stage_input_broadcast",
+            "stage_idx": rank_stage.stage_idx,
+        },
     )
     if not is_first_stage and reference_input is not None:
         boundary_max, boundary_mean = (
@@ -1523,6 +1529,7 @@ def _run_text_generate_hybrid_phase_impl(
                 attn_math_mode=tp_attn_math_mode,
                 mlp_math_mode=tp_mlp_math_mode,
                 cache_by_layer={},
+                profile_phase=phase_kind,
             )
             stage_output = trace["logits"]
             if runtime_state.get("hidden_stage_output") is not None:
@@ -1547,6 +1554,7 @@ def _run_text_generate_hybrid_phase_impl(
                 attn_math_mode=tp_attn_math_mode,
                 mlp_math_mode=tp_mlp_math_mode,
                 cache_by_layer={},
+                profile_phase=phase_kind,
             )
             stage_output = trace["stage_output"]
             updated_cache = trace["cache_by_layer"]
@@ -1563,6 +1571,7 @@ def _run_text_generate_hybrid_phase_impl(
                 attn_math_mode=tp_attn_math_mode,
                 mlp_math_mode=tp_mlp_math_mode,
                 cache_by_layer=cache_by_layer,
+                profile_phase=phase_kind,
             )
             stage_output = trace["logits"]
             updated_cache = trace["cache_by_layer"]
@@ -1586,6 +1595,7 @@ def _run_text_generate_hybrid_phase_impl(
                 attn_math_mode=tp_attn_math_mode,
                 mlp_math_mode=tp_mlp_math_mode,
                 cache_by_layer=cache_by_layer,
+                profile_phase=phase_kind,
             )
             stage_output = trace["stage_output"]
             updated_cache = trace["cache_by_layer"]
@@ -2068,6 +2078,12 @@ def run_text_hybrid_rank(
         src=rank_stage.leader_rank,
         comm_dtype=comm_dtype,
         group=rank_stage.stage_group,
+        profile_context={
+            "phase": "prefill",
+            "module": "runtime_input",
+            "reason": "stage_input_broadcast",
+            "stage_idx": rank_stage.stage_idx,
+        },
     )
 
     reference_output = stage_state.get("stage_output")

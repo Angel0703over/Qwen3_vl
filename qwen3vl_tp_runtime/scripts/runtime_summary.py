@@ -367,7 +367,7 @@ def _summarize_pipeline_run(stats: dict, manifest, topk: int) -> dict:
 
 
 def _summarize_generate_phase_stats(phase_stats: dict) -> dict:
-    return {
+    summary = {
         "input_shape": list(phase_stats["input_shape"]),
         "output_shape": list(phase_stats["output_shape"]),
         "received_payload_keys": phase_stats["received_payload_keys"],
@@ -386,6 +386,10 @@ def _summarize_generate_phase_stats(phase_stats: dict) -> dict:
         "predicted_token_id": phase_stats["predicted_token_id"],
         "reference_token_id": phase_stats["reference_token_id"],
     }
+    for key in ("runtime_input_source", "runtime_input_broadcast_skipped"):
+        if key in phase_stats:
+            summary[key] = phase_stats[key]
+    return summary
 
 
 def _summarize_pipeline_generate_run(stats: dict, manifest, topk: int) -> dict:

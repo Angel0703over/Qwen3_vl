@@ -77,6 +77,36 @@ class CollectRuntimePerfTest(unittest.TestCase):
                             },
                             "transport": {
                                 "event_count": 3,
+                                "events": [
+                                    {
+                                        "kind": "tp_collective",
+                                        "operation": "all_reduce",
+                                        "label": "tp_all_reduce",
+                                        "elapsed_seconds": 0.2,
+                                        "total_tensor_bytes": 4096,
+                                        "payload_prepare_seconds": 0.01,
+                                        "device_to_cpu_seconds": 0.01,
+                                        "gloo_collective_seconds": 0.15,
+                                        "cpu_to_device_seconds": 0.02,
+                                        "phase": "prefill",
+                                        "module": "attention",
+                                        "reason": "row_parallel_reduce",
+                                    },
+                                    {
+                                        "kind": "tp_collective",
+                                        "operation": "all_reduce",
+                                        "label": "tp_all_reduce",
+                                        "elapsed_seconds": 0.1,
+                                        "total_tensor_bytes": 4096,
+                                        "payload_prepare_seconds": 0.005,
+                                        "device_to_cpu_seconds": 0.005,
+                                        "gloo_collective_seconds": 0.08,
+                                        "cpu_to_device_seconds": 0.01,
+                                        "phase": "decode",
+                                        "module": "mlp",
+                                        "reason": "row_parallel_reduce",
+                                    },
+                                ],
                                 "totals_by_kind": {
                                     "startup_contract": {
                                         "event_count": 1,
@@ -120,6 +150,48 @@ class CollectRuntimePerfTest(unittest.TestCase):
         self.assertEqual(records[0]["payload"]["startup_contract_bytes"], 2176)
         self.assertEqual(records[0]["payload"]["stage_handoff_bytes"], 4096)
         self.assertEqual(records[0]["payload"]["tp_collective_seconds"], 0.3)
+        self.assertEqual(
+            records[0]["payload"]["tp_collective_breakdown"],
+            [
+                {
+                    "phase": "decode",
+                    "module": "mlp",
+                    "reason": "row_parallel_reduce",
+                    "operation": "all_reduce",
+                    "event_count": 1,
+                    "elapsed_seconds": 0.1,
+                    "tensor_bytes": 4096,
+                    "payload_prepare_seconds": 0.005,
+                    "device_to_cpu_seconds": 0.005,
+                    "gloo_collective_seconds": 0.08,
+                    "cpu_to_device_seconds": 0.01,
+                },
+                {
+                    "phase": "prefill",
+                    "module": "attention",
+                    "reason": "row_parallel_reduce",
+                    "operation": "all_reduce",
+                    "event_count": 1,
+                    "elapsed_seconds": 0.2,
+                    "tensor_bytes": 4096,
+                    "payload_prepare_seconds": 0.01,
+                    "device_to_cpu_seconds": 0.01,
+                    "gloo_collective_seconds": 0.15,
+                    "cpu_to_device_seconds": 0.02,
+                },
+            ],
+        )
+        self.assertEqual(
+            records[0]["payload"]["tp_collective_substage_seconds"],
+            {
+                "event_count": 2,
+                "elapsed_seconds": 0.3,
+                "payload_prepare_seconds": 0.015,
+                "device_to_cpu_seconds": 0.015,
+                "gloo_collective_seconds": 0.23,
+                "cpu_to_device_seconds": 0.03,
+            },
+        )
         self.assertEqual(records[0]["memory"]["cuda_peak_allocated_bytes"], 1024)
 
 

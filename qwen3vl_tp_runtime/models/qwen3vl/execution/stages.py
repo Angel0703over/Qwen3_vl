@@ -28,6 +28,11 @@ from .mlp import forward_mlp, forward_mlp_tp
 from ..functional import rms_norm
 
 
+def _mark_tp_profile_phase(layer_runtime_state: dict, phase: str) -> dict:
+    layer_runtime_state["tp_profile_phase"] = phase
+    return layer_runtime_state
+
+
 def forward_layer_range(hidden_states: torch.Tensor, range_state: dict) -> torch.Tensor:
     output = hidden_states
     for layer_bundle in range_state["layers"]:
@@ -49,7 +54,7 @@ def forward_layer_range_tp(
 ) -> torch.Tensor:
     output = hidden_states
     for layer_bundle in range_state["layers"]:
-        layer_runtime_state = compose_layer_state(layer_bundle, range_state)
+        layer_runtime_state = _mark_tp_profile_phase(compose_layer_state(layer_bundle, range_state), "prefill")
         output = forward_decoder_layer_tp(
             output,
             layer_runtime_state,
@@ -69,7 +74,7 @@ def forward_text_stage(hidden_states: torch.Tensor, stage_state: dict) -> torch.
     visual_pos_masks = stage_state.get("visual_pos_masks")
 
     for layer_bundle in stage_state["layers"]:
-        layer_runtime_state = compose_layer_state(layer_bundle, stage_state)
+        layer_runtime_state = _mark_tp_profile_phase(compose_layer_state(layer_bundle, stage_state), "prefill")
         layer_idx = layer_bundle["layer_idx"]
 
         output = forward_decoder_layer(output, layer_runtime_state)
@@ -93,7 +98,7 @@ def forward_text_stage_tp(
     visual_pos_masks = stage_state.get("visual_pos_masks")
 
     for layer_bundle in stage_state["layers"]:
-        layer_runtime_state = compose_layer_state(layer_bundle, stage_state)
+        layer_runtime_state = _mark_tp_profile_phase(compose_layer_state(layer_bundle, stage_state), "decode")
         layer_idx = layer_bundle["layer_idx"]
 
         output = forward_decoder_layer_tp(
@@ -289,6 +294,7 @@ def trace_text_decode_stage_tp_with_runtime_cache(
     attn_math_mode: str = "orig",
     mlp_math_mode: str = "orig",
     cache_by_layer: dict[int, tuple[torch.Tensor | None, torch.Tensor | None]] | None = None,
+    profile_phase: str | None = None,
 ) -> dict:
     traces = []
     output = hidden_states
@@ -299,6 +305,9 @@ def trace_text_decode_stage_tp_with_runtime_cache(
     for layer_bundle in stage_state["layers"]:
         layer_runtime_state = compose_layer_state(layer_bundle, stage_state)
         layer_idx = int(layer_bundle["layer_idx"])
+        layer_runtime_state["tp_profile_phase"] = profile_phase or (
+            "decode" if layer_idx in current_cache else "prefill"
+        )
         past_key, past_value = current_cache.get(
             layer_idx,
             (layer_runtime_state.get("past_key"), layer_runtime_state.get("past_value")),
@@ -348,6 +357,7 @@ def trace_text_decode_logits_tp_with_runtime_cache(
     attn_math_mode: str = "orig",
     mlp_math_mode: str = "orig",
     cache_by_layer: dict[int, tuple[torch.Tensor | None, torch.Tensor | None]] | None = None,
+    profile_phase: str | None = None,
 ) -> dict:
     stage_trace = trace_text_decode_stage_tp_with_runtime_cache(
         layer_input,
@@ -360,6 +370,7 @@ def trace_text_decode_logits_tp_with_runtime_cache(
         attn_math_mode=attn_math_mode,
         mlp_math_mode=mlp_math_mode,
         cache_by_layer=cache_by_layer,
+        profile_phase=profile_phase,
     )
     norm_output = rms_norm(
         stage_trace["stage_output"],
@@ -509,7 +520,7 @@ def trace_text_stage(hidden_states: torch.Tensor, stage_state: dict) -> list[dic
     visual_pos_masks = stage_state.get("visual_pos_masks")
 
     for layer_bundle in stage_state["layers"]:
-        layer_runtime_state = compose_layer_state(layer_bundle, stage_state)
+        layer_runtime_state = _mark_tp_profile_phase(compose_layer_state(layer_bundle, stage_state), "prefill")
         layer_idx = layer_bundle["layer_idx"]
         deepstack_embeds = get_deepstack_embeds(stage_state, layer_idx)
 
@@ -531,7 +542,7 @@ def trace_text_decode_stage(hidden_states: torch.Tensor, stage_state: dict) -> l
     visual_pos_masks = stage_state.get("visual_pos_masks")
 
     for layer_bundle in stage_state["layers"]:
-        layer_runtime_state = compose_layer_state(layer_bundle, stage_state)
+        layer_runtime_state = _mark_tp_profile_phase(compose_layer_state(layer_bundle, stage_state), "decode")
         layer_idx = layer_bundle["layer_idx"]
         deepstack_embeds = get_deepstack_embeds(stage_state, layer_idx)
 
@@ -563,7 +574,7 @@ def trace_text_stage_tp(
     visual_pos_masks = stage_state.get("visual_pos_masks")
 
     for layer_bundle in stage_state["layers"]:
-        layer_runtime_state = compose_layer_state(layer_bundle, stage_state)
+        layer_runtime_state = _mark_tp_profile_phase(compose_layer_state(layer_bundle, stage_state), "prefill")
         layer_idx = layer_bundle["layer_idx"]
         deepstack_embeds = get_deepstack_embeds(stage_state, layer_idx)
 
@@ -605,7 +616,7 @@ def trace_text_decode_stage_tp(
     visual_pos_masks = stage_state.get("visual_pos_masks")
 
     for layer_bundle in stage_state["layers"]:
-        layer_runtime_state = compose_layer_state(layer_bundle, stage_state)
+        layer_runtime_state = _mark_tp_profile_phase(compose_layer_state(layer_bundle, stage_state), "decode")
         layer_idx = layer_bundle["layer_idx"]
         deepstack_embeds = get_deepstack_embeds(stage_state, layer_idx)
 

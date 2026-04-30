@@ -122,6 +122,23 @@ def _resolve_tp_past_states(
     )
 
 
+def _tp_collective_context(
+    bundle: dict,
+    *,
+    phase: str,
+    module: str,
+    reason: str,
+) -> dict:
+    context = {
+        "phase": phase,
+        "module": module,
+        "reason": reason,
+    }
+    if "layer_idx" in bundle:
+        context["layer_idx"] = int(bundle["layer_idx"])
+    return context
+
+
 def _reduce_tp_attention_output(
     hidden_states: torch.Tensor,
     projected_attn_context: torch.Tensor,
@@ -133,6 +150,7 @@ def _reduce_tp_attention_output(
     tp_src_rank: int,
     comm_dtype: torch.dtype,
     orig_dtype: torch.dtype,
+    profile_phase: str,
 ) -> torch.Tensor:
     device = hidden_states.device
     o_bias = _cast_optional_tensor(bundle["o_bias"], device=device, dtype=orig_dtype)
@@ -145,6 +163,12 @@ def _reduce_tp_attention_output(
             target_dtype=orig_dtype,
             comm_dtype=comm_dtype,
             group=tp_group,
+            profile_context=_tp_collective_context(
+                bundle,
+                phase=profile_phase,
+                module="attention",
+                reason="row_parallel_reduce",
+            ),
         )
         if o_bias is not None:
             attn_output = attn_output + o_bias
@@ -160,6 +184,12 @@ def _reduce_tp_attention_output(
         src=tp_src_rank,
         comm_dtype=comm_dtype,
         group=tp_group,
+        profile_context=_tp_collective_context(
+            bundle,
+            phase=profile_phase,
+            module="attention",
+            reason="full_weight_leader_broadcast",
+        ),
     )
 
 
@@ -296,6 +326,10 @@ def _trace_attention_tp_core(
     head_dim = int(bundle["head_dim"])
     orig_dtype, _ = _resolve_tp_math_dtype(hidden_states, math_mode)
     device = hidden_states.device
+    profile_phase = str(
+        bundle.get("tp_profile_phase")
+        or ("decode" if past_key is not None or past_value is not None else "prefill")
+    )
 
     x = hidden_states.to(dtype=orig_dtype)
     q_weight = bundle["q_weight"].to(device=device, dtype=orig_dtype)
@@ -396,6 +430,7 @@ def _trace_attention_tp_core(
         tp_src_rank=tp_src_rank,
         comm_dtype=comm_dtype,
         orig_dtype=orig_dtype,
+        profile_phase=profile_phase,
     )
     return {
         "attn_context": local_attn_context,

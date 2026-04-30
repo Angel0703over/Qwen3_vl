@@ -387,6 +387,39 @@ def token_tensor_to_list(token_tensor: torch.Tensor) -> list[int]:
     return [int(token_id) for token_id in token_tensor.tolist()]
 
 
+def _try_build_local_runtime_stage_input(
+    runtime_state: StageState,
+    *,
+    phase_kind: str,
+    current_token_id: int | None,
+    reference_input: torch.Tensor | None,
+) -> tuple[torch.Tensor | None, str | None]:
+    if phase_kind == "prefill":
+        input_ids = runtime_state.get("input_ids")
+        if runtime_state.get("embed_tokens_weight") is not None and torch.is_tensor(input_ids):
+            return forward_text_embeddings(input_ids, runtime_state), "local_embeddings"
+        if torch.is_tensor(reference_input):
+            return reference_input, "local_stage_input"
+        return None, None
+
+    if phase_kind == "decode":
+        if runtime_state.get("embed_tokens_weight") is not None:
+            if current_token_id is None:
+                raise ValueError("decode phase 需要 current_token_id，但当前拿到 None。")
+            decode_input_ids = torch.tensor(
+                [[current_token_id]],
+                device=infer_runtime_tensor_device(runtime_state),
+                dtype=infer_runtime_token_dtype(runtime_state),
+            )
+            runtime_state["decode_input_ids_runtime"] = decode_input_ids
+            return forward_text_embeddings(decode_input_ids, runtime_state), "local_embeddings"
+        if torch.is_tensor(reference_input):
+            return reference_input, "local_stage_input"
+        return None, None
+
+    raise ValueError(f"不支持的 phase_kind={phase_kind!r}")
+
+
 def broadcast_token_id(token_id: int | None, *, src: int) -> int:
     token_tensor = torch.tensor([-1 if token_id is None else token_id], dtype=torch.int64)
     dist.broadcast(token_tensor, src=src)
@@ -410,37 +443,48 @@ def _run_generate_phase_tp(
     if reference_input is None:
         reference_input = runtime_state.get("layer_input")
     query_len = int(runtime_state["prefill_seq_len"]) if phase_kind == "prefill" else 1
-    if rank == 0:
-        if phase_kind == "prefill":
-            if runtime_state.get("embed_tokens_weight") is not None and "input_ids" in runtime_state:
-                leader_input = forward_text_embeddings(runtime_state["input_ids"], runtime_state)
-            else:
-                leader_input = reference_input
-        elif phase_kind == "decode":
-            if current_token_id is None:
-                raise ValueError("decode phase 需要 current_token_id，但当前拿到 None。")
-            decode_input_ids = torch.tensor(
-                [[current_token_id]],
-                device=infer_runtime_tensor_device(runtime_state),
-                dtype=runtime_state["decode_input_ids"].dtype,
-            )
-            leader_input = forward_text_embeddings(decode_input_ids, runtime_state)
-            runtime_state["decode_input_ids_runtime"] = decode_input_ids
-        else:
-            raise ValueError(f"不支持的 phase_kind={phase_kind!r}")
-    else:
-        leader_input = None
-
-    stage_input = broadcast_cpu(
-        reference_tensor=(
-            reference_input
-            if reference_input is not None
-            else build_runtime_only_stage_input_template(runtime_state, query_len=query_len)
-        ),
-        tensor=leader_input,
-        src=0,
-        comm_dtype=comm_dtype,
+    stage_input, runtime_input_source = _try_build_local_runtime_stage_input(
+        runtime_state,
+        phase_kind=phase_kind,
+        current_token_id=current_token_id,
+        reference_input=reference_input,
     )
+    runtime_input_broadcast_skipped = stage_input is not None
+    if stage_input is None:
+        if rank == 0:
+            if phase_kind == "prefill":
+                leader_input = reference_input
+            elif phase_kind == "decode":
+                if current_token_id is None:
+                    raise ValueError("decode phase 需要 current_token_id，但当前拿到 None。")
+                decode_input_ids = torch.tensor(
+                    [[current_token_id]],
+                    device=infer_runtime_tensor_device(runtime_state),
+                    dtype=infer_runtime_token_dtype(runtime_state),
+                )
+                leader_input = forward_text_embeddings(decode_input_ids, runtime_state)
+                runtime_state["decode_input_ids_runtime"] = decode_input_ids
+            else:
+                raise ValueError(f"不支持的 phase_kind={phase_kind!r}")
+        else:
+            leader_input = None
+
+        stage_input = broadcast_cpu(
+            reference_tensor=(
+                reference_input
+                if reference_input is not None
+                else build_runtime_only_stage_input_template(runtime_state, query_len=query_len)
+            ),
+            tensor=leader_input,
+            src=0,
+            comm_dtype=comm_dtype,
+            profile_context={
+                "phase": phase_kind,
+                "module": "runtime_input",
+                "reason": "stage_input_broadcast",
+            },
+        )
+        runtime_input_source = "broadcast"
     if reference_input is None:
         embedding_max, embedding_mean = None, None
     else:
@@ -458,6 +502,7 @@ def _run_generate_phase_tp(
             attn_math_mode=tp_attn_math_mode,
             mlp_math_mode=tp_mlp_math_mode,
             cache_by_layer={},
+            profile_phase=phase_kind,
         )
     elif phase_kind == "decode":
         trace = trace_text_decode_logits_tp_with_runtime_cache(
@@ -470,6 +515,7 @@ def _run_generate_phase_tp(
             attn_math_mode=tp_attn_math_mode,
             mlp_math_mode=tp_mlp_math_mode,
             cache_by_layer=cache_by_layer,
+            profile_phase=phase_kind,
         )
     else:
         raise ValueError(f"不支持的 phase_kind={phase_kind!r}")
@@ -507,6 +553,8 @@ def _run_generate_phase_tp(
         "received_payload_keys": [],
         "sent_payload_keys": [],
         "sent_tensor_shapes": {},
+        "runtime_input_source": runtime_input_source,
+        "runtime_input_broadcast_skipped": runtime_input_broadcast_skipped,
         "predicted_token_id": predicted_token_id,
         "reference_token_id": reference_token_id,
     }
@@ -576,6 +624,11 @@ class StageRunner:
             tensor=reference_input if rank == 0 else None,
             src=0,
             comm_dtype=comm_dtype,
+            profile_context={
+                "phase": "prefill",
+                "module": "runtime_input",
+                "reason": "stage_input_broadcast",
+            },
         )
         reference_output = stage_state.get("stage_output")
         tp_stage_stats = run_stage_state_tp(

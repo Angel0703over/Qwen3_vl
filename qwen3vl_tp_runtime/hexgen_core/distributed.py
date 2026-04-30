@@ -128,6 +128,60 @@ def _single_tensor_profile(tensor: torch.Tensor, *, dtype: torch.dtype) -> dict[
     }
 
 
+def _merge_profile_context(
+    payload: dict[str, Any],
+    profile_context: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not profile_context:
+        return payload
+    merged = dict(payload)
+    for key in ("phase", "layer_idx", "module", "reason", "stage_idx", "step_idx"):
+        value = profile_context.get(key)
+        if value is not None:
+            merged[key] = int(value) if key in {"layer_idx", "stage_idx", "step_idx"} else str(value)
+    return merged
+
+
+def _get_group_world_size(group=None) -> int:
+    if not dist.is_available() or not dist.is_initialized():
+        return 1
+    return int(dist.get_world_size(group=group))
+
+
+def _round_profile_seconds(value: float) -> float:
+    return round(float(value), 6)
+
+
+def _collective_dtype_profile(
+    *,
+    source_tensor: torch.Tensor | None,
+    reference_tensor: torch.Tensor,
+    target_device: torch.device,
+    target_dtype: torch.dtype,
+    comm_dtype: torch.dtype,
+    world_size: int,
+    device_to_cpu_seconds: float,
+    gloo_collective_seconds: float,
+    cpu_to_device_seconds: float,
+    payload_prepare_seconds: float | None = None,
+) -> dict[str, Any]:
+    return {
+        "world_size": int(world_size),
+        "source_device": None if source_tensor is None else str(source_tensor.device),
+        "target_device": str(target_device),
+        "source_dtype": None if source_tensor is None else str(source_tensor.dtype),
+        "reference_dtype": str(reference_tensor.dtype),
+        "target_dtype": str(target_dtype),
+        "comm_dtype": str(comm_dtype),
+        "payload_prepare_seconds": _round_profile_seconds(
+            device_to_cpu_seconds if payload_prepare_seconds is None else payload_prepare_seconds
+        ),
+        "device_to_cpu_seconds": _round_profile_seconds(device_to_cpu_seconds),
+        "gloo_collective_seconds": _round_profile_seconds(gloo_collective_seconds),
+        "cpu_to_device_seconds": _round_profile_seconds(cpu_to_device_seconds),
+    }
+
+
 def record_transport_profile_event(
     *,
     channel: str,
@@ -228,12 +282,22 @@ def all_reduce_cpu(
     target_dtype: torch.dtype,
     comm_dtype: torch.dtype,
     group=None,
+    profile_context: dict[str, Any] | None = None,
 ) -> torch.Tensor:
     # 当前原型默认走 device -> cpu -> gloo -> cpu -> device
+    world_size = _get_group_world_size(group)
+    if world_size <= 1:
+        return local_tensor.detach().to(device=target_device, dtype=target_dtype)
+
     start = time.perf_counter()
+    copy_to_cpu_start = time.perf_counter()
     reduced = local_tensor.detach().to("cpu", dtype=comm_dtype)
+    device_to_cpu_seconds = time.perf_counter() - copy_to_cpu_start
+    gloo_collective_seconds = 0.0
     try:
+        collective_start = time.perf_counter()
         dist.all_reduce(reduced, op=dist.ReduceOp.SUM, group=group)
+        gloo_collective_seconds = time.perf_counter() - collective_start
     except Exception:
         record_transport_profile_event(
             channel="all_reduce_cpu",
@@ -242,18 +306,53 @@ def all_reduce_cpu(
             summary=None,
             elapsed_seconds=time.perf_counter() - start,
             status="fail",
-            extra=_single_tensor_profile(local_tensor, dtype=comm_dtype),
+            extra=_merge_profile_context(
+                {
+                    **_single_tensor_profile(local_tensor, dtype=comm_dtype),
+                    **_collective_dtype_profile(
+                        source_tensor=local_tensor,
+                        reference_tensor=local_tensor,
+                        target_device=target_device,
+                        target_dtype=target_dtype,
+                        comm_dtype=comm_dtype,
+                        world_size=world_size,
+                        device_to_cpu_seconds=device_to_cpu_seconds,
+                        gloo_collective_seconds=gloo_collective_seconds,
+                        cpu_to_device_seconds=0.0,
+                    ),
+                },
+                profile_context,
+            ),
         )
         raise
+    copy_to_device_start = time.perf_counter()
+    result = reduced.to(device=target_device, dtype=target_dtype)
+    cpu_to_device_seconds = time.perf_counter() - copy_to_device_start
     record_transport_profile_event(
         channel="all_reduce_cpu",
         operation="all_reduce",
         label="tp_all_reduce",
         summary=None,
         elapsed_seconds=time.perf_counter() - start,
-        extra=_single_tensor_profile(local_tensor, dtype=comm_dtype),
+        extra=_merge_profile_context(
+            {
+                **_single_tensor_profile(local_tensor, dtype=comm_dtype),
+                **_collective_dtype_profile(
+                    source_tensor=local_tensor,
+                    reference_tensor=local_tensor,
+                    target_device=target_device,
+                    target_dtype=target_dtype,
+                    comm_dtype=comm_dtype,
+                    world_size=world_size,
+                    device_to_cpu_seconds=device_to_cpu_seconds,
+                    gloo_collective_seconds=gloo_collective_seconds,
+                    cpu_to_device_seconds=cpu_to_device_seconds,
+                ),
+            },
+            profile_context,
+        ),
     )
-    return reduced.to(device=target_device, dtype=target_dtype)
+    return result
 
 
 def all_gather_cpu(
@@ -262,13 +361,22 @@ def all_gather_cpu(
     target_dtype: torch.dtype,
     comm_dtype: torch.dtype,
     group=None,
+    profile_context: dict[str, Any] | None = None,
 ) -> list[torch.Tensor]:
+    world_size = _get_group_world_size(group)
+    if world_size <= 1:
+        return [local_tensor.detach().to(device=target_device, dtype=target_dtype)]
+
     start = time.perf_counter()
+    copy_to_cpu_start = time.perf_counter()
     payload = local_tensor.detach().to("cpu", dtype=comm_dtype).contiguous()
-    world_size = dist.get_world_size(group=group)
+    device_to_cpu_seconds = time.perf_counter() - copy_to_cpu_start
     gathered = [torch.empty_like(payload) for _ in range(world_size)]
+    gloo_collective_seconds = 0.0
     try:
+        collective_start = time.perf_counter()
         dist.all_gather(gathered, payload, group=group)
+        gloo_collective_seconds = time.perf_counter() - collective_start
     except Exception:
         record_transport_profile_event(
             channel="all_gather_cpu",
@@ -277,26 +385,57 @@ def all_gather_cpu(
             summary=None,
             elapsed_seconds=time.perf_counter() - start,
             status="fail",
-            extra={
-                **_single_tensor_profile(local_tensor, dtype=comm_dtype),
-                "world_size": int(world_size),
-                "total_tensor_bytes": int(payload.numel() * payload.element_size() * world_size),
-            },
+            extra=_merge_profile_context(
+                {
+                    **_single_tensor_profile(local_tensor, dtype=comm_dtype),
+                    "world_size": int(world_size),
+                    "total_tensor_bytes": int(payload.numel() * payload.element_size() * world_size),
+                    **_collective_dtype_profile(
+                        source_tensor=local_tensor,
+                        reference_tensor=local_tensor,
+                        target_device=target_device,
+                        target_dtype=target_dtype,
+                        comm_dtype=comm_dtype,
+                        world_size=world_size,
+                        device_to_cpu_seconds=device_to_cpu_seconds,
+                        gloo_collective_seconds=gloo_collective_seconds,
+                        cpu_to_device_seconds=0.0,
+                    ),
+                },
+                profile_context,
+            ),
         )
         raise
+    copy_to_device_start = time.perf_counter()
+    result = [tensor.to(device=target_device, dtype=target_dtype) for tensor in gathered]
+    cpu_to_device_seconds = time.perf_counter() - copy_to_device_start
     record_transport_profile_event(
         channel="all_gather_cpu",
         operation="all_gather",
         label="tp_all_gather",
         summary=None,
         elapsed_seconds=time.perf_counter() - start,
-        extra={
-            **_single_tensor_profile(local_tensor, dtype=comm_dtype),
-            "world_size": int(world_size),
-            "total_tensor_bytes": int(payload.numel() * payload.element_size() * world_size),
-        },
+        extra=_merge_profile_context(
+                {
+                    **_single_tensor_profile(local_tensor, dtype=comm_dtype),
+                    "world_size": int(world_size),
+                    "total_tensor_bytes": int(payload.numel() * payload.element_size() * world_size),
+                    **_collective_dtype_profile(
+                        source_tensor=local_tensor,
+                        reference_tensor=local_tensor,
+                        target_device=target_device,
+                        target_dtype=target_dtype,
+                        comm_dtype=comm_dtype,
+                        world_size=world_size,
+                        device_to_cpu_seconds=device_to_cpu_seconds,
+                        gloo_collective_seconds=gloo_collective_seconds,
+                        cpu_to_device_seconds=cpu_to_device_seconds,
+                    ),
+                },
+                profile_context,
+            ),
     )
-    return [tensor.to(device=target_device, dtype=target_dtype) for tensor in gathered]
+    return result
 
 
 def broadcast_cpu(
@@ -305,15 +444,29 @@ def broadcast_cpu(
     src: int,
     comm_dtype: torch.dtype,
     group=None,
+    profile_context: dict[str, Any] | None = None,
 ) -> torch.Tensor:
     # stage leader 先拿到完整激活，再在组内广播给同 stage 的 TP rank。
+    world_size = _get_group_world_size(group)
+    if world_size <= 1:
+        if tensor is None:
+            raise ValueError("broadcast_cpu 单 rank 旁路要求当前 rank 持有 tensor。")
+        return tensor.detach().to(device=reference_tensor.device, dtype=reference_tensor.dtype)
+
     start = time.perf_counter()
+    payload_prepare_start = time.perf_counter()
     if tensor is None:
         payload = torch.empty(reference_tensor.shape, dtype=comm_dtype)
+        device_to_cpu_seconds = 0.0
     else:
         payload = tensor.detach().to("cpu", dtype=comm_dtype).contiguous()
+        device_to_cpu_seconds = time.perf_counter() - payload_prepare_start
+    payload_prepare_seconds = time.perf_counter() - payload_prepare_start
+    gloo_collective_seconds = 0.0
     try:
+        collective_start = time.perf_counter()
         dist.broadcast(payload, src=src, group=group)
+        gloo_collective_seconds = time.perf_counter() - collective_start
     except Exception:
         record_transport_profile_event(
             channel="broadcast_cpu",
@@ -323,9 +476,29 @@ def broadcast_cpu(
             summary=None,
             elapsed_seconds=time.perf_counter() - start,
             status="fail",
-            extra=_single_tensor_profile(reference_tensor, dtype=comm_dtype),
+            extra=_merge_profile_context(
+                {
+                    **_single_tensor_profile(reference_tensor, dtype=comm_dtype),
+                    **_collective_dtype_profile(
+                        source_tensor=tensor,
+                        reference_tensor=reference_tensor,
+                        target_device=reference_tensor.device,
+                        target_dtype=reference_tensor.dtype,
+                        comm_dtype=comm_dtype,
+                        world_size=world_size,
+                        device_to_cpu_seconds=device_to_cpu_seconds,
+                        gloo_collective_seconds=gloo_collective_seconds,
+                        cpu_to_device_seconds=0.0,
+                        payload_prepare_seconds=payload_prepare_seconds,
+                    ),
+                },
+                profile_context,
+            ),
         )
         raise
+    copy_to_device_start = time.perf_counter()
+    result = payload.to(device=reference_tensor.device, dtype=reference_tensor.dtype)
+    cpu_to_device_seconds = time.perf_counter() - copy_to_device_start
     record_transport_profile_event(
         channel="broadcast_cpu",
         operation="broadcast",
@@ -333,9 +506,26 @@ def broadcast_cpu(
         peer=src,
         summary=None,
         elapsed_seconds=time.perf_counter() - start,
-        extra=_single_tensor_profile(reference_tensor, dtype=comm_dtype),
+        extra=_merge_profile_context(
+            {
+                **_single_tensor_profile(reference_tensor, dtype=comm_dtype),
+                **_collective_dtype_profile(
+                    source_tensor=tensor,
+                    reference_tensor=reference_tensor,
+                    target_device=reference_tensor.device,
+                    target_dtype=reference_tensor.dtype,
+                    comm_dtype=comm_dtype,
+                    world_size=world_size,
+                    device_to_cpu_seconds=device_to_cpu_seconds,
+                    gloo_collective_seconds=gloo_collective_seconds,
+                    cpu_to_device_seconds=cpu_to_device_seconds,
+                    payload_prepare_seconds=payload_prepare_seconds,
+                ),
+            },
+            profile_context,
+        ),
     )
-    return payload.to(device=reference_tensor.device, dtype=reference_tensor.dtype)
+    return result
 
 
 def _payload_can_use_pickle_wire_format(payload: Any) -> bool:

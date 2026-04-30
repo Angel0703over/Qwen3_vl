@@ -44,6 +44,23 @@ class RuntimeCliModesTest(unittest.TestCase):
         self.assertIn("non-generate runs", help_text)
         self.assertNotIn("--action", help_text)
 
+    def test_comm_dtype_default_is_bfloat16(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "--modality",
+                "text",
+                "--mode",
+                "generate",
+                "--backend",
+                "tp",
+                "--tp",
+                "2",
+            ]
+        )
+
+        self.assertEqual(args.comm_dtype, "bfloat16")
+
     def test_even_stage_ranges_split_model_layers_by_pp_degree(self) -> None:
         self.assertEqual(build_even_stage_ranges(num_layers=36, pp_degree=2), ["0:17", "18:35"])
         self.assertEqual(build_even_stage_ranges(num_layers=37, pp_degree=2), ["0:18", "19:36"])

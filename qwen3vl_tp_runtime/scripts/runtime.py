@@ -392,7 +392,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser.add_argument("--save-dtype", choices=["auto", "float16", "float32", "bfloat16"], default="auto")
     parser.add_argument("--compute-dtype", choices=["auto", "float16", "float32", "bfloat16"], default="auto")
-    parser.add_argument("--comm-dtype", choices=["auto", "float16", "float32", "bfloat16"], default="float32")
+    parser.add_argument("--comm-dtype", choices=["auto", "float16", "float32", "bfloat16"], default="bfloat16")
     parser.add_argument("--device", choices=["cpu", "cuda"], default="cuda")
     parser.add_argument("--topk", type=int, default=5)
 

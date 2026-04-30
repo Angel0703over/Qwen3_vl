@@ -15,13 +15,13 @@
 架构顺序必须保持：PP 和 TP 是并列基础后端，HYBRID 是依赖 PP/TP 的组合层。
 主路径术语统一叫 StageState；bundle 只留给 replay/debug/capture。
 最近一次重要重构：backend=tp 已有独立 TensorParallelManifest / build_direct_tp_manifest / TensorParallelRunner，不再借用 TextHybridManifest 或 TextHybridRunner；TP 的空壳 GenerateWorker / DecodeWorker 已删除；旧 TP debug/replay 入口已搬到顶层 qwen3vl_tp_runtime/debug/，hexgen_core/modules/ 只保留三种并行后端。
-近期性能前置工作：HYBRID runtime-only broadcast 已收口到 `hybrid_runtime_inputs_v1` schema；纯 TP multimodal 已改成 rank0/input-owner startup contract；`baseline_runs/20260429-longterm-profile/` 已冻结 `tp-mm-generate`、`hybrid-text-generate`、`hybrid-mm-generate --pp 2 --tp-degrees 2 1` 的真实 Jetson profile。
+近期性能前置工作：HYBRID runtime-only broadcast 已收口到 `hybrid_runtime_inputs_v1` schema；纯 TP multimodal 已改成 rank0/input-owner startup contract；`baseline_runs/20260429-longterm-profile/` 已冻结 `tp-mm-generate`、`hybrid-text-generate`、`hybrid-mm-generate --pp 2 --tp-degrees 2 1` 的真实 Jetson profile；ROADMAP step 14 已完成 TP collective profiling 收口，TP collective event 已新增 `phase/layer_idx/module/reason` 和 device/CPU/gloo 子阶段 profiling；`baseline_runs/20260430-step14-substage-profile/` 已确认 pure TP 主要卡在 gloo；`baseline_runs/20260430-comm-dtype-profile/` 已完成 opt-in `--comm-dtype bfloat16/float16` 实验，两者 generated ids/text 不变并把 pure TP collective bytes 减半；`baseline_runs/20260430-runtime-input-local-profile/` 已完成 pure TP runtime input broadcast 减量，generate-time `stage_input_broadcast` 从每 rank `4` 个 event 降到 `0`；`baseline_runs/20260430-bfloat16-default-candidate/` 已完成 bfloat16 默认值候选回归；`baseline_runs/20260430-bfloat16-default/` 已完成 bfloat16 默认值落地回归，覆盖 `tp-text`、`tp-mm`、`hybrid-mm` 和 `tp-mm` 16-token 长 decode，不显式传 `--comm-dtype` 时 TP collective event 已显示 `comm_dtype=torch.bfloat16`，generated ids/text 均保持一致。
 请继续用中文和我配合，优先读代码、直接修改、跑测试、同步到两台 Jetson。
 ```
 
 ## 当前日期和环境
 
-- 当前日期：2026-04-29
+- 当前日期：2026-04-30
 - 当前工作目录：`/mnt/ssd/code/Qwen3_vl`
 - 主要项目目录：`/mnt/ssd/code/Qwen3_vl/qwen3vl_tp_runtime`
 - Python 环境：`/mnt/ssd/miniconda3/envs/vlm/bin/python`
@@ -1642,6 +1642,203 @@ PYTHONPATH=. /mnt/ssd/miniconda3/envs/vlm/bin/python qwen3vl_tp_runtime/scripts/
 bash qwen3vl_tp_runtime/scripts/helpers/run-runtime-core-regression.sh
 bash qwen3vl_tp_runtime/scripts/helpers/run-runtime-core-regression.sh --include-weight-loader --skip-baseline-checks
 ```
+
+step 14 TP collective profiling 第一刀，已完成“补观测，不改语义”：
+
+- vLLM 对照：
+  - vLLM 把 TP collective 收口到 `tensor_model_parallel_all_reduce` / `tensor_model_parallel_all_gather` 等 wrapper。
+  - `ColumnParallelLinear` 只在 `gather_output=true` 且 `tp_size>1` 时 all-gather。
+  - `RowParallelLinear` 只在 `reduce_results=true` 且 `tp_size>1` 时 all-reduce。
+  - 我们当前是 CPU/gloo correctness-first runtime，不照搬 CUDA/NCCL/custom-op communicator，只照搬 wrapper + semantic attribution + profiler-first 思路。
+- 已改代码：
+  - `qwen3vl_tp_runtime/hexgen_core/distributed.py`
+  - `qwen3vl_tp_runtime/models/qwen3vl/execution/attention.py`
+  - `qwen3vl_tp_runtime/models/qwen3vl/execution/mlp.py`
+  - `qwen3vl_tp_runtime/models/qwen3vl/execution/stages.py`
+  - `qwen3vl_tp_runtime/hexgen_core/modules/tensor_parallel.py`
+  - `qwen3vl_tp_runtime/hexgen_core/modules/hybrid_parallel.py`
+  - `qwen3vl_tp_runtime/scripts/collect_runtime_perf.py`
+  - `test/test_runtime_summary.py`
+  - `test/test_collect_runtime_perf.py`
+- 行为变化：
+  - `all_reduce_cpu` / `all_gather_cpu` / `broadcast_cpu` 支持 `profile_context`。
+  - TP collective event 现在会带 `phase` / `layer_idx` / `module` / `reason`。
+  - attention sharded output reduce 标为 `module=attention reason=row_parallel_reduce`。
+  - MLP sharded down projection reduce 标为 `module=mlp reason=row_parallel_reduce`。
+  - non-sharded fallback all-gather 标为 `reason=column_parallel_gather`，leader broadcast 标为 `reason=full_weight_leader_broadcast`。
+  - runtime stage input broadcast 标为 `module=runtime_input reason=stage_input_broadcast`。
+  - `collect_runtime_perf.py` 新增 `payload.tp_collective_breakdown`，按 `phase/module/reason/operation` 聚合 event count、seconds、bytes。
+- before/after：
+  - 本轮只增加 event metadata，不改变 generated 逻辑、不改变 tensor payload 计算方式。
+  - TP collective payload key 仍是 single tensor profile 的 `tensor`。
+  - true Jetson generated ids/text 已由 `baseline_runs/20260429-step14-profile/` 确认不变。
+- 真实 Jetson profile：
+  - 输出目录：`baseline_runs/20260429-step14-profile/`。
+  - `tp-text-generate`: PASS，generated ids `[104455, 9909, 9286, 16488]`，text `人工智能（Artificial`。
+  - `tp-mm-generate`: PASS，generated ids `[87140, 15946, 3837, 101177]`，text `视频中，一名`。
+  - `hybrid-mm-generate`: PASS，generated ids `[87140, 15946, 3837, 101177]`，text `视频中，一名`。
+  - `runtime-perf-records.json` / `runtime-perf-table.md` 已生成。
+- 关键 breakdown：
+  - `tp-text-generate`: prefill attention/MLP row all-reduce 各 36 次，各约 `5.63 MiB`；decode attention/MLP 各 108 次但 bytes 小。
+  - `tp-mm-generate`: prefill attention/MLP row all-reduce 各 36 次，各约 `220.43 MiB`，各约 `21s`。
+  - `hybrid-mm-generate` stage0：prefill attention/MLP row all-reduce 各 18 次，各约 `110.21 MiB`。
+  - `hybrid-mm-generate` stage1：TP degree 是 1，但当前 generic path 仍记录 prefill MLP all-gather 约 `418.82 MiB`，是下一刀最明确的低风险候选。
+- step 14 第二刀 `tp_degree=1` collective bypass，已完成：
+  - 对照 vLLM `world_size == 1` wrapper bypass。
+  - `all_reduce_cpu` / `all_gather_cpu` / `broadcast_cpu` 在 group world size 为 1 时直接返回本地 tensor，不调用 `dist.*`，不记录 TP collective event。
+  - 新增 `test/test_distributed_single_rank_bypass.py`。
+  - 真实 Jetson 复测目录：`baseline_runs/20260429-step14-tp1-bypass/`。
+  - `hybrid-mm-generate --pp 2 --tp-degrees 2 1`: PASS，generated ids `[87140, 15946, 3837, 101177]`，text `视频中，一名`。
+  - rank2 TP collective bytes：before `648.46 MiB` -> after `0 B`。
+  - rank2 TP collective event：before `220` 个、payload key `tensor` -> after `0` 个、payload keys 为空。
+  - rank0/rank1 TP collective bytes 仍为 `227.64 MiB`，说明真实 TP group 路径未被旁路。
+- 本地验证：
+  - `python -m py_compile distributed.py attention.py mlp.py stages.py tensor_parallel.py hybrid_parallel.py collect_runtime_perf.py`
+  - `PYTHONPATH=.:test /mnt/ssd/miniconda3/envs/vlm/bin/python test/test_runtime_summary.py`
+  - `PYTHONPATH=.:test /mnt/ssd/miniconda3/envs/vlm/bin/python test/test_collect_runtime_perf.py`
+  - `PYTHONPATH=.:test /mnt/ssd/miniconda3/envs/vlm/bin/python test/test_distributed_single_rank_bypass.py`
+  - `PYTHONPATH=.:test /mnt/ssd/miniconda3/envs/vlm/bin/python test/test_tensor_parallel_direct.py`
+  - `PYTHONPATH=.:test /mnt/ssd/miniconda3/envs/vlm/bin/python test/test_hybrid_direct_loader.py`
+  - `PYTHONPATH=.:test /mnt/ssd/miniconda3/envs/vlm/bin/python test/test_model_weight_loader.py`
+  - `PYTHONPATH=.:test /mnt/ssd/miniconda3/envs/vlm/bin/python test/test_distributed_serialization.py`
+  - `bash qwen3vl_tp_runtime/scripts/helpers/run-runtime-core-regression.sh`
+- 下一步：
+  - 已完成 vLLM ColumnParallel / RowParallel 对照检查：
+    - pure TP / HYBRID stage0 的 sharded 主路径没有 `column_parallel_gather`。
+    - 当前大头是每层两个真实 RowParallel all-reduce：attention `o_proj` 后一次、MLP `down_proj` 后一次。
+    - `tp-mm-generate` prefill collective shape 是 `(1, 627, 2560)`，默认 `comm_dtype=torch.float32`，单次约 `6.12 MiB`，每层 attention/MLP 各 36 次。
+    - attention reduce 和 MLP reduce 不能低风险合并，因为 MLP 输入依赖 attention reduce 后的 residual。
+    - decode 小 collective 数量多但 bytes 小，优先级低于 prefill 大 all-reduce。
+  - 下一刀先补 `all_reduce_cpu` / `broadcast_cpu` 子阶段 profiling：device->CPU、gloo collective、CPU->device、target dtype、comm dtype、shape。
+  - 然后做 opt-in `--comm-dtype bfloat16/float16` profile 实验，不改默认值。
+  - pure TP runtime input broadcast 可作为单独低风险候选：如果每个 TP rank 已有本地 `stage_input` 或可本地构建 embeddings，就避免 rank0 广播 dense `stage_input`。
+  - 暂缓 reduce-scatter/sequence-parallel/NCCL/custom all-reduce，这些会改变执行结构。
+
+step 14 TP collective substage profiling 收口，已完成：
+
+- 已改代码：
+  - `qwen3vl_tp_runtime/hexgen_core/distributed.py`
+  - `qwen3vl_tp_runtime/scripts/collect_runtime_perf.py`
+  - `test/test_collect_runtime_perf.py`
+  - `test/test_distributed_single_rank_bypass.py`
+- 行为变化：
+  - `all_reduce_cpu` / `all_gather_cpu` / `broadcast_cpu` 的 TP collective event 增加 `payload_prepare_seconds`、`device_to_cpu_seconds`、`gloo_collective_seconds`、`cpu_to_device_seconds`。
+  - event 同时记录 `source_dtype`、`reference_dtype`、`comm_dtype`、`target_dtype`、`source_device`、`target_device`、`world_size`。
+  - `collect_runtime_perf.py` 输出 `payload.tp_collective_substage_seconds`，并在 `tp_collective_breakdown` 中聚合子阶段时间。
+- 真实 Jetson profile：
+  - 输出目录：`baseline_runs/20260430-step14-substage-profile/`。
+  - `tp-mm-generate`: PASS，generated ids `[87140, 15946, 3837, 101177]`，text `视频中，一名`。
+  - `hybrid-mm-generate`: PASS，generated ids `[87140, 15946, 3837, 101177]`，text `视频中，一名`。
+  - `runtime-perf-records.json` / `runtime-perf-table.md` 已生成。
+- 关键结论：
+  - `tp-mm-generate` 的 `44-45s` TP collective 时间主要卡在 gloo collective，不是 device/CPU copy。
+  - rank0：total `45.646768s`，gloo `43.010443s` (`94.2%`)，device->CPU `2.108236s` (`4.6%`)，CPU->device `0.521141s` (`1.1%`)。
+  - rank1：total `44.913286s`，gloo `42.215497s` (`94.0%`)，device->CPU `2.083570s` (`4.6%`)，CPU->device `0.606738s` (`1.4%`)。
+  - representative prefill row-reduce shape `(1, 627, 2560)`，source/target dtype `torch.bfloat16`，comm dtype `torch.float32`，单 event 约 `6.12 MiB`。
+  - `hybrid-mm-generate` stage0 同机 TP 的 gloo 占比明显低；rank2 `tp_degree=1` 保持 `0 B / 0s`。
+- step 14 可以结束：
+  - 已有 semantic breakdown。
+  - 已清掉 `tp_degree=1` 伪 collective。
+  - 已确认 pure TP 大头是真实 RowParallel all-reduce。
+  - 已确认跨 Jetson pure TP 主要瓶颈是 gloo。
+- 下一阶段候选：
+  - opt-in `--comm-dtype bfloat16/float16` profile 实验。
+  - pure TP runtime input broadcast 减量。
+  - 更大结构项如 reduce-scatter/sequence-parallel/NCCL/custom all-reduce 暂缓。
+
+opt-in `--comm-dtype bfloat16/float16` profile 实验，已完成：
+
+- 本轮只做 opt-in 实验，不改默认值。
+- 输出目录：`baseline_runs/20260430-comm-dtype-profile/`。
+- 复测 case：
+  - `tp-mm-generate-comm-bfloat16`: `run-tp-mm-generate.sh --comm-dtype bfloat16`
+  - `tp-mm-generate-comm-float16`: `run-tp-mm-generate.sh --comm-dtype float16`
+- checker：
+  - `check-tp-mm-generate-comm-bfloat16.txt`: PASS。
+  - `check-tp-mm-generate-comm-float16.txt`: PASS。
+- 对照默认 float32 baseline `baseline_runs/20260430-step14-substage-profile/`：
+  - default rank0/rank1：generated ids `[87140, 15946, 3837, 101177]`，text `视频中，一名`，TP collective bytes `449.12 MiB`，TP collective seconds `45.646768s` / `44.913286s`。
+  - `--comm-dtype bfloat16` rank0/rank1：generated ids/text 不变，TP collective bytes `224.56 MiB`，TP collective seconds `24.773918s` / `24.117012s`。
+  - `--comm-dtype float16` rank0/rank1：generated ids/text 不变，TP collective bytes `224.56 MiB`，TP collective seconds `24.959947s` / `24.327708s`。
+- 结论：
+  - 两种 opt-in dtype 都把 TP collective bytes 减半。
+  - TP collective seconds 从 `44-45s` 降到 `24-25s`。
+  - 端到端 runtime 从约 `74.7s` 降到约 `53.6-54.0s`。
+  - 本轮 `bfloat16` 略快，先作为 Jetson 推荐 opt-in 候选；默认值暂不改，改默认前要补 `tp-text-generate`、`hybrid-mm-generate` 和更长 decode 回归。
+
+pure TP runtime input broadcast 减量，已完成：
+
+- 已改代码：
+  - `qwen3vl_tp_runtime/hexgen_core/modules/tensor_parallel.py`
+  - `qwen3vl_tp_runtime/scripts/runtime_summary.py`
+  - `test/test_tensor_parallel_direct.py`
+- 行为变化：
+  - pure TP generate prefill 优先本地构建 runtime input：
+    - 有 `input_ids + embed_tokens_weight` 时本地构建 embeddings。
+    - 否则使用本地 `stage_input/layer_input`。
+    - 本地条件都缺失时才回退到 rank0 `broadcast_cpu`。
+  - pure TP generate decode 保留已有 token id broadcast，然后每个 TP rank 用本地 `embed_tokens_weight` 构建 one-token embedding。
+  - runtime summary phase stats 增加 `runtime_input_source` 和 `runtime_input_broadcast_skipped`。
+- 真实 Jetson profile：
+  - 输出目录：`baseline_runs/20260430-runtime-input-local-profile/`。
+  - `tp-mm-generate-runtime-input-local`: PASS。
+  - generated ids `[87140, 15946, 3837, 101177]`，text `视频中，一名`。
+- before/after：
+  - runtime input TP events / rank：`4 -> 0`。
+  - runtime input TP bytes / rank：`6,451,200 -> 0`。
+  - rank0 runtime input seconds：`1.035093s -> 0s`。
+  - rank1 runtime input seconds：`0.563669s -> 0s`。
+  - rank0 total TP collective bytes：`449.12 MiB -> 442.97 MiB`。
+  - rank1 total TP collective bytes：`449.12 MiB -> 442.97 MiB`。
+  - startup contract bytes 仍为每 rank `11.53 MiB`，这是 input-owner startup contract，不属于本轮 generate-time broadcast。
+- summary 证据：
+  - prefill：`runtime_input_source=local_stage_input`，`runtime_input_broadcast_skipped=true`。
+  - decode steps：`runtime_input_source=local_embeddings`，`runtime_input_broadcast_skipped=true`。
+- 本地验证：
+  - `python -m py_compile qwen3vl_tp_runtime/hexgen_core/modules/tensor_parallel.py qwen3vl_tp_runtime/scripts/runtime_summary.py test/test_tensor_parallel_direct.py`
+  - `PYTHONPATH=. /mnt/ssd/miniconda3/envs/vlm/bin/python test/test_tensor_parallel_direct.py`
+  - `PYTHONPATH=. /mnt/ssd/miniconda3/envs/vlm/bin/python test/test_collect_runtime_perf.py`
+  - `PYTHONPATH=. /mnt/ssd/miniconda3/envs/vlm/bin/python test/test_runtime_summary.py`
+  - `PYTHONPATH=. /mnt/ssd/miniconda3/envs/vlm/bin/python test/test_distributed_single_rank_bypass.py`
+  - `PYTHONPATH=. /mnt/ssd/miniconda3/envs/vlm/bin/python test/test_hybrid_direct_loader.py`
+  - `PYTHONPATH=. /mnt/ssd/miniconda3/envs/vlm/bin/python test/test_runtime_cli_modes.py`
+
+bfloat16 默认值候选回归，已完成：
+
+- 本轮没有改默认值，只验证 `--comm-dtype bfloat16` 是否足够稳定作为默认候选。
+- 输出目录：`baseline_runs/20260430-bfloat16-default-candidate/`。
+- 覆盖 case：
+  - `tp-text-generate-bfloat16`: PASS，generated ids `[104455, 9909, 9286, 16488]`，text `人工智能（Artificial`。
+  - `tp-mm-generate-bfloat16-wide`: PASS，generated ids `[87140, 15946, 3837, 101177]`，text `视频中，一名`。
+  - `hybrid-mm-generate-bfloat16-wide`: PASS，generated ids `[87140, 15946, 3837, 101177]`，text `视频中，一名`。
+  - `tp-mm-generate-long-default`: PASS，`MAX_NEW_TOKENS=16`。
+  - `tp-mm-generate-long-bfloat16`: PASS，`MAX_NEW_TOKENS=16`。
+- 长 decode default vs bfloat16：
+  - generated ids 完全一致：`[87140, 15946, 3837, 101177, 105611, 99194, 38035, 113727, 33108, 104362, 38035, 113233, 9370, 104253, 104224, 46944]`。
+  - generated text 完全一致：`视频中，一名穿着深色衬衫和浅色裤子的男子站在一个`。
+- perf 观察：
+  - `tp-text`: TP collective bytes `13.54 MiB -> 6.68 MiB`。
+  - current `tp-mm`: TP collective bytes `442.97 MiB -> 221.48 MiB`。
+  - `hybrid-mm` stage0: TP collective bytes `227.64 MiB -> 113.82 MiB`。
+  - `tp-mm` 16-token long decode: TP collective bytes `451.41 MiB -> 225.70 MiB`，runtime about `84.2s -> 62.9s`。
+- 结论：
+  - `bfloat16` 可以进入默认值候选状态。
+  - 真正改默认值应作为单独下一刀，只改 CLI/config 默认，不改 collective 语义；改完后复跑同一矩阵。
+
+bfloat16 默认值落地回归，已完成：
+
+- 已把 `qwen3vl_tp_runtime/scripts/runtime.py` 里的 `--comm-dtype` 默认值从 `float32` 改为 `bfloat16`。
+- 只改 CLI/config 默认值，不改 `all_reduce_cpu` / `all_gather_cpu` / `broadcast_cpu` 语义。
+- 输出目录：`baseline_runs/20260430-bfloat16-default/`。
+- 所有 case 都不显式传 `--comm-dtype`。
+- 覆盖 case：
+  - `tp-text-generate-default`: PASS，generated ids `[104455, 9909, 9286, 16488]`，text `人工智能（Artificial`，TP collective event 显示 `comm_dtype=torch.bfloat16`。
+  - `tp-mm-generate-default`: PASS，generated ids `[87140, 15946, 3837, 101177]`，text `视频中，一名`，TP collective bytes `221.48 MiB`。
+  - `hybrid-mm-generate-default`: PASS，generated ids `[87140, 15946, 3837, 101177]`，text `视频中，一名`，stage0 TP collective bytes `113.82 MiB`，stage1 `tp_degree=1` 仍为 `0 B`。
+  - `tp-mm-generate-long-default-bfloat16`: PASS，`MAX_NEW_TOKENS=16`，TP collective bytes `225.70 MiB`。
+- checker 输出：`baseline_runs/20260430-bfloat16-default/check-*.txt`，全部 PASS。
+- perf records/table：`baseline_runs/20260430-bfloat16-default/runtime-perf-records.json`、`runtime-perf-table.md`。
+- `ROADMAP.md` step 14 已标记完成，下一步转入 step 15 `Multimodal payload 减量`。
 
 ## 继续工作时的默认流程
 

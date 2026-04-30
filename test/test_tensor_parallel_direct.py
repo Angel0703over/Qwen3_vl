@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import torch
 
+from qwen3vl_tp_runtime.hexgen_core.modules import tensor_parallel as tensor_parallel_module
 from qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel import (
     TensorParallelManifest,
     TensorParallelRunner,
@@ -289,6 +290,115 @@ class TensorParallelDirectRunnerTest(unittest.TestCase):
         self.assertEqual(materialize_mock.call_args.kwargs["tp_shard_world_size"], 2)
         self.assertIs(stage_state, local_state)
         self.assertEqual(compute_dtype, torch.float32)
+
+    def test_generate_phase_uses_local_prefill_embeddings_without_stage_input_broadcast(self) -> None:
+        embed_tokens_weight = torch.tensor(
+            [
+                [1.0, 0.0],
+                [0.0, 1.0],
+                [2.0, 3.0],
+            ]
+        )
+        runtime_state = {
+            "prefill_seq_len": 3,
+            "batch_size": 1,
+            "hidden_size": 2,
+            "input_ids": torch.tensor([[0, 1, 2]], dtype=torch.long),
+            "embed_tokens_weight": embed_tokens_weight,
+            "layers": [],
+        }
+        expected_stage_input = torch.nn.functional.embedding(
+            runtime_state["input_ids"],
+            embed_tokens_weight,
+        )
+        trace_result = {
+            "logits": torch.tensor([[[0.0, 0.1, 0.2], [0.0, 0.3, 0.1], [0.9, 0.1, 0.0]]]),
+            "stage_output": expected_stage_input,
+            "norm_output": expected_stage_input,
+            "cache_by_layer": {},
+        }
+
+        with patch(
+            "qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel.broadcast_cpu",
+            side_effect=AssertionError("stage_input broadcast should be skipped"),
+        ), patch(
+            "qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel.trace_text_decode_logits_tp_with_runtime_cache",
+            return_value=trace_result,
+        ) as trace_mock:
+            stats, cache = tensor_parallel_module._run_generate_phase_tp(
+                rank=1,
+                world_size=2,
+                runtime_state=runtime_state,
+                phase_kind="prefill",
+                current_token_id=None,
+                cache_by_layer=None,
+                comm_dtype=torch.float32,
+                tp_attn_math_mode="orig",
+                tp_mlp_math_mode="orig",
+                return_tensor=False,
+            )
+
+        sent_stage_input = trace_mock.call_args.args[0]
+        self.assertTrue(torch.equal(sent_stage_input, expected_stage_input))
+        self.assertEqual(stats["runtime_input_source"], "local_embeddings")
+        self.assertTrue(stats["runtime_input_broadcast_skipped"])
+        self.assertIsNone(stats["predicted_token_id"])
+        self.assertEqual(cache, {})
+
+    def test_generate_phase_uses_local_decode_embedding_without_stage_input_broadcast(self) -> None:
+        embed_tokens_weight = torch.tensor(
+            [
+                [1.0, 0.0],
+                [0.0, 1.0],
+                [2.0, 3.0],
+            ]
+        )
+        runtime_state = {
+            "prefill_seq_len": 3,
+            "batch_size": 1,
+            "hidden_size": 2,
+            "decode_input_ids": torch.zeros((1, 1), dtype=torch.long),
+            "embed_tokens_weight": embed_tokens_weight,
+            "layers": [],
+        }
+        expected_stage_input = torch.nn.functional.embedding(
+            torch.tensor([[2]], dtype=torch.long),
+            embed_tokens_weight,
+        )
+        trace_result = {
+            "logits": torch.tensor([[[0.0, 0.1, 0.8]]]),
+            "stage_output": expected_stage_input,
+            "norm_output": expected_stage_input,
+            "cache_by_layer": {0: (None, None)},
+        }
+
+        with patch(
+            "qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel.broadcast_cpu",
+            side_effect=AssertionError("stage_input broadcast should be skipped"),
+        ), patch(
+            "qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel.trace_text_decode_logits_tp_with_runtime_cache",
+            return_value=trace_result,
+        ) as trace_mock:
+            stats, cache = tensor_parallel_module._run_generate_phase_tp(
+                rank=1,
+                world_size=2,
+                runtime_state=runtime_state,
+                phase_kind="decode",
+                current_token_id=2,
+                cache_by_layer={},
+                comm_dtype=torch.float32,
+                tp_attn_math_mode="orig",
+                tp_mlp_math_mode="orig",
+                return_tensor=False,
+            )
+
+        sent_stage_input = trace_mock.call_args.args[0]
+        self.assertTrue(torch.equal(sent_stage_input, expected_stage_input))
+        self.assertTrue(torch.equal(runtime_state["decode_input_ids_runtime"], torch.tensor([[2]])))
+        self.assertEqual(stats["runtime_input_source"], "local_embeddings")
+        self.assertTrue(stats["runtime_input_broadcast_skipped"])
+        self.assertIsNone(stats["predicted_token_id"])
+        self.assertEqual(cache, {0: (None, None)})
 
 
 if __name__ == "__main__":

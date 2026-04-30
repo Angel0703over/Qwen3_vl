@@ -206,14 +206,41 @@ class RuntimeSummaryTest(unittest.TestCase):
                 ),
                 elapsed_seconds=0.25,
             )
+            record_transport_profile_event(
+                channel="all_reduce_cpu",
+                operation="all_reduce",
+                label="tp_all_reduce",
+                summary=None,
+                elapsed_seconds=0.5,
+                extra={
+                    "is_empty": False,
+                    "num_tensors": 1,
+                    "payload_keys": ["tensor"],
+                    "tensor_shapes": {"tensor": [1, 2, 4]},
+                    "tensor_dtypes": {"tensor": "torch.float32"},
+                    "tensor_numels": {"tensor": 8},
+                    "tensor_bytes": {"tensor": 32},
+                    "total_tensor_bytes": 32,
+                    "phase": "prefill",
+                    "layer_idx": 3,
+                    "module": "attention",
+                    "reason": "row_parallel_reduce",
+                },
+            )
             summary = _attach_runtime_metrics({"backend": "tp"}, started_at=started_at)
 
         metrics = summary["runtime_metrics"]
         self.assertIn("runtime_total_seconds", metrics["timing"])
         self.assertEqual(metrics["startup"]["event_count"], 1)
         self.assertIn("prepare_session_seconds", metrics["startup"]["totals_by_kind"])
-        self.assertEqual(metrics["transport"]["event_count"], 1)
+        self.assertEqual(metrics["transport"]["event_count"], 2)
         self.assertEqual(metrics["transport"]["totals_by_kind"]["startup_contract"]["tensor_bytes"], 32)
+        self.assertEqual(metrics["transport"]["totals_by_kind"]["tp_collective"]["tensor_bytes"], 32)
+        tp_event = metrics["transport"]["events"][1]
+        self.assertEqual(tp_event["phase"], "prefill")
+        self.assertEqual(tp_event["layer_idx"], 3)
+        self.assertEqual(tp_event["module"], "attention")
+        self.assertEqual(tp_event["reason"], "row_parallel_reduce")
         self.assertIn("cpu_max_rss_bytes", metrics["memory"])
 
 

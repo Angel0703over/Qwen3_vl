@@ -1,0 +1,1 @@
+PASS case=tp-mm-generate-bfloat16-wide ranks=2 generated_token_ids=[87140, 15946, 3837, 101177] generated_text='视频中，一名'

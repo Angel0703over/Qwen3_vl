@@ -1,0 +1,6070 @@
+[smoke] case=hybrid-mm-generate rank=1/3 log=/mnt/ssd/code/Qwen3_vl/baseline_runs/20260429-step14-tp1-bypass/hybrid-mm-generate-rank1.log
+[smoke] command: HEXGEN_STARTUP_LOG=1 /mnt/ssd/miniconda3/envs/vlm/bin/torchrun --nnodes 3 --nproc-per-node 1 --node-rank 1 --master-addr 10.126.126.3 --master-port 29549 /mnt/ssd/code/Qwen3_vl/qwen3vl_tp_runtime/scripts/runtime.py --backend hybrid --modality multimodal --mode generate --model-path /mnt/ssd/models/Qwen/Qwen3-VL-4B-Instruct --frame-dir /mnt/ssd/code/Qwen3_vl/frames --num-frames 8 --pp 2 --tp-degrees 2 1 --prompt 请用中文简要介绍一下人工智能。 --max-new-tokens 4
+[pre-init] host=jetson2 rank=1 world_size=3 master=10.126.126.3:29549
+[Gloo] Rank 1 is connected to 2 peer ranks. Expected number of connected peer ranks is : 2
+[Gloo] Rank 1 is connected to 1 peer ranks. Expected number of connected peer ranks is : 1
+[startup][hybrid-direct-loader] host=jetson2 rank=1 local_rank=0 rank=1 stage_idx=0 waiting runtime input broadcast from leader=0
+[startup][object-bcast] host=jetson2 rank=1 local_rank=0 broadcasting runtime_inputs_meta stage_idx=0 src=0 local_has_payload=False
+[startup][object-bcast] host=jetson2 rank=1 local_rank=0 broadcast done for runtime_inputs_meta stage_idx=0 src=0 bytes=938
+[startup][tensor-bcast] host=jetson2 rank=1 local_rank=0 broadcasting runtime_inputs_tensors stage_idx=0 src=0 local_has_payload=False
+[startup][tensor-bcast] host=jetson2 rank=1 local_rank=0 broadcast done for runtime_inputs_tensors stage_idx=0 src=0 tensors=11
+[startup][hybrid-direct-loader] host=jetson2 rank=1 local_rank=0 rank=1 stage_idx=0 materializing local direct shard tp_local_rank=1/2 compute_dtype=torch.bfloat16
+[startup][hybrid-direct-loader] host=jetson2 rank=1 local_rank=0 begin materialize local direct shard rank=1 stage_idx=0 tp_local_rank=1/2
+[startup][hybrid-direct-loader] host=jetson2 rank=1 local_rank=0 done materialize local direct shard rank=1 stage_idx=0 tp_local_rank=1/2 in 0.06s
+[startup][hybrid-direct-loader] host=jetson2 rank=1 local_rank=0 rank=1 entering post-load barrier
+[startup][hybrid-direct-loader] host=jetson2 rank=1 local_rank=0 begin post-load barrier rank=1 stage_idx=0
+[startup][hybrid-direct-loader] host=jetson2 rank=1 local_rank=0 done post-load barrier rank=1 stage_idx=0 in 0.00s
+[startup][hybrid-direct-loader] host=jetson2 rank=1 local_rank=0 rank=1 stage_idx=0 moving materialized local StageState to device=cuda:0 compute_dtype=torch.bfloat16
+{
+  "rank": 1,
+  "backend": "hybrid",
+  "pipeline_type": "multimodal_generate",
+  "stage_idx": 0,
+  "stage_ranks": [
+    0,
+    1
+  ],
+  "local_rank": 1,
+  "tp_degree": 2,
+  "leader_rank": 0,
+  "current_pp_group": [
+    1,
+    2
+  ],
+  "weight_load": {
+    "tp_weight_sharded": true,
+    "tp_shard_rank": 1,
+    "tp_shard_world_size": 2,
+    "tp_local_dims": {
+      "local_attention_hidden_size": 2048,
+      "local_kv_hidden_size": 512,
+      "local_intermediate_size": 4864
+    },
+    "tp_shard_shape_ok": true,
+    "tp_sharded_projection_check_count": 126,
+    "tp_shard_shape_mismatches": [],
+    "tp_sharded_projection_examples": [
+      {
+        "name": "layers.0.q_weight",
+        "actual_shape": [
+          2048,
+          2560
+        ],
+        "expected_shape": [
+          2048,
+          2560
+        ],
+        "ok": true
+      },
+      {
+        "name": "layers.0.k_weight",
+        "actual_shape": [
+          512,
+          2560
+        ],
+        "expected_shape": [
+          512,
+          2560
+        ],
+        "ok": true
+      },
+      {
+        "name": "layers.0.v_weight",
+        "actual_shape": [
+          512,
+          2560
+        ],
+        "expected_shape": [
+          512,
+          2560
+        ],
+        "ok": true
+      },
+      {
+        "name": "layers.0.o_weight",
+        "actual_shape": [
+          2560,
+          2048
+        ],
+        "expected_shape": [
+          2560,
+          2048
+        ],
+        "ok": true
+      },
+      {
+        "name": "layers.0.gate_weight",
+        "actual_shape": [
+          4864,
+          2560
+        ],
+        "expected_shape": [
+          4864,
+          2560
+        ],
+        "ok": true
+      },
+      {
+        "name": "layers.0.up_weight",
+        "actual_shape": [
+          4864,
+          2560
+        ],
+        "expected_shape": [
+          4864,
+          2560
+        ],
+        "ok": true
+      },
+      {
+        "name": "layers.0.down_weight",
+        "actual_shape": [
+          2560,
+          4864
+        ],
+        "expected_shape": [
+          2560,
+          4864
+        ],
+        "ok": true
+      },
+      {
+        "name": "layers.1.q_weight",
+        "actual_shape": [
+          2048,
+          2560
+        ],
+        "expected_shape": [
+          2048,
+          2560
+        ],
+        "ok": true
+      }
+    ],
+    "tp_stage_loaded_weight_tensor_bytes": [
+      2594763776,
+      2594763776
+    ],
+    "tp_stage_loaded_weight_tensor_bytes_equal": true,
+    "tp_stage_loaded_weight_tensor_bytes_checked": true,
+    "stage_start_idx": 0,
+    "stage_end_idx": 17,
+    "loaded_layer_indices": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17
+    ],
+    "loaded_layer_count": 18,
+    "loaded_top_level_weight_names": [
+      "embed_tokens_weight"
+    ],
+    "unexpected_layer_indices": [],
+    "stage_weight_scope_ok": true,
+    "loaded_weight_tensor_count": 199,
+    "loaded_weight_tensor_bytes": 2594763776,
+    "loaded_weight_tensor_mib": 2474.56,
+    "loaded_weight_tensor_examples": [
+      {
+        "name": "embed_tokens_weight",
+        "shape": [
+          151936,
+          2560
+        ],
+        "dtype": "torch.bfloat16",
+        "bytes": 777912320
+      },
+      {
+        "name": "layers.0.q_weight",
+        "shape": [
+          2048,
+          2560
+        ],
+        "dtype": "torch.bfloat16",
+        "bytes": 10485760
+      },
+      {
+        "name": "layers.0.k_weight",
+        "shape": [
+          512,
+          2560
+        ],
+        "dtype": "torch.bfloat16",
+        "bytes": 2621440
+      },
+      {
+        "name": "layers.0.v_weight",
+        "shape": [
+          512,
+          2560
+        ],
+        "dtype": "torch.bfloat16",
+        "bytes": 2621440
+      },
+      {
+        "name": "layers.0.o_weight",
+        "shape": [
+          2560,
+          2048
+        ],
+        "dtype": "torch.bfloat16",
+        "bytes": 10485760
+      },
+      {
+        "name": "layers.0.q_norm_weight",
+        "shape": [
+          128
+        ],
+        "dtype": "torch.bfloat16",
+        "bytes": 256
+      },
+      {
+        "name": "layers.0.k_norm_weight",
+        "shape": [
+          128
+        ],
+        "dtype": "torch.bfloat16",
+        "bytes": 256
+      },
+      {
+        "name": "layers.0.gate_weight",
+        "shape": [
+          4864,
+          2560
+        ],
+        "dtype": "torch.bfloat16",
+        "bytes": 24903680
+      }
+    ],
+    "tp_sharded_parameter_count": 126,
+    "tp_replicated_parameter_count": 73,
+    "tp_sharded_parameter_examples": [
+      "model.language_model.layers.0.mlp.down_proj.weight",
+      "model.language_model.layers.0.mlp.gate_proj.weight",
+      "model.language_model.layers.0.mlp.up_proj.weight",
+      "model.language_model.layers.0.self_attn.k_proj.weight",
+      "model.language_model.layers.0.self_attn.o_proj.weight",
+      "model.language_model.layers.0.self_attn.q_proj.weight",
+      "model.language_model.layers.0.self_attn.v_proj.weight",
+      "model.language_model.layers.1.mlp.down_proj.weight"
+    ],
+    "tp_replicated_parameter_examples": [
+      "model.language_model.embed_tokens.weight",
+      "model.language_model.layers.0.input_layernorm.weight",
+      "model.language_model.layers.0.post_attention_layernorm.weight",
+      "model.language_model.layers.0.self_attn.k_norm.weight",
+      "model.language_model.layers.0.self_attn.q_norm.weight",
+      "model.language_model.layers.1.input_layernorm.weight",
+      "model.language_model.layers.1.post_attention_layernorm.weight",
+      "model.language_model.layers.1.self_attn.k_norm.weight"
+    ]
+  },
+  "debug_mode": false,
+  "compare_direct": false,
+  "trace_layers": false,
+  "dump_layer": null,
+  "dump_topk": 5,
+  "prefill_seq_len": 627,
+  "max_new_tokens": 4,
+  "prefill": {
+    "input_shape": [
+      1,
+      627,
+      2560
+    ],
+    "output_shape": [
+      1,
+      627,
+      2560
+    ],
+    "received_payload_keys": [],
+    "sent_payload_keys": [],
+    "sent_tensor_shapes": {},
+    "boundary_max_diff": null,
+    "boundary_mean_diff": null,
+    "embedding_max_diff": 0.0,
+    "embedding_mean_diff": 0.0,
+    "hidden_stage_max_diff": null,
+    "hidden_stage_mean_diff": null,
+    "norm_max_diff": null,
+    "norm_mean_diff": null,
+    "stage_max_diff": null,
+    "stage_mean_diff": null,
+    "predicted_token_id": null,
+    "reference_token_id": null
+  },
+  "steps": [
+    {
+      "input_shape": [
+        1,
+        1,
+        2560
+      ],
+      "output_shape": [
+        1,
+        1,
+        2560
+      ],
+      "received_payload_keys": [],
+      "sent_payload_keys": [],
+      "sent_tensor_shapes": {},
+      "boundary_max_diff": null,
+      "boundary_mean_diff": null,
+      "embedding_max_diff": null,
+      "embedding_mean_diff": null,
+      "hidden_stage_max_diff": null,
+      "hidden_stage_mean_diff": null,
+      "norm_max_diff": null,
+      "norm_mean_diff": null,
+      "stage_max_diff": null,
+      "stage_mean_diff": null,
+      "predicted_token_id": null,
+      "reference_token_id": null
+    },
+    {
+      "input_shape": [
+        1,
+        1,
+        2560
+      ],
+      "output_shape": [
+        1,
+        1,
+        2560
+      ],
+      "received_payload_keys": [],
+      "sent_payload_keys": [],
+      "sent_tensor_shapes": {},
+      "boundary_max_diff": null,
+      "boundary_mean_diff": null,
+      "embedding_max_diff": null,
+      "embedding_mean_diff": null,
+      "hidden_stage_max_diff": null,
+      "hidden_stage_mean_diff": null,
+      "norm_max_diff": null,
+      "norm_mean_diff": null,
+      "stage_max_diff": null,
+      "stage_mean_diff": null,
+      "predicted_token_id": null,
+      "reference_token_id": null
+    },
+    {
+      "input_shape": [
+        1,
+        1,
+        2560
+      ],
+      "output_shape": [
+        1,
+        1,
+        2560
+      ],
+      "received_payload_keys": [],
+      "sent_payload_keys": [],
+      "sent_tensor_shapes": {},
+      "boundary_max_diff": null,
+      "boundary_mean_diff": null,
+      "embedding_max_diff": null,
+      "embedding_mean_diff": null,
+      "hidden_stage_max_diff": null,
+      "hidden_stage_mean_diff": null,
+      "norm_max_diff": null,
+      "norm_mean_diff": null,
+      "stage_max_diff": null,
+      "stage_mean_diff": null,
+      "predicted_token_id": null,
+      "reference_token_id": null
+    }
+  ],
+  "generated_token_ids": [
+    87140,
+    15946,
+    3837,
+    101177
+  ],
+  "generated_text": "视频中，一名",
+  "runtime_metrics": {
+    "timing": {
+      "runtime_total_seconds": 33.471301
+    },
+    "startup": {
+      "event_count": 4,
+      "events": [
+        {
+          "component": "object-bcast",
+          "message": "broadcast runtime_inputs_meta stage_idx=0 src=0",
+          "status": "done",
+          "elapsed_seconds": 24.57303,
+          "kind": "other_seconds"
+        },
+        {
+          "component": "tensor-bcast",
+          "message": "broadcast runtime_inputs_tensors stage_idx=0 src=0",
+          "status": "done",
+          "elapsed_seconds": 0.03273,
+          "kind": "other_seconds"
+        },
+        {
+          "component": "hybrid-direct-loader",
+          "message": "materialize local direct shard rank=1 stage_idx=0 tp_local_rank=1/2",
+          "status": "done",
+          "elapsed_seconds": 0.056162,
+          "kind": "materialize_stage_seconds"
+        },
+        {
+          "component": "hybrid-direct-loader",
+          "message": "post-load barrier rank=1 stage_idx=0",
+          "status": "done",
+          "elapsed_seconds": 0.003035,
+          "kind": "post_load_barrier_seconds"
+        }
+      ],
+      "totals_by_component": {
+        "hybrid-direct-loader": 0.059197,
+        "object-bcast": 24.57303,
+        "tensor-bcast": 0.03273
+      },
+      "totals_by_kind": {
+        "materialize_stage_seconds": 0.056162,
+        "other_seconds": 24.60576,
+        "post_load_barrier_seconds": 0.003035,
+        "prepare_session_seconds": 0.0,
+        "scaffold_transport_seconds": 0.0,
+        "startup_contract_prepare_seconds": 0.0,
+        "startup_contract_seconds": 0.0,
+        "startup_contract_transport_seconds": 0.0
+      }
+    },
+    "transport": {
+      "event_count": 154,
+      "events": [
+        {
+          "kind": "scaffold",
+          "channel": "object-bcast",
+          "operation": "broadcast",
+          "label": "runtime_inputs_meta stage_idx=0",
+          "peer": 0,
+          "status": "done",
+          "elapsed_seconds": 24.57303,
+          "object_bytes": 938
+        },
+        {
+          "kind": "scaffold",
+          "channel": "tensor-bcast",
+          "operation": "broadcast",
+          "label": "runtime_inputs_tensors stage_idx=0",
+          "peer": 0,
+          "status": "done",
+          "elapsed_seconds": 0.03273,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 11,
+          "payload_keys": [
+            "runtime_inputs.shared.input_ids",
+            "runtime_inputs.shared.attention_mask_2d",
+            "runtime_inputs.shared.position_ids",
+            "runtime_inputs.shared.rope_deltas",
+            "runtime_inputs.shared.mm_token_type_ids",
+            "runtime_inputs.shared.video_grid_thw",
+            "runtime_inputs.stage_handoff.stage_input",
+            "runtime_inputs.stage_visuals.visual_pos_masks",
+            "runtime_inputs.stage_visuals.deepstack_by_layer.0",
+            "runtime_inputs.stage_visuals.deepstack_by_layer.1",
+            "runtime_inputs.stage_visuals.deepstack_by_layer.2"
+          ],
+          "tensor_shapes": {
+            "runtime_inputs.shared.input_ids": [
+              1,
+              627
+            ],
+            "runtime_inputs.shared.attention_mask_2d": [
+              1,
+              627
+            ],
+            "runtime_inputs.shared.position_ids": [
+              4,
+              1,
+              627
+            ],
+            "runtime_inputs.shared.rope_deltas": [
+              1,
+              1
+            ],
+            "runtime_inputs.shared.mm_token_type_ids": [
+              1,
+              627
+            ],
+            "runtime_inputs.shared.video_grid_thw": [
+              1,
+              3
+            ],
+            "runtime_inputs.stage_handoff.stage_input": [
+              1,
+              627,
+              2560
+            ],
+            "runtime_inputs.stage_visuals.visual_pos_masks": [
+              1,
+              627
+            ],
+            "runtime_inputs.stage_visuals.deepstack_by_layer.0": [
+              576,
+              2560
+            ],
+            "runtime_inputs.stage_visuals.deepstack_by_layer.1": [
+              576,
+              2560
+            ],
+            "runtime_inputs.stage_visuals.deepstack_by_layer.2": [
+              576,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "runtime_inputs.shared.input_ids": "torch.int64",
+            "runtime_inputs.shared.attention_mask_2d": "torch.int64",
+            "runtime_inputs.shared.position_ids": "torch.int64",
+            "runtime_inputs.shared.rope_deltas": "torch.int64",
+            "runtime_inputs.shared.mm_token_type_ids": "torch.int64",
+            "runtime_inputs.shared.video_grid_thw": "torch.int64",
+            "runtime_inputs.stage_handoff.stage_input": "torch.bfloat16",
+            "runtime_inputs.stage_visuals.visual_pos_masks": "torch.bool",
+            "runtime_inputs.stage_visuals.deepstack_by_layer.0": "torch.bfloat16",
+            "runtime_inputs.stage_visuals.deepstack_by_layer.1": "torch.bfloat16",
+            "runtime_inputs.stage_visuals.deepstack_by_layer.2": "torch.bfloat16"
+          },
+          "tensor_numels": {
+            "runtime_inputs.shared.input_ids": 627,
+            "runtime_inputs.shared.attention_mask_2d": 627,
+            "runtime_inputs.shared.position_ids": 2508,
+            "runtime_inputs.shared.rope_deltas": 1,
+            "runtime_inputs.shared.mm_token_type_ids": 627,
+            "runtime_inputs.shared.video_grid_thw": 3,
+            "runtime_inputs.stage_handoff.stage_input": 1605120,
+            "runtime_inputs.stage_visuals.visual_pos_masks": 627,
+            "runtime_inputs.stage_visuals.deepstack_by_layer.0": 1474560,
+            "runtime_inputs.stage_visuals.deepstack_by_layer.1": 1474560,
+            "runtime_inputs.stage_visuals.deepstack_by_layer.2": 1474560
+          },
+          "tensor_bytes": {
+            "runtime_inputs.shared.input_ids": 5016,
+            "runtime_inputs.shared.attention_mask_2d": 5016,
+            "runtime_inputs.shared.position_ids": 20064,
+            "runtime_inputs.shared.rope_deltas": 8,
+            "runtime_inputs.shared.mm_token_type_ids": 5016,
+            "runtime_inputs.shared.video_grid_thw": 24,
+            "runtime_inputs.stage_handoff.stage_input": 3210240,
+            "runtime_inputs.stage_visuals.visual_pos_masks": 627,
+            "runtime_inputs.stage_visuals.deepstack_by_layer.0": 2949120,
+            "runtime_inputs.stage_visuals.deepstack_by_layer.1": 2949120,
+            "runtime_inputs.stage_visuals.deepstack_by_layer.2": 2949120
+          },
+          "total_tensor_bytes": 12093371
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "broadcast_cpu",
+          "operation": "broadcast",
+          "label": "tp_broadcast_cpu",
+          "peer": 0,
+          "status": "done",
+          "elapsed_seconds": 0.003551,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              627,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 1605120
+          },
+          "tensor_bytes": {
+            "tensor": 6420480
+          },
+          "total_tensor_bytes": 6420480,
+          "phase": "prefill",
+          "module": "runtime_input",
+          "reason": "stage_input_broadcast",
+          "stage_idx": 0
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.017663,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              627,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 1605120
+          },
+          "tensor_bytes": {
+            "tensor": 6420480
+          },
+          "total_tensor_bytes": 6420480,
+          "phase": "prefill",
+          "layer_idx": 0,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.026412,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              627,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 1605120
+          },
+          "tensor_bytes": {
+            "tensor": 6420480
+          },
+          "total_tensor_bytes": 6420480,
+          "phase": "prefill",
+          "layer_idx": 0,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.0247,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              627,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 1605120
+          },
+          "tensor_bytes": {
+            "tensor": 6420480
+          },
+          "total_tensor_bytes": 6420480,
+          "phase": "prefill",
+          "layer_idx": 1,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.046949,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              627,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 1605120
+          },
+          "tensor_bytes": {
+            "tensor": 6420480
+          },
+          "total_tensor_bytes": 6420480,
+          "phase": "prefill",
+          "layer_idx": 1,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.034396,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              627,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 1605120
+          },
+          "tensor_bytes": {
+            "tensor": 6420480
+          },
+          "total_tensor_bytes": 6420480,
+          "phase": "prefill",
+          "layer_idx": 2,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.026653,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              627,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 1605120
+          },
+          "tensor_bytes": {
+            "tensor": 6420480
+          },
+          "total_tensor_bytes": 6420480,
+          "phase": "prefill",
+          "layer_idx": 2,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.022529,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              627,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 1605120
+          },
+          "tensor_bytes": {
+            "tensor": 6420480
+          },
+          "total_tensor_bytes": 6420480,
+          "phase": "prefill",
+          "layer_idx": 3,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.035148,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              627,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 1605120
+          },
+          "tensor_bytes": {
+            "tensor": 6420480
+          },
+          "total_tensor_bytes": 6420480,
+          "phase": "prefill",
+          "layer_idx": 3,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.019028,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              627,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 1605120
+          },
+          "tensor_bytes": {
+            "tensor": 6420480
+          },
+          "total_tensor_bytes": 6420480,
+          "phase": "prefill",
+          "layer_idx": 4,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.029339,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              627,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 1605120
+          },
+          "tensor_bytes": {
+            "tensor": 6420480
+          },
+          "total_tensor_bytes": 6420480,
+          "phase": "prefill",
+          "layer_idx": 4,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.020205,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              627,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 1605120
+          },
+          "tensor_bytes": {
+            "tensor": 6420480
+          },
+          "total_tensor_bytes": 6420480,
+          "phase": "prefill",
+          "layer_idx": 5,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.034935,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              627,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 1605120
+          },
+          "tensor_bytes": {
+            "tensor": 6420480
+          },
+          "total_tensor_bytes": 6420480,
+          "phase": "prefill",
+          "layer_idx": 5,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.022571,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              627,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 1605120
+          },
+          "tensor_bytes": {
+            "tensor": 6420480
+          },
+          "total_tensor_bytes": 6420480,
+          "phase": "prefill",
+          "layer_idx": 6,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.035986,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              627,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 1605120
+          },
+          "tensor_bytes": {
+            "tensor": 6420480
+          },
+          "total_tensor_bytes": 6420480,
+          "phase": "prefill",
+          "layer_idx": 6,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.02151,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              627,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 1605120
+          },
+          "tensor_bytes": {
+            "tensor": 6420480
+          },
+          "total_tensor_bytes": 6420480,
+          "phase": "prefill",
+          "layer_idx": 7,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.035912,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              627,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 1605120
+          },
+          "tensor_bytes": {
+            "tensor": 6420480
+          },
+          "total_tensor_bytes": 6420480,
+          "phase": "prefill",
+          "layer_idx": 7,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.031912,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              627,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 1605120
+          },
+          "tensor_bytes": {
+            "tensor": 6420480
+          },
+          "total_tensor_bytes": 6420480,
+          "phase": "prefill",
+          "layer_idx": 8,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.029103,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              627,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 1605120
+          },
+          "tensor_bytes": {
+            "tensor": 6420480
+          },
+          "total_tensor_bytes": 6420480,
+          "phase": "prefill",
+          "layer_idx": 8,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.019036,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              627,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 1605120
+          },
+          "tensor_bytes": {
+            "tensor": 6420480
+          },
+          "total_tensor_bytes": 6420480,
+          "phase": "prefill",
+          "layer_idx": 9,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.030519,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              627,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 1605120
+          },
+          "tensor_bytes": {
+            "tensor": 6420480
+          },
+          "total_tensor_bytes": 6420480,
+          "phase": "prefill",
+          "layer_idx": 9,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.024847,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              627,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 1605120
+          },
+          "tensor_bytes": {
+            "tensor": 6420480
+          },
+          "total_tensor_bytes": 6420480,
+          "phase": "prefill",
+          "layer_idx": 10,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.027841,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              627,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 1605120
+          },
+          "tensor_bytes": {
+            "tensor": 6420480
+          },
+          "total_tensor_bytes": 6420480,
+          "phase": "prefill",
+          "layer_idx": 10,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.017464,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              627,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 1605120
+          },
+          "tensor_bytes": {
+            "tensor": 6420480
+          },
+          "total_tensor_bytes": 6420480,
+          "phase": "prefill",
+          "layer_idx": 11,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.030402,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              627,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 1605120
+          },
+          "tensor_bytes": {
+            "tensor": 6420480
+          },
+          "total_tensor_bytes": 6420480,
+          "phase": "prefill",
+          "layer_idx": 11,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.017552,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              627,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 1605120
+          },
+          "tensor_bytes": {
+            "tensor": 6420480
+          },
+          "total_tensor_bytes": 6420480,
+          "phase": "prefill",
+          "layer_idx": 12,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.032047,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              627,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 1605120
+          },
+          "tensor_bytes": {
+            "tensor": 6420480
+          },
+          "total_tensor_bytes": 6420480,
+          "phase": "prefill",
+          "layer_idx": 12,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.02168,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              627,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 1605120
+          },
+          "tensor_bytes": {
+            "tensor": 6420480
+          },
+          "total_tensor_bytes": 6420480,
+          "phase": "prefill",
+          "layer_idx": 13,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.029274,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              627,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 1605120
+          },
+          "tensor_bytes": {
+            "tensor": 6420480
+          },
+          "total_tensor_bytes": 6420480,
+          "phase": "prefill",
+          "layer_idx": 13,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.018156,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              627,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 1605120
+          },
+          "tensor_bytes": {
+            "tensor": 6420480
+          },
+          "total_tensor_bytes": 6420480,
+          "phase": "prefill",
+          "layer_idx": 14,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.032102,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              627,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 1605120
+          },
+          "tensor_bytes": {
+            "tensor": 6420480
+          },
+          "total_tensor_bytes": 6420480,
+          "phase": "prefill",
+          "layer_idx": 14,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.0198,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              627,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 1605120
+          },
+          "tensor_bytes": {
+            "tensor": 6420480
+          },
+          "total_tensor_bytes": 6420480,
+          "phase": "prefill",
+          "layer_idx": 15,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.031384,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              627,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 1605120
+          },
+          "tensor_bytes": {
+            "tensor": 6420480
+          },
+          "total_tensor_bytes": 6420480,
+          "phase": "prefill",
+          "layer_idx": 15,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.020605,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              627,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 1605120
+          },
+          "tensor_bytes": {
+            "tensor": 6420480
+          },
+          "total_tensor_bytes": 6420480,
+          "phase": "prefill",
+          "layer_idx": 16,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.030718,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              627,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 1605120
+          },
+          "tensor_bytes": {
+            "tensor": 6420480
+          },
+          "total_tensor_bytes": 6420480,
+          "phase": "prefill",
+          "layer_idx": 16,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.01931,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              627,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 1605120
+          },
+          "tensor_bytes": {
+            "tensor": 6420480
+          },
+          "total_tensor_bytes": 6420480,
+          "phase": "prefill",
+          "layer_idx": 17,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.031193,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              627,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 1605120
+          },
+          "tensor_bytes": {
+            "tensor": 6420480
+          },
+          "total_tensor_bytes": 6420480,
+          "phase": "prefill",
+          "layer_idx": 17,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "stage_handoff",
+          "channel": "stage_handoff",
+          "operation": "send_empty",
+          "label": "stage_handoff",
+          "peer": 2,
+          "status": "done",
+          "elapsed_seconds": 0.836435,
+          "object_bytes": null,
+          "is_empty": true,
+          "num_tensors": 0,
+          "payload_keys": [],
+          "tensor_shapes": {},
+          "tensor_dtypes": {},
+          "tensor_numels": {},
+          "tensor_bytes": {},
+          "total_tensor_bytes": 0
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "broadcast_cpu",
+          "operation": "broadcast",
+          "label": "tp_broadcast_cpu",
+          "peer": 0,
+          "status": "done",
+          "elapsed_seconds": 0.000697,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "module": "runtime_input",
+          "reason": "stage_input_broadcast",
+          "stage_idx": 0
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.008942,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 0,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.007118,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 0,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.004042,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 1,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.007325,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 1,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.004301,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 2,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.007122,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 2,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.003756,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 3,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.006912,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 3,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.003623,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 4,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.006746,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 4,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.003669,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 5,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.006882,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 5,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.001903,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 6,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.006882,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 6,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.002957,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 7,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.006777,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 7,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.004064,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 8,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.006755,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 8,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.002372,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 9,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.006825,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 9,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.003106,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 10,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.006804,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 10,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.004023,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 11,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.007026,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 11,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.003122,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 12,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.005886,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 12,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.00329,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 13,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.006833,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 13,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.004039,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 14,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.006808,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 14,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.002308,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 15,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.006788,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 15,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.00334,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 16,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.006879,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 16,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.004269,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 17,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.006867,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 17,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "stage_handoff",
+          "channel": "stage_handoff",
+          "operation": "send_empty",
+          "label": "stage_handoff",
+          "peer": 2,
+          "status": "done",
+          "elapsed_seconds": 0.01616,
+          "object_bytes": null,
+          "is_empty": true,
+          "num_tensors": 0,
+          "payload_keys": [],
+          "tensor_shapes": {},
+          "tensor_dtypes": {},
+          "tensor_numels": {},
+          "tensor_bytes": {},
+          "total_tensor_bytes": 0
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "broadcast_cpu",
+          "operation": "broadcast",
+          "label": "tp_broadcast_cpu",
+          "peer": 0,
+          "status": "done",
+          "elapsed_seconds": 0.002696,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "module": "runtime_input",
+          "reason": "stage_input_broadcast",
+          "stage_idx": 0
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.00341,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 0,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.006767,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 0,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.003237,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 1,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.006743,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 1,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.003257,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 2,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.006779,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 2,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.003322,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 3,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.006755,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 3,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.003187,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 4,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.006881,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 4,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.003292,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 5,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.006718,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 5,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.003229,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 6,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.006785,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 6,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.002335,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 7,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.00696,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 7,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.002833,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 8,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.006844,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 8,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.004158,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 9,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.007469,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 9,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.00263,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 10,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.006807,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 10,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.002903,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 11,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.007114,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 11,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.004167,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 12,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.006867,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 12,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.003168,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 13,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.007234,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 13,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.003366,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 14,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.007038,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 14,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.004204,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 15,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.007142,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 15,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.002567,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 16,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.006703,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 16,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.002759,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 17,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.007113,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 17,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "stage_handoff",
+          "channel": "stage_handoff",
+          "operation": "send_empty",
+          "label": "stage_handoff",
+          "peer": 2,
+          "status": "done",
+          "elapsed_seconds": 0.018286,
+          "object_bytes": null,
+          "is_empty": true,
+          "num_tensors": 0,
+          "payload_keys": [],
+          "tensor_shapes": {},
+          "tensor_dtypes": {},
+          "tensor_numels": {},
+          "tensor_bytes": {},
+          "total_tensor_bytes": 0
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "broadcast_cpu",
+          "operation": "broadcast",
+          "label": "tp_broadcast_cpu",
+          "peer": 0,
+          "status": "done",
+          "elapsed_seconds": 0.002493,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "module": "runtime_input",
+          "reason": "stage_input_broadcast",
+          "stage_idx": 0
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.003333,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 0,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.006805,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 0,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.003729,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 1,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.006876,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 1,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.003553,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 2,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.006707,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 2,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.003247,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 3,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.006837,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 3,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.003212,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 4,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.006806,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 4,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.003169,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 5,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.007097,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 5,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.003257,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 6,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.006756,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 6,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.003046,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 7,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.006959,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 7,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.003125,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 8,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.007185,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 8,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.003376,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 9,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.007085,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 9,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.003185,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 10,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.006837,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 10,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.003433,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 11,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.006796,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 11,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.003238,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 12,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.002135,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 12,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.003466,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 13,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.006779,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 13,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.003043,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 14,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.006629,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 14,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.003001,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 15,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.006959,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 15,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.0037,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 16,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.00681,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 16,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.003525,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 17,
+          "module": "attention",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "tp_collective",
+          "channel": "all_reduce_cpu",
+          "operation": "all_reduce",
+          "label": "tp_all_reduce",
+          "peer": null,
+          "status": "done",
+          "elapsed_seconds": 0.006821,
+          "object_bytes": null,
+          "is_empty": false,
+          "num_tensors": 1,
+          "payload_keys": [
+            "tensor"
+          ],
+          "tensor_shapes": {
+            "tensor": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "tensor_dtypes": {
+            "tensor": "torch.float32"
+          },
+          "tensor_numels": {
+            "tensor": 2560
+          },
+          "tensor_bytes": {
+            "tensor": 10240
+          },
+          "total_tensor_bytes": 10240,
+          "phase": "decode",
+          "layer_idx": 17,
+          "module": "mlp",
+          "reason": "row_parallel_reduce"
+        },
+        {
+          "kind": "stage_handoff",
+          "channel": "stage_handoff",
+          "operation": "send_empty",
+          "label": "stage_handoff",
+          "peer": 2,
+          "status": "done",
+          "elapsed_seconds": 0.017399,
+          "object_bytes": null,
+          "is_empty": true,
+          "num_tensors": 0,
+          "payload_keys": [],
+          "tensor_shapes": {},
+          "tensor_dtypes": {},
+          "tensor_numels": {},
+          "tensor_bytes": {},
+          "total_tensor_bytes": 0
+        }
+      ],
+      "totals_by_kind": {
+        "other": {
+          "event_count": 0,
+          "elapsed_seconds": 0.0,
+          "object_bytes": 0,
+          "tensor_bytes": 0,
+          "total_bytes": 0
+        },
+        "scaffold": {
+          "event_count": 2,
+          "elapsed_seconds": 24.60576,
+          "object_bytes": 938,
+          "tensor_bytes": 12093371,
+          "total_bytes": 12094309
+        },
+        "stage_handoff": {
+          "event_count": 4,
+          "elapsed_seconds": 0.88828,
+          "object_bytes": 0,
+          "tensor_bytes": 0,
+          "total_bytes": 0
+        },
+        "startup_contract": {
+          "event_count": 0,
+          "elapsed_seconds": 0.0,
+          "object_bytes": 0,
+          "tensor_bytes": 0,
+          "total_bytes": 0
+        },
+        "tp_collective": {
+          "event_count": 148,
+          "elapsed_seconds": 1.529939,
+          "object_bytes": 0,
+          "tensor_bytes": 238694400,
+          "total_bytes": 238694400
+        }
+      },
+      "totals_by_channel": {
+        "all_reduce_cpu": {
+          "event_count": 144,
+          "elapsed_seconds": 1.520502,
+          "object_bytes": 0,
+          "tensor_bytes": 232243200,
+          "total_bytes": 232243200
+        },
+        "broadcast_cpu": {
+          "event_count": 4,
+          "elapsed_seconds": 0.009437,
+          "object_bytes": 0,
+          "tensor_bytes": 6451200,
+          "total_bytes": 6451200
+        },
+        "object-bcast": {
+          "event_count": 1,
+          "elapsed_seconds": 24.57303,
+          "object_bytes": 938,
+          "tensor_bytes": 0,
+          "total_bytes": 938
+        },
+        "stage_handoff": {
+          "event_count": 4,
+          "elapsed_seconds": 0.88828,
+          "object_bytes": 0,
+          "tensor_bytes": 0,
+          "total_bytes": 0
+        },
+        "tensor-bcast": {
+          "event_count": 1,
+          "elapsed_seconds": 0.03273,
+          "object_bytes": 0,
+          "tensor_bytes": 12093371,
+          "total_bytes": 12093371
+        }
+      }
+    },
+    "memory": {
+      "cpu_max_rss_bytes": 4204109824,
+      "cuda_available": true,
+      "devices": [
+        {
+          "device": "cuda:0",
+          "memory_allocated_bytes": 8519680,
+          "memory_reserved_bytes": 3590324224,
+          "max_memory_allocated_bytes": 3462581248,
+          "max_memory_reserved_bytes": 3590324224
+        }
+      ],
+      "peak_allocated_bytes": 3462581248,
+      "peak_reserved_bytes": 3590324224
+    }
+  }
+}

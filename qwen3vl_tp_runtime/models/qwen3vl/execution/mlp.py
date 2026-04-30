@@ -13,6 +13,22 @@ from .common import (
 )
 
 
+def _tp_collective_context(
+    bundle: dict,
+    *,
+    module: str,
+    reason: str,
+) -> dict:
+    context = {
+        "phase": str(bundle.get("tp_profile_phase") or "unknown"),
+        "module": module,
+        "reason": reason,
+    }
+    if "layer_idx" in bundle:
+        context["layer_idx"] = int(bundle["layer_idx"])
+    return context
+
+
 def forward_mlp(hidden_states: torch.Tensor, bundle: dict) -> torch.Tensor:
     act_fn = ACT2FN[bundle["hidden_act"]]
     gate_out = F.linear(hidden_states, bundle["gate_weight"], bundle["gate_bias"])
@@ -89,6 +105,11 @@ def trace_mlp_tp(
             target_dtype=orig_dtype,
             comm_dtype=comm_dtype,
             group=tp_group,
+            profile_context=_tp_collective_context(
+                bundle,
+                module="mlp",
+                reason="row_parallel_reduce",
+            ),
         )
         if down_bias is not None:
             mlp_output = mlp_output + down_bias
@@ -99,6 +120,11 @@ def trace_mlp_tp(
             orig_dtype,
             comm_dtype,
             group=tp_group,
+            profile_context=_tp_collective_context(
+                bundle,
+                module="mlp",
+                reason="column_parallel_gather",
+            ),
         )
         full_fused = torch.cat(gathered_fused, dim=-1)
         leader_output = None
@@ -110,6 +136,11 @@ def trace_mlp_tp(
             src=tp_src_rank,
             comm_dtype=comm_dtype,
             group=tp_group,
+            profile_context=_tp_collective_context(
+                bundle,
+                module="mlp",
+                reason="full_weight_leader_broadcast",
+            ),
         )
 
     return {
