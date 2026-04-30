@@ -1,120 +1,91 @@
 # qwen3vl_tp_runtime
 
-这是面向 Qwen3-VL 的分布式推理运行时原型，主路径支持直接执行 `pp` / `tp` / `hybrid`。
+Qwen3-VL 分布式推理 runtime 原型。主路径支持 `pp`、`tp`、`hybrid`，启动时直接从 `model_path` 构建每个 stage/rank 的 `StageState`。
 
-## 主路径
+## 快速使用
 
-- 主入口：`scripts/runtime.py`
-- 推荐模式：`backend=pp|tp|hybrid`
-- 主路径在启动时直接从 `model_path` 构建每个 stage/rank 的 `StageState`
-- 推荐并行参数：`--pp N` 表示 pipeline stage 数，自动按模型层数平均切分；`--tp N` 表示统一 tensor parallel 度数。
-- 高级覆盖参数：`--stage-ranges` 和 `--tp-degrees` 仍然保留，用于手工切层或异构 hybrid，例如 `--pp 2 --tp-degrees 2 1`。
-
-常用写法：
+主入口：
 
 ```bash
-# 纯 PP：2 个 stage，默认平均切层，例如 36 层会切成 0:17 / 18:35
+/mnt/ssd/miniconda3/envs/vlm/bin/python qwen3vl_tp_runtime/scripts/runtime.py
+```
+
+常用并行参数：
+
+```bash
+# 纯 PP：按层平均切成 2 个 stage
 --backend pp --pp 2
 
 # 纯 TP：单 stage，全模型 TP=2
 --backend tp --tp 2
 
-# 均匀 PP+TP hybrid：2 个 PP stage，每个 stage 都是 TP=2
+# 均匀 HYBRID：2 个 PP stage，每个 stage TP=2
 --backend hybrid --pp 2 --tp 2
 
-# 异构 PP+TP hybrid：2 个 PP stage，stage0 TP=2，stage1 TP=1
+# 异构 HYBRID：stage0 TP=2，stage1 TP=1
 --backend hybrid --pp 2 --tp-degrees 2 1
 ```
 
+高级覆盖：
+
+- `--stage-ranges 0:17 18:35`
+- `--tp-degrees 2 1`
+
 ## 当前状态
 
-这个 runtime 最初有两个明确目标：
+| 方向 | 当前结果 |
+| --- | --- |
+| direct runtime | `PP / TP / HYBRID` 都从 `model_path` 直接构建 `StageState` |
+| TP 后端 | 已独立为 `TensorParallelRunner`，不依赖 HYBRID |
+| TP 权重 | decoder/MLP projection 已 rank-local materialize |
+| multimodal TP | rank0/input-owner 准备 startup contract，其他 TP rank consume-only |
+| HYBRID | PP+TP 组合层，runtime input 已收口到 `hybrid_runtime_inputs_v1` |
+| transport payload | 不传 root/full/replay payload，不传 dense derived attention/RoPE tensor |
+| comm dtype | 默认 `bfloat16` |
 
-- `TP` 不能再是“每张卡先加载完整权重，再在计算时按 rank 切分”，而要改成“每张卡只加载自己那份 shard”。
-- `PP / TP / hybrid` 主运行路径不能依赖预先准备好的 `replay bundle` 或 manifest replay 产物，而要在启动时直接从 `model_path` 构建每个 stage/rank 的 `StageState`。
+## 修改效果
 
-当前已经完成：
+| 修改 | 修改前 | 修改后 |
+| --- | ---: | ---: |
+| startup contract 移除 `stage_output` | `7,563,328` bytes | `4,353,088` bytes |
+| startup contract 移除 dense derived tensor | `4,353,088` bytes | `3,245,806` bytes |
+| HYBRID stage1 `tp_degree=1` collective | `648.46 MiB` | `0 B` |
+| pure TP comm dtype | `449.12 MiB` collective | `221.48 MiB` collective |
+| pure TP runtime input broadcast | `4` events / rank | `0` events |
+| Step 15 derived shared payload | `12,093,371` bytes | `12,068,291` bytes |
 
-- 主 `pp / tp / hybrid` 路径已经是直接构建优先，会直接从 `model_path` 构建 `StageState`。
-- `backend=tp` 已有独立入口 `hexgen_core/modules/tensor_parallel.py`：先在 TP 模块内校验单 stage TP layout，再复用共享的 `StageState` 执行引擎。
-- TP 主路径公开名已收口为 `TensorParallelRunner`、`run_tensor_parallel_rank`、`run_stage_state_tp`；无引用的旧 text-specific TP wrapper 已删除。
-- text `TP` 主路径不再让每张卡加载完整 decoder projection 权重再计算时切分。`tp_degree > 1` 的 direct stage 会先广播无权重 scaffold，然后每个 rank 从 `model_path` materialize 自己的本地 shard。
-- multimodal `TP` 主路径已经采用 input-owner 启动：rank0 准备 compact multimodal startup contract，其他 TP rank 不再重新跑视觉 frontend；所有 TP rank 仍从 `model_path` materialize 自己的权重 shard。
-- `backend=tp` text generate 已通过真实 Jetson 冒烟验证：两个 rank 都是 `weight_load.tp_weight_sharded=true`，分别为 `tp_shard_rank=0/2` 和 `1/2`，projection 形状是 shard 后大小，`loaded_weight_tensor_bytes` 完全一致。
-- `backend=hybrid` text generate 已通过真实 Jetson 冒烟验证：stage0 使用 rank-local TP shard，stage1 只加载自己的 PP stage 权重。
-- `pp / hybrid` multimodal direct runtime 已在只依赖运行时构建的主路径通过真实 Jetson 冒烟验证。所有 rank 生成一致的 `generated_token_ids=[87140, 15946, 3837, 101177]`，summary 能证明 stage-local frontend/weight scope 和 hybrid TP shard-local materialization。
-- multimodal startup transport 已经保持 stage-local 且足够薄：只携带 runtime shared metadata/tensor、本地 stage handoff、本地 stage visual 和 frame metadata；root/full/replay payload 会被拒绝。
-- HYBRID runtime-only stage-group broadcast 已收口到正式 `hybrid_runtime_inputs_v1` schema；weights、layers、frontend paths、dense derived attention tensors 和 replay/full payload 都不能进入 runtime input broadcast。
-- 2026-04-29 已冻结 step 13 长期目标真实 profile：`tp-mm-generate`、`hybrid-text-generate`、`hybrid-mm-generate --pp 2 --tp-degrees 2 1` 均通过，见 `baseline_runs/20260429-longterm-profile/`。
-- 当前里程碑可以认为已完成：从 `model_path` 直接启动 PP/TP/hybrid、rank-local text decoder shard、multimodal input-owner / startup contract、HYBRID runtime input schema，以及真实 Jetson payload/profile 记录。
+## 固定术语
 
-仍然保留的尾部工作：
+- 主路径执行对象叫 `StageState`。
+- `bundle` 只保留给 replay、capture、debug 路径。
+- `PP` 和 `TP` 是基础后端；`HYBRID` 是组合后端。
+- HYBRID 可以调用 PP/TP helper；TP 不能反向依赖 HYBRID。
 
-- embedding 和 `lm_head` 目前仍按当前执行语义复制。vocab/embedding parallelism 是后续优化，不属于当前已完成里程碑。
-- 启动时间、transport payload、TP collective bytes 和 CUDA peak memory 已进入 profile 记录；后续性能优化要保留前后对比。
-- legacy compatibility、仅调试用 transport 仍可以继续清理，但 replay/capture 路径已经不再是主运行入口。
+## 目录职责
 
-## 文档索引
-
-- `README.md`：当前架构、主路径、目录职责和命名约定。
-- `ROADMAP.md`：后续任务队列；已完成内容只保留关键 checkpoint 和验收口径。
-- `BASELINE.md`：固定回归命令、真实 Jetson baseline、payload/性能表和 checker 输出。
-- `SESSION_HANDOFF.md`：新对话接手用的完整上下文迁移手册。
-- `baseline_runs/*/README.md`：具体某轮真实 profile 的拓扑、结果和文件说明。
+- `hexgen_core/modules/pipeline_parallel.py`：纯 PP 后端。
+- `hexgen_core/modules/tensor_parallel.py`：纯 TP 后端。
+- `hexgen_core/modules/hybrid_parallel.py`：PP+TP HYBRID 后端。
+- `hexgen_core/schema.py`：manifest、rank context、runtime input schema。
+- `models/qwen3vl/runtime_builder.py`：从 `model_path` 构建 stage/rank `StageState`。
+- `models/qwen3vl/runtime_mm_stage.py`：multimodal shared/runtime tensor rebuild。
+- `models/qwen3vl/runtime_text_stage.py`：text runtime input rebuild 和 stage materialization。
+- `models/qwen3vl/weights/`：权重 index、load plan、TP shard slicing。
+- `scripts/runtime.py`：统一 CLI 入口。
+- `scripts/helpers/`：稳定 smoke wrapper。
 
 ## 调试路径
 
-下面这些路径只用于 replay、capture 和回归调试：
+下面路径只用于 replay/capture/debug，需要显式传 `--allow-debug-paths`：
 
-- `--manifest-path` replay run
+- `--manifest-path`
 - `--compare-direct`
 - `--trace-layers`
 - `--dump-layer`
 
-这些路径需要显式传 `--allow-debug-paths`。
-其中 `--compare-direct / --trace-layers / --dump-layer` 目前只支持 `backend=tp|hybrid` 的非 generate run。
+## 文档
 
-## 后续路线
-
-- 有序后续任务记录在 `ROADMAP.md`。
-- 除非重新对齐目标，否则后续工作默认按 `ROADMAP.md` 的顺序推进。
-
-## 基线
-
-- 固定回归命令记录在 `BASELINE.md`。
-- 修改 runtime 前后，默认使用这些 case id 作为 smoke/regression 集合。
-
-## 目录结构
-
-- `hexgen_core/`
-  核心分布式运行时：process group、transport、schema，以及独立的 `pp` / `tp` / `hybrid` runner 模块。
-- `models/qwen3vl/`
-  Qwen3-VL 相关的模型适配代码。
-- `models/qwen3vl/execution/`
-  attention、decoder、stage forward/trace 等底层 tensor 执行逻辑。
-- `models/qwen3vl/processing/`
-  输入构造、processor/tokenizer 加载、model-path helper。
-- `models/qwen3vl/weights/`
-  权重 index、load plan、shard slicing，以及从权重 materialize `StageState` 的逻辑。
-- `models/qwen3vl/runtime_builder.py`
-  direct runtime builder：把 `model_path` 转换成 stage/rank `StageState` 和 manifest。
-- `models/qwen3vl/runtime_text.py`
-  text-only prompt metadata、runtime-only scaffold restore、启动 session helper。
-- `models/qwen3vl/runtime_text_stage.py`
-  text scaffold compaction、runtime input rebuild、本地 stage materialization helper。
-- `scripts/`
-  面向用户的 runtime 入口和辅助脚本。
-- `scripts/helpers/`
-  稳定 shell wrapper，例如 `run-runtime.sh`、`generate.sh`、`run-pp-mm-generate.sh`、`run-tp-mm-generate.sh` 和 `run-hybrid-mm-generate.sh`。
-- `scripts/runtime_cli.py`
-  runtime CLI 默认值、参数校验和 debug-path gating helper。
-- `scripts/runtime_summary.py`
-  runtime 输出 JSON summary 和 generated text 解码 helper。
-
-## 命名约定
-
-- 主路径中，从 `model_path` 构建出来的本地 stage/rank 执行对象统一叫 `StageState`。
-- `replay bundle` / `bundle` 只保留给 debug、capture 和 manifest replay 产物。
-- helper 名称优先短、明确，不把整条调用链都编码进函数名。
-- 使用 `text_prompt_meta`，避免反复写 `runtime_only_text_generate_prompt_metadata`。
-- 公开名称要描述清楚职责，但避免过长。
+- `ROADMAP.md`：当前任务和后续队列。
+- `BASELINE.md`：当前 baseline、before/after 效果、验收字段。
+- `SESSION_HANDOFF.md`：新对话接手用的简明上下文。
+- `baseline_runs/*/README.md`：具体某轮真实 Jetson profile。

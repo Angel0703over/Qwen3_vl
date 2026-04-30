@@ -187,13 +187,38 @@ class PipelineDirectLoaderTest(unittest.TestCase):
 
         self.assertEqual(sorted(restored["stage_handoffs"]), [1])
         self.assertIn("input_ids", restored["shared"])
-        self.assertIn("position_ids", restored["shared"])
+        self.assertIn("rope_deltas", restored["shared"])
+        self.assertIn("mm_token_type_ids", restored["shared"])
+        self.assertIn("image_grid_thw", restored["shared"])
+        self.assertNotIn("attention_mask_2d", restored["shared"])
+        self.assertNotIn("position_ids", restored["shared"])
         self.assertNotIn("attention_mask", restored["shared"])
         self.assertNotIn("cos", restored["shared"])
         self.assertNotIn("sin", restored["shared"])
+        self.assertNotIn("shared.attention_mask_2d", tensors)
+        self.assertNotIn("shared.position_ids", tensors)
         self.assertNotIn("shared.attention_mask", tensors)
         self.assertNotIn("shared.cos", tensors)
         self.assertNotIn("shared.sin", tensors)
+
+    def test_multimodal_startup_transport_skips_none_tensor_slots(self) -> None:
+        startup_contract = _build_mm_startup_contract(num_stages=2)
+        startup_contract["shared"]["image_grid_thw"] = None
+        startup_contract["stage_visuals"][1]["visual_pos_masks"] = None
+        startup_contract["stage_visuals"][1]["deepstack_by_layer"] = {
+            18: None,
+        }
+
+        local_contract = select_mm_startup_contract(startup_contract, local_stage_indices=[1])
+        _meta, tensors = pack_mm_startup_transport(local_contract)
+        restored = restore_mm_startup_transport(_meta, tensors)
+
+        self.assertNotIn("shared.image_grid_thw", tensors)
+        self.assertNotIn("stage_visuals.1.visual_pos_masks", tensors)
+        self.assertNotIn("stage_visuals.1.deepstack_by_layer.18", tensors)
+        self.assertIn("stage_handoffs.1.stage_input", tensors)
+        self.assertIsNone(restored["shared"].get("image_grid_thw"))
+        self.assertNotIn("stage_visuals", restored)
 
     def test_multimodal_generate_main_path_omits_startup_reference_output_and_derived_shared(self) -> None:
         builder = object.__new__(DirectStageStateBuilder)

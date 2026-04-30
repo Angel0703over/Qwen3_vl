@@ -8,7 +8,13 @@ import torch
 
 from qwen3vl_tp_runtime.hexgen_core.modules import hybrid_parallel as hybrid_parallel_module
 from qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel import load_stage_state_for_hybrid_rank
-from qwen3vl_tp_runtime.hexgen_core.schema import HybridRankContext, StageSpec, TextHybridManifest
+from qwen3vl_tp_runtime.hexgen_core.schema import (
+    HYBRID_RUNTIME_INPUT_PROTOCOL,
+    HybridRankContext,
+    HybridRuntimeInputSchema,
+    StageSpec,
+    TextHybridManifest,
+)
 from qwen3vl_tp_runtime.models.qwen3vl.runtime_mm_stage import (
     MmFrontendSeed,
     compact_mm_runtime_shared,
@@ -677,7 +683,6 @@ class HybridDirectLoaderTest(unittest.TestCase):
             set(sent_tensors),
             {
                 "runtime_inputs.shared.input_ids",
-                "runtime_inputs.shared.attention_mask_2d",
                 "runtime_inputs.shared.rope_deltas",
                 "runtime_inputs.stage_handoff.stage_input",
             },
@@ -702,12 +707,14 @@ class HybridDirectLoaderTest(unittest.TestCase):
         self.assertNotIn("layers", sent_runtime_inputs_meta)
         self.assertEqual(restored_scaffold["layers"], [])
 
-    def test_multimodal_runtime_input_schema_rejects_derived_shared_tensors(self) -> None:
+    def test_multimodal_runtime_input_builder_omits_rebuildable_shared_tensors(self) -> None:
         runtime_config = {
             "_mm_startup_shared": {
                 "input_ids": torch.tensor([[1, 2, 3]], dtype=torch.long),
                 "attention_mask_2d": torch.ones(1, 3, dtype=torch.long),
+                "position_ids": torch.zeros(4, 1, 3, dtype=torch.long),
                 "rope_deltas": torch.zeros(1, 1, dtype=torch.long),
+                "mm_token_type_ids": torch.tensor([[0, 0, 0]], dtype=torch.int),
                 "attention_mask": torch.zeros(1, 1, 3, 3),
             },
             "_mm_startup_stage_handoffs": {
@@ -717,11 +724,33 @@ class HybridDirectLoaderTest(unittest.TestCase):
             },
         }
 
+        payload = hybrid_parallel_module._build_runtime_input_broadcast_payload(
+            runtime_config,
+            stage_idx=0,
+            runtime_modality="multimodal",
+        )
+        self.assertNotIn("attention_mask_2d", payload["shared"])
+        self.assertNotIn("position_ids", payload["shared"])
+        self.assertNotIn("attention_mask", payload["shared"])
+
+    def test_multimodal_runtime_input_schema_rejects_derived_shared_tensors(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "禁止广播"):
-            hybrid_parallel_module._build_runtime_input_broadcast_payload(
-                runtime_config,
-                stage_idx=0,
-                runtime_modality="multimodal",
+            HybridRuntimeInputSchema.validate(
+                {
+                    "protocol": HYBRID_RUNTIME_INPUT_PROTOCOL,
+                    "modality": "multimodal",
+                    "mode": "generate",
+                    "runtime_only_generate": True,
+                    "shared": {
+                        "input_ids": torch.tensor([[1, 2, 3]], dtype=torch.long),
+                        "rope_deltas": torch.zeros(1, 1, dtype=torch.long),
+                        "attention_mask": torch.zeros(1, 1, 3, 3),
+                    },
+                    "stage_handoff": {
+                        "stage_input": torch.zeros(1, 3, 4),
+                    },
+                },
+                context="test",
             )
 
     def test_text_runtime_only_tp_leader_broadcasts_prompt_runtime_inputs(self) -> None:

@@ -71,6 +71,7 @@ from ...models.qwen3vl.runtime_mm_stage import build_mm_decode_state_from_weight
 from ...models.qwen3vl.runtime_builder import (
     DirectStageStateBuilder,
     build_direct_stage_state,
+    compact_mm_shared_for_transport,
     materialize_text_stage_state,
     pack_runtime_input_transport,
     pack_text_scaffold_transport,
@@ -230,7 +231,10 @@ def _build_runtime_input_broadcast_payload(
     stage_input = stage_payload.get("stage_input")
     if not torch.is_tensor(stage_input):
         raise RuntimeError("HYBRID multimodal runtime input 缺少 stage_input。")
-    payload["shared"] = dict(shared)
+    payload["shared"] = compact_mm_shared_for_transport(
+        dict(shared),
+        include_derived=False,
+    )
     payload["stage_handoff"] = {
         "stage_input": stage_input,
     }

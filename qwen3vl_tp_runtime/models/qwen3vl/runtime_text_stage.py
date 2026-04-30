@@ -16,6 +16,7 @@ from .weights import (
     TextStageWeightBundle,
     build_text_rotary_embedding,
     build_text_runtime_aux_tensors,
+    load_mm_frontend_config,
     load_model_weight_index,
     load_text_decoder_stage_weight_bundle,
     load_text_model_config_spec,
@@ -689,6 +690,9 @@ def _restore_multimodal_prefill_runtime_tensors(
         config_spec,
         device=torch.device("cpu"),
     )
+    mm_config = runtime_config.get("_mm_frontend_config")
+    if mm_config is None:
+        mm_config = load_mm_frontend_config(runtime_config["model_path"])
     restored_mm_state = build_mm_stage_state(
         shared,
         stage_input=stage_input,
@@ -697,6 +701,7 @@ def _restore_multimodal_prefill_runtime_tensors(
         device=torch.device("cpu"),
         compute_dtype=compute_dtype,
         config_spec=config_spec,
+        mm_config=mm_config,
         rotary_emb=rotary_emb,
         visual_pos_masks=stage_state.get("visual_pos_masks"),
         deepstack_by_layer=stage_state.get("deepstack_by_layer") or {},

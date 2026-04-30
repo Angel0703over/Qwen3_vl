@@ -147,6 +147,8 @@ class RuntimeMmTest(unittest.TestCase):
             fake_state,
             include_derived=False,
         )
+        compact_shared.pop("attention_mask_2d")
+        compact_shared.pop("position_ids")
 
         class _FakeRotary(torch.nn.Module):
             def forward(self, inputs_embeds, vision_position_ids):
@@ -167,12 +169,18 @@ class RuntimeMmTest(unittest.TestCase):
                 device=torch.device("cpu"),
                 compute_dtype=torch.float32,
                 config_spec=_fake_text_config_spec(),
+                mm_config=type("FakeMmConfig", (), {
+                    "vision_config": type("FakeVisionConfig", (), {"spatial_merge_size": 1})(),
+                })(),
                 rotary_emb=_FakeRotary(),
             )
 
+        self.assertNotIn("attention_mask_2d", compact_shared)
+        self.assertNotIn("position_ids", compact_shared)
         self.assertNotIn("attention_mask", compact_shared)
         self.assertNotIn("cos", compact_shared)
         self.assertNotIn("sin", compact_shared)
+        self.assertTrue(torch.equal(restored.attention_mask_2d, fake_state.attention_mask_2d))
         self.assertEqual(tuple(restored.attention_mask.shape), (1, 1, 3, 3))
         self.assertTrue(torch.equal(restored.cos, torch.full_like(fake_state.inputs_embeds, 2.0)))
         self.assertTrue(torch.equal(restored.sin, torch.full_like(fake_state.inputs_embeds, 3.0)))

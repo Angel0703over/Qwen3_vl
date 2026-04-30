@@ -41,12 +41,12 @@ class HybridRuntimeInputSchema:
     MULTIMODAL_SHARED_REQUIRED_KEYS = frozenset(
         (
             "input_ids",
-            "attention_mask_2d",
             "rope_deltas",
         )
     )
     MULTIMODAL_SHARED_ALLOWED_KEYS = MULTIMODAL_SHARED_REQUIRED_KEYS | frozenset(
         (
+            "attention_mask_2d",
             "position_ids",
             "mm_token_type_ids",
             "image_grid_thw",

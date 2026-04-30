@@ -77,6 +77,7 @@ from .weights import (
     TextStageWeightBundle,
     build_text_rotary_embedding,
     load_model_weight_index,
+    load_mm_frontend_config,
     load_tensors_from_index,
     load_text_decoder_stage_weight_bundle,
     load_text_model_config_spec,
@@ -145,7 +146,71 @@ def _clone_tensor_to_cpu(
     )
 
 
-_MM_STARTUP_DERIVED_SHARED_KEYS = frozenset(("attention_mask", "cos", "sin"))
+_MM_STARTUP_ALWAYS_LOCAL_REBUILD_SHARED_KEYS = frozenset(
+    (
+        "attention_mask",
+        "cos",
+        "sin",
+    )
+)
+_MM_STARTUP_CONDITIONAL_LOCAL_REBUILD_SHARED_KEYS = frozenset(
+    (
+        "attention_mask_2d",
+        "position_ids",
+    )
+)
+_MM_STARTUP_DERIVED_SHARED_KEYS = (
+    _MM_STARTUP_ALWAYS_LOCAL_REBUILD_SHARED_KEYS
+    | _MM_STARTUP_CONDITIONAL_LOCAL_REBUILD_SHARED_KEYS
+)
+
+
+def _is_all_ones_tensor(value: Any) -> bool:
+    return torch.is_tensor(value) and value.numel() > 0 and bool(torch.all(value == 1).item())
+
+
+def _can_rebuild_mm_position_ids(shared: dict[str, Any]) -> bool:
+    if not torch.is_tensor(shared.get("input_ids")):
+        return False
+    has_grid = torch.is_tensor(shared.get("image_grid_thw")) or torch.is_tensor(shared.get("video_grid_thw"))
+    if has_grid:
+        return torch.is_tensor(shared.get("mm_token_type_ids"))
+    return True
+
+
+def _should_omit_mm_shared_transport_key(
+    name: str,
+    value: Any,
+    *,
+    shared: dict[str, Any],
+    include_derived: bool,
+) -> bool:
+    if include_derived:
+        return False
+    if name in _MM_STARTUP_ALWAYS_LOCAL_REBUILD_SHARED_KEYS:
+        return True
+    if name == "attention_mask_2d":
+        return _is_all_ones_tensor(value)
+    if name == "position_ids":
+        return _can_rebuild_mm_position_ids(shared)
+    return False
+
+
+def compact_mm_shared_for_transport(
+    shared: dict[str, Any],
+    *,
+    include_derived: bool = True,
+) -> dict[str, Any]:
+    return {
+        str(name): value
+        for name, value in shared.items()
+        if not _should_omit_mm_shared_transport_key(
+            str(name),
+            value,
+            shared=shared,
+            include_derived=include_derived,
+        )
+    }
 
 
 def _clone_mm_shared_to_cpu(
@@ -154,6 +219,10 @@ def _clone_mm_shared_to_cpu(
     compute_dtype: torch.dtype | None = None,
     include_derived: bool = True,
 ) -> dict[str, Any]:
+    compact_shared = compact_mm_shared_for_transport(
+        shared,
+        include_derived=include_derived,
+    )
     return {
         str(name): _clone_tensor_to_cpu(
             value,
@@ -161,8 +230,7 @@ def _clone_mm_shared_to_cpu(
         )
         if torch.is_tensor(value) or value is None
         else value
-        for name, value in shared.items()
-        if include_derived or str(name) not in _MM_STARTUP_DERIVED_SHARED_KEYS
+        for name, value in compact_shared.items()
     }
 
 
@@ -403,19 +471,28 @@ def _build_mm_startup_transport_payload(
     include_derived_shared: bool = True,
 ) -> tuple[dict[str, Any], dict[str, torch.Tensor | None]]:
     tensor_payload: dict[str, torch.Tensor | None] = {}
-    for name, value in shared.items():
-        if not include_derived_shared and name in _MM_STARTUP_DERIVED_SHARED_KEYS:
+    compact_shared = compact_mm_shared_for_transport(
+        shared,
+        include_derived=include_derived_shared,
+    )
+    for name, value in compact_shared.items():
+        if value is None:
             continue
         tensor_payload[f"shared.{name}"] = _clone_tensor_to_cpu(
             value,
             compute_dtype=compute_dtype,
         )
     for stage_idx, stage_payload in stage_handoffs.items():
+        stage_input = stage_payload.get("stage_input")
+        if stage_input is None:
+            raise RuntimeError(
+                f"multimodal startup transport 缺少 stage_idx={int(stage_idx)} 的 stage_input。"
+            )
         tensor_payload[f"stage_handoffs.{int(stage_idx)}.stage_input"] = _clone_tensor_to_cpu(
-            stage_payload.get("stage_input"),
+            stage_input,
             compute_dtype=compute_dtype,
         )
-        if include_stage_output and "stage_output" in stage_payload:
+        if include_stage_output and stage_payload.get("stage_output") is not None:
             tensor_payload[f"stage_handoffs.{int(stage_idx)}.stage_output"] = _clone_tensor_to_cpu(
                 stage_payload.get("stage_output"),
                 compute_dtype=compute_dtype,
@@ -426,10 +503,13 @@ def _build_mm_startup_transport_payload(
         else:
             stage_visual_pos_masks = stage_payload.get("visual_pos_masks")
             stage_deepstack = stage_payload.get("deepstack_by_layer") or {}
-        tensor_payload[f"stage_visuals.{int(stage_idx)}.visual_pos_masks"] = _clone_tensor_to_cpu(
-            stage_visual_pos_masks,
-        )
+        if stage_visual_pos_masks is not None:
+            tensor_payload[f"stage_visuals.{int(stage_idx)}.visual_pos_masks"] = _clone_tensor_to_cpu(
+                stage_visual_pos_masks,
+            )
         for layer_idx, deepstack in stage_deepstack.items():
+            if deepstack is None:
+                continue
             tensor_payload[f"stage_visuals.{int(stage_idx)}.deepstack_by_layer.{int(layer_idx)}"] = (
                 _clone_tensor_to_cpu(
                     deepstack,
@@ -663,6 +743,7 @@ class DirectStageStateBuilder:
         self._text_last_stage_static_weights: TextStageWeightBundle | None = None
         self._text_embed_tokens_weight: torch.Tensor | None = None
         self._text_rotary_emb = None
+        self._mm_config = None
         self._prefill_stage_inputs_by_stage: dict[int, torch.Tensor] = {}
         self._prefill_stage_outputs_by_stage: dict[int, torch.Tensor] = {}
         self._prefill_full_state: dict[str, Any] | None = None
@@ -740,6 +821,9 @@ class DirectStageStateBuilder:
             ):
                 self._text_weight_index = load_model_weight_index(self.runtime_config["model_path"])
                 self._text_model_config = load_text_model_config_spec(self.runtime_config["model_path"])
+                self._mm_config = self.runtime_config.get("_mm_frontend_config")
+                if self._mm_config is None:
+                    self._mm_config = load_mm_frontend_config(self.runtime_config["model_path"])
                 self.device = _default_runtime_device()
                 self.runtime_config.setdefault("_mm_weight_index", self._text_weight_index)
                 if _has_mm_startup_contract(self.runtime_config):
@@ -1198,6 +1282,7 @@ class DirectStageStateBuilder:
             device=self.device,
             compute_dtype=self.compute_dtype,
             config_spec=self._text_model_config,
+            mm_config=self._mm_config,
             rotary_emb=self._text_rotary_emb,
             visual_pos_masks=visual_pos_masks,
             deepstack_by_layer=deepstack_by_layer,
@@ -1228,6 +1313,7 @@ class DirectStageStateBuilder:
             device=target_device,
             compute_dtype=self.compute_dtype,
             config_spec=self._text_model_config,
+            mm_config=self._mm_config,
             rotary_emb=self._text_rotary_emb,
             visual_pos_masks=visual_pos_masks,
             deepstack_by_layer=deepstack_by_layer,
@@ -3547,6 +3633,7 @@ __all__ = [
     "DirectStageStateBuilder",
     "StageStateLoader",
     "build_direct_stage_state",
+    "compact_mm_shared_for_transport",
     "pack_mm_startup_transport",
     "prepare_mm_startup_contract",
     "restore_mm_startup_transport",

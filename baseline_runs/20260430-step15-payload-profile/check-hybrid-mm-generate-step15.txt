@@ -1,0 +1,1 @@
+PASS case=hybrid-mm-generate-step15 ranks=3 generated_token_ids=[87140, 15946, 3837, 101177] generated_text='视频中，一名'

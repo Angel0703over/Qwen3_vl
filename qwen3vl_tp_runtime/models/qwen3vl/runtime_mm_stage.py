@@ -376,6 +376,17 @@ def compact_mm_runtime_shared(
     return shared
 
 
+def _default_attention_mask_2d(
+    input_ids: torch.Tensor | None,
+    attention_mask_2d: torch.Tensor | None,
+) -> torch.Tensor | None:
+    if attention_mask_2d is not None:
+        return attention_mask_2d
+    if input_ids is None:
+        return None
+    return torch.ones_like(input_ids, dtype=torch.long, device=input_ids.device)
+
+
 def _restore_mm_shared_runtime_tensors(
     shared_state: Mapping[str, Any],
     *,
@@ -388,6 +399,7 @@ def _restore_mm_shared_runtime_tensors(
 ) -> dict[str, torch.Tensor | None]:
     input_ids = _runtime_tensor(shared_state.get("input_ids"), device=device)
     attention_mask_2d = _runtime_tensor(shared_state.get("attention_mask_2d"), device=device)
+    attention_mask_2d = _default_attention_mask_2d(input_ids, attention_mask_2d)
     position_ids = _runtime_tensor(shared_state.get("position_ids"), device=device)
     rope_deltas = _runtime_tensor(shared_state.get("rope_deltas"), device=device)
     mm_token_type_ids = _runtime_tensor(shared_state.get("mm_token_type_ids"), device=device)
@@ -506,6 +518,7 @@ def restore_mm_frontend_seed_tensors(
 
     input_ids = _runtime_tensor(payload.get("input_ids"), device=restore_device)
     attention_mask_2d = _runtime_tensor(payload.get("attention_mask_2d"), device=restore_device)
+    attention_mask_2d = _default_attention_mask_2d(input_ids, attention_mask_2d)
     position_ids = _runtime_tensor(payload.get("position_ids"), device=restore_device)
     visual_pos_masks = _runtime_tensor(payload.get("visual_pos_masks"), device=restore_device)
     rope_deltas = _runtime_tensor(payload.get("rope_deltas"), device=restore_device)
