@@ -399,7 +399,13 @@ def _summarize_generate_phase_stats(phase_stats: dict) -> dict:
         "predicted_token_id": phase_stats["predicted_token_id"],
         "reference_token_id": phase_stats["reference_token_id"],
     }
-    for key in ("runtime_input_source", "runtime_input_broadcast_skipped"):
+    for key in (
+        "runtime_input_source",
+        "runtime_input_broadcast_skipped",
+        "stage_kv_cache",
+        "video_window_cache",
+        "video_kv_compression_plan",
+    ):
         if key in phase_stats:
             summary[key] = phase_stats[key]
     return summary

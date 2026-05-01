@@ -27,6 +27,10 @@ from ..stage import (
     run_stage_tp,
 )
 from ...models.qwen3vl.execution import (
+    StageKVCache,
+    attach_video_window_cache_index,
+    build_video_kv_compression_plan,
+    build_stage_kv_cache,
     forward_text_embeddings,
     trace_text_decode_logits_tp_with_runtime_cache,
 )
@@ -461,6 +465,7 @@ def _run_generate_phase_tp(
     tp_attn_math_mode: str,
     tp_mlp_math_mode: str,
     return_tensor: bool,
+    stage_kv_cache: StageKVCache | None = None,
 ) -> tuple[dict, dict[int, tuple[torch.Tensor | None, torch.Tensor | None]] | None]:
     reference_input = runtime_state.get("stage_input")
     if reference_input is None:
@@ -528,8 +533,9 @@ def _run_generate_phase_tp(
             tp_src_rank=0,
             attn_math_mode=tp_attn_math_mode,
             mlp_math_mode=tp_mlp_math_mode,
-            cache_by_layer={},
+            cache_by_layer={} if stage_kv_cache is None else None,
             profile_phase=phase_kind,
+            stage_kv_cache=stage_kv_cache,
         )
     elif phase_kind == "decode":
         trace = trace_text_decode_logits_tp_with_runtime_cache(
@@ -543,6 +549,7 @@ def _run_generate_phase_tp(
             mlp_math_mode=tp_mlp_math_mode,
             cache_by_layer=cache_by_layer,
             profile_phase=phase_kind,
+            stage_kv_cache=stage_kv_cache,
         )
     else:
         raise ValueError(f"不支持的 phase_kind={phase_kind!r}")
@@ -587,6 +594,24 @@ def _run_generate_phase_tp(
     }
     if return_tensor and rank == 0:
         stats["stage_output_tensor"] = stage_output
+    stage_kv_cache_summary = None
+    if stage_kv_cache is not None:
+        stage_kv_cache_summary = stage_kv_cache.summary()
+        stats["stage_kv_cache"] = stage_kv_cache_summary
+    if phase_kind == "prefill" and runtime_state.get("video_window_cache") is not None:
+        video_window_cache = runtime_state["video_window_cache"]
+        stats["video_window_cache"] = video_window_cache
+        video_kv_compression_plan = build_video_kv_compression_plan(
+            video_window_cache=video_window_cache,
+            stage_kv_cache_summary=stage_kv_cache_summary,
+            method=str(runtime_state.get("video_kv_compression", "none")),
+            keep_ratio=runtime_state.get("video_kv_keep_ratio"),
+            keep_tokens_per_window=runtime_state.get("video_kv_keep_tokens_per_window"),
+        )
+        if video_kv_compression_plan is not None:
+            stats["video_kv_compression_plan"] = video_kv_compression_plan
+    if stage_kv_cache is not None:
+        return stats, None
     return stats, trace["cache_by_layer"]
 
 
@@ -724,6 +749,25 @@ class StageRunner:
                 "config_spec": config_spec,
                 "rotary_emb": build_text_rotary_embedding(config_spec, device=self.device),
             }
+        stage_kv_cache = (
+            build_stage_kv_cache(
+                prefill_seq_len=int(stage_state["prefill_seq_len"]),
+                max_new_tokens=int(stage_state["max_new_tokens"]),
+            )
+            if runtime_only_generate
+            else None
+        )
+        attach_video_window_cache_index(
+            stage_state,
+            owner_rank=rank,
+            stage_idx=int(stage_state.get("stage_idx", self.manifest.stages[0].stage_idx)),
+            layer_start=int(stage_state["start_idx"]),
+            layer_end=int(stage_state["end_idx"]),
+            tp_rank=rank,
+            tp_degree=world_size,
+            cache_max_seq_len=None if stage_kv_cache is None else stage_kv_cache.max_seq_len,
+            sample_fps=self.manifest.runtime_config.get("sample_fps"),
+        )
 
         if runtime_only_generate:
             prefill_state = _build_runtime_only_generate_phase_state(
@@ -746,6 +790,7 @@ class StageRunner:
             phase_kind="prefill",
             current_token_id=None,
             cache_by_layer=None,
+            stage_kv_cache=stage_kv_cache,
             comm_dtype=comm_dtype,
             tp_attn_math_mode=self.tp_attn_math_mode,
             tp_mlp_math_mode=self.tp_mlp_math_mode,
@@ -756,7 +801,11 @@ class StageRunner:
             src=0,
         )
         generated_token_ids = [current_token_id]
-        cache_by_layer = prefill_cache if prefill_cache is not None else build_generate_cache_map(stage_state)
+        cache_by_layer = (
+            None
+            if stage_kv_cache is not None
+            else prefill_cache if prefill_cache is not None else build_generate_cache_map(stage_state)
+        )
         step_stats = []
         step_output_tensors = []
         attention_mask_buffer = None
@@ -812,6 +861,7 @@ class StageRunner:
                 phase_kind="decode",
                 current_token_id=current_token_id,
                 cache_by_layer=cache_by_layer,
+                stage_kv_cache=stage_kv_cache,
                 comm_dtype=comm_dtype,
                 tp_attn_math_mode=self.tp_attn_math_mode,
                 tp_mlp_math_mode=self.tp_mlp_math_mode,

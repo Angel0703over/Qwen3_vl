@@ -11,6 +11,7 @@ from .common import (
     _resolve_tp_math_dtype,
     _slice_local_past_states,
 )
+from .kv_cache import LayerKVCache
 from ..functional import apply_rope, attn_eager, rms_norm
 
 
@@ -71,6 +72,24 @@ def _concat_past_key_value(
             f"past_shape={tuple(past_states.shape)} current_shape={tuple(current_states.shape)}"
     )
     return torch.cat([past_states, current_states], dim=-2)
+
+
+def _resolve_full_key_value(
+    current_key: torch.Tensor,
+    current_value: torch.Tensor,
+    *,
+    past_key: torch.Tensor | None,
+    past_value: torch.Tensor | None,
+    layer_kv_cache: LayerKVCache | None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    if layer_kv_cache is None:
+        return (
+            _concat_past_key_value(current_key, past_key),
+            _concat_past_key_value(current_value, past_value),
+        )
+    if past_key is not None or past_value is not None:
+        raise ValueError("layer_kv_cache and past_key/past_value cannot be used together.")
+    return layer_kv_cache.append(current_key, current_value)
 
 
 def _is_tp_weight_sharded(bundle: dict) -> bool:
@@ -246,6 +265,7 @@ def trace_attention_cached(hidden_states: torch.Tensor, bundle: dict) -> dict:
         bundle,
         past_key=bundle.get("past_key"),
         past_value=bundle.get("past_value"),
+        layer_kv_cache=bundle.get("layer_kv_cache"),
     )
 
 
@@ -255,6 +275,7 @@ def _trace_attention_cached_core(
     *,
     past_key: torch.Tensor | None,
     past_value: torch.Tensor | None,
+    layer_kv_cache: LayerKVCache | None,
 ) -> dict:
     input_shape = hidden_states.shape[:-1]
     head_dim = bundle["head_dim"]
@@ -274,8 +295,13 @@ def _trace_attention_cached_core(
     ).transpose(1, 2)
 
     query_states, key_states = apply_rope(query_states, key_states, bundle["cos"], bundle["sin"])
-    full_key_states = _concat_past_key_value(key_states, past_key)
-    full_value_states = _concat_past_key_value(value_states, past_value)
+    full_key_states, full_value_states = _resolve_full_key_value(
+        key_states,
+        value_states,
+        past_key=past_key,
+        past_value=past_value,
+        layer_kv_cache=layer_kv_cache,
+    )
     _validate_attention_mask_shape(
         bundle.get("attention_mask"),
         query_states=query_states,
@@ -317,6 +343,7 @@ def _trace_attention_tp_core(
     math_mode: str,
     past_key: torch.Tensor | None,
     past_value: torch.Tensor | None,
+    layer_kv_cache: LayerKVCache | None,
 ) -> dict:
     full_num_heads, full_num_kv_heads, local_q_heads, local_kv_heads = _resolve_tp_attention_layout(
         bundle,
@@ -383,8 +410,13 @@ def _trace_attention_tp_core(
         dtype=orig_dtype,
         tensor_name="past_value",
     )
-    full_key = _concat_past_key_value(current_key, local_past_key)
-    full_value = _concat_past_key_value(current_value, local_past_value)
+    full_key, full_value = _resolve_full_key_value(
+        current_key,
+        current_value,
+        past_key=local_past_key,
+        past_value=local_past_value,
+        layer_kv_cache=layer_kv_cache,
+    )
     _validate_attention_mask_shape(
         bundle.get("attention_mask"),
         query_states=query_states,
@@ -485,6 +517,7 @@ def trace_attention_cached_tp(
         math_mode=math_mode,
         past_key=bundle.get("past_key"),
         past_value=bundle.get("past_value"),
+        layer_kv_cache=bundle.get("layer_kv_cache"),
     )
 
 
@@ -531,6 +564,7 @@ def trace_attention_tp(
         math_mode=math_mode,
         past_key=None,
         past_value=None,
+        layer_kv_cache=None,
     )
     return {
         "attn_context": trace["attn_context"],

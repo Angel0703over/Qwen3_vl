@@ -59,6 +59,10 @@ from ...models.qwen3vl.runtime_builder import (
     seed_mm_startup_runtime_config,
 )
 from ...models.qwen3vl.execution import (
+    StageKVCache,
+    attach_video_window_cache_index,
+    build_video_kv_compression_plan,
+    build_stage_kv_cache,
     forward_text_embeddings,
     trace_text_decode_logits_with_runtime_cache,
     trace_text_decode_stage_with_runtime_cache,
@@ -1089,6 +1093,7 @@ def _run_text_generate_phase_impl(
     phase_kind: str,
     current_token_id: int | None,
     cache_by_layer: dict[int, tuple[torch.Tensor | None, torch.Tensor | None]] | None,
+    stage_kv_cache: StageKVCache | None,
     return_tensor: bool,
 ) -> tuple[dict, dict[int, tuple[torch.Tensor | None, torch.Tensor | None]] | None]:
     is_last_stage = rank == world_size - 1
@@ -1150,7 +1155,8 @@ def _run_text_generate_phase_impl(
             trace = trace_text_decode_logits_with_runtime_cache(
                 stage_input,
                 prefill_runtime_state,
-                cache_by_layer={},
+                cache_by_layer={} if stage_kv_cache is None else None,
+                stage_kv_cache=stage_kv_cache,
             )
             stage_output = trace["logits"]
             if runtime_state.get("hidden_stage_output") is not None:
@@ -1161,22 +1167,24 @@ def _run_text_generate_phase_impl(
                 )
             if runtime_state.get("norm_output") is not None:
                 norm_max, norm_mean = tensor_diff_stats(trace["norm_output"], runtime_state["norm_output"])
-            updated_cache = trace["cache_by_layer"]
+            updated_cache = trace["cache_by_layer"] if stage_kv_cache is None else None
         else:
             prefill_runtime_state = _strip_runtime_layer_cache(runtime_state)
             trace = trace_text_decode_stage_with_runtime_cache(
                 stage_input,
                 prefill_runtime_state,
-                cache_by_layer={},
+                cache_by_layer={} if stage_kv_cache is None else None,
+                stage_kv_cache=stage_kv_cache,
             )
             stage_output = trace["stage_output"]
-            updated_cache = trace["cache_by_layer"]
+            updated_cache = trace["cache_by_layer"] if stage_kv_cache is None else None
     elif phase_kind == "decode":
         if is_last_stage:
             trace = trace_text_decode_logits_with_runtime_cache(
                 stage_input,
                 runtime_state,
                 cache_by_layer=cache_by_layer,
+                stage_kv_cache=stage_kv_cache,
             )
             stage_output = trace["logits"]
             if runtime_state.get("hidden_stage_output") is not None:
@@ -1187,15 +1195,16 @@ def _run_text_generate_phase_impl(
                 )
             if runtime_state.get("norm_output") is not None:
                 norm_max, norm_mean = tensor_diff_stats(trace["norm_output"], runtime_state["norm_output"])
-            updated_cache = trace["cache_by_layer"]
+            updated_cache = trace["cache_by_layer"] if stage_kv_cache is None else None
         else:
             trace = trace_text_decode_stage_with_runtime_cache(
                 stage_input,
                 runtime_state,
                 cache_by_layer=cache_by_layer,
+                stage_kv_cache=stage_kv_cache,
             )
             stage_output = trace["stage_output"]
-            updated_cache = trace["cache_by_layer"]
+            updated_cache = trace["cache_by_layer"] if stage_kv_cache is None else None
     else:
         raise ValueError(f"不支持的 phase_kind={phase_kind!r}")
 
@@ -1247,6 +1256,22 @@ def _run_text_generate_phase_impl(
         "predicted_token_id": predicted_token_id,
         "reference_token_id": reference_token_id,
     }
+    stage_kv_cache_summary = None
+    if stage_kv_cache is not None:
+        stage_kv_cache_summary = stage_kv_cache.summary()
+        stats["stage_kv_cache"] = stage_kv_cache_summary
+    if phase_kind == "prefill" and runtime_state.get("video_window_cache") is not None:
+        video_window_cache = runtime_state["video_window_cache"]
+        stats["video_window_cache"] = video_window_cache
+        video_kv_compression_plan = build_video_kv_compression_plan(
+            video_window_cache=video_window_cache,
+            stage_kv_cache_summary=stage_kv_cache_summary,
+            method=str(runtime_state.get("video_kv_compression", "none")),
+            keep_ratio=runtime_state.get("video_kv_keep_ratio"),
+            keep_tokens_per_window=runtime_state.get("video_kv_keep_tokens_per_window"),
+        )
+        if video_kv_compression_plan is not None:
+            stats["video_kv_compression_plan"] = video_kv_compression_plan
     if return_tensor:
         stats["stage_output_tensor"] = stage_output
     return stats, updated_cache
@@ -1263,6 +1288,7 @@ def _run_text_generate_phase(
     current_token_id: int | None,
     cache_by_layer: dict[int, tuple[torch.Tensor | None, torch.Tensor | None]] | None,
     return_tensor: bool,
+    stage_kv_cache: StageKVCache | None,
 ) -> tuple[dict, dict[int, tuple[torch.Tensor | None, torch.Tensor | None]] | None]:
     return _run_text_generate_phase_impl(
         rank=rank,
@@ -1274,6 +1300,7 @@ def _run_text_generate_phase(
         current_token_id=current_token_id,
         cache_by_layer=cache_by_layer,
         return_tensor=return_tensor,
+        stage_kv_cache=stage_kv_cache,
     )
 
 
@@ -1316,6 +1343,25 @@ class TextGeneratePipelineRunner:
                 "config_spec": config_spec,
                 "rotary_emb": build_text_rotary_embedding(config_spec, device=self.device),
             }
+        stage_kv_cache = (
+            build_stage_kv_cache(
+                prefill_seq_len=int(stage_state["prefill_seq_len"]),
+                max_new_tokens=int(stage_state["max_new_tokens"]),
+            )
+            if runtime_only_generate
+            else None
+        )
+        attach_video_window_cache_index(
+            stage_state,
+            owner_rank=rank,
+            stage_idx=int(stage_state.get("stage_idx", rank)),
+            layer_start=int(stage_state["start_idx"]),
+            layer_end=int(stage_state["end_idx"]),
+            tp_rank=0,
+            tp_degree=1,
+            cache_max_seq_len=None if stage_kv_cache is None else stage_kv_cache.max_seq_len,
+            sample_fps=self.manifest.runtime_config.get("sample_fps"),
+        )
 
         if runtime_only_generate:
             prefill_state = _build_runtime_only_text_generate_phase_state(
@@ -1341,6 +1387,7 @@ class TextGeneratePipelineRunner:
             current_token_id=None,
             cache_by_layer=None,
             return_tensor=self.return_tensors and rank == world_size - 1,
+            stage_kv_cache=stage_kv_cache,
         )
 
         current_token_id = _broadcast_token_id(
@@ -1348,7 +1395,11 @@ class TextGeneratePipelineRunner:
             src=world_size - 1,
         )
         generated_token_ids = [current_token_id]
-        cache_by_layer = prefill_cache if prefill_cache is not None else _build_generate_cache_map(stage_state)
+        cache_by_layer = (
+            None
+            if stage_kv_cache is not None
+            else prefill_cache if prefill_cache is not None else _build_generate_cache_map(stage_state)
+        )
         step_stats = []
         step_output_tensors = []
         attention_mask_buffer = None
@@ -1408,6 +1459,7 @@ class TextGeneratePipelineRunner:
                 current_token_id=current_token_id,
                 cache_by_layer=cache_by_layer,
                 return_tensor=self.return_tensors and rank == world_size - 1,
+                stage_kv_cache=stage_kv_cache,
             )
             current_token_id = _broadcast_token_id(
                 current_step_stats["predicted_token_id"] if rank == world_size - 1 else None,

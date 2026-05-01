@@ -16,6 +16,26 @@ from .common import (
     compose_layer_state,
     get_deepstack_embeds,
 )
+from .kv_cache import (
+    LayerKVCache,
+    StageKVCache,
+    build_stage_kv_cache,
+)
+from .video_window_cache import (
+    KVLocation,
+    VIDEO_WINDOW_CACHE_SCHEMA,
+    VideoWindowCacheIndex,
+    VideoWindowId,
+    VideoWindowMetadata,
+    attach_video_window_cache_index,
+    build_video_window_cache_index,
+)
+from .video_kv_compression import (
+    VIDEO_KV_COMPRESSION_METHODS,
+    VIDEO_KV_COMPRESSION_PLAN_SCHEMA,
+    VIDEO_KV_SELECTOR_METHODS,
+    build_video_kv_compression_plan,
+)
 from .decoder import (
     forward_decoder_layer,
     forward_decoder_layer_cached,
@@ -83,6 +103,20 @@ __all__ = [
     "trace_attention_cached",
     "trace_attention_cached_tp",
     "trace_attention_tp",
+    "LayerKVCache",
+    "StageKVCache",
+    "build_stage_kv_cache",
+    "KVLocation",
+    "VIDEO_WINDOW_CACHE_SCHEMA",
+    "VideoWindowCacheIndex",
+    "VideoWindowId",
+    "VideoWindowMetadata",
+    "attach_video_window_cache_index",
+    "build_video_window_cache_index",
+    "VIDEO_KV_COMPRESSION_METHODS",
+    "VIDEO_KV_COMPRESSION_PLAN_SCHEMA",
+    "VIDEO_KV_SELECTOR_METHODS",
+    "build_video_kv_compression_plan",
     "forward_mlp",
     "forward_mlp_tp",
     "trace_mlp",

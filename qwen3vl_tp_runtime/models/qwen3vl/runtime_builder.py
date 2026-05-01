@@ -107,6 +107,9 @@ def _build_runtime_config(
     max_new_tokens: int | None = None,
     num_frames: int | None = None,
     frame_dir: str | None = None,
+    video_kv_compression: str | None = None,
+    video_kv_keep_ratio: float | None = None,
+    video_kv_keep_tokens_per_window: int | None = None,
     include_runtime_reference: bool | None = None,
 ) -> dict[str, Any]:
     config: dict[str, Any] = {
@@ -125,6 +128,12 @@ def _build_runtime_config(
         config["num_frames"] = int(num_frames)
     if frame_dir is not None:
         config["frame_dir"] = frame_dir
+    if video_kv_compression is not None:
+        config["video_kv_compression"] = str(video_kv_compression)
+    if video_kv_keep_ratio is not None:
+        config["video_kv_keep_ratio"] = float(video_kv_keep_ratio)
+    if video_kv_keep_tokens_per_window is not None:
+        config["video_kv_keep_tokens_per_window"] = int(video_kv_keep_tokens_per_window)
     if include_runtime_reference is not None:
         config["include_runtime_reference"] = bool(include_runtime_reference)
     return config
@@ -3161,6 +3170,13 @@ class DirectStageStateBuilder:
         stage_state["max_new_tokens"] = int(self.runtime_config.get("max_new_tokens", 4))
 
         if self.modality == "multimodal":
+            stage_state["video_kv_compression"] = str(self.runtime_config.get("video_kv_compression", "none"))
+            if self.runtime_config.get("video_kv_keep_ratio") is not None:
+                stage_state["video_kv_keep_ratio"] = float(self.runtime_config["video_kv_keep_ratio"])
+            if self.runtime_config.get("video_kv_keep_tokens_per_window") is not None:
+                stage_state["video_kv_keep_tokens_per_window"] = int(
+                    self.runtime_config["video_kv_keep_tokens_per_window"]
+                )
             stage_input = self._prefill_stage_inputs_by_stage.get(spec.stage_idx)
             if stage_input is None:
                 raise RuntimeError(
@@ -3187,6 +3203,18 @@ class DirectStageStateBuilder:
                 {
                     "num_frames": self.extra["num_frames"],
                     "frame_paths": self.extra["frame_paths"],
+                    "mm_token_type_ids": _runtime_tensor(
+                        getattr(prefill_runtime_state, "mm_token_type_ids", None),
+                        device=self.stage_state_device,
+                    ),
+                    "image_grid_thw": _runtime_tensor(
+                        getattr(prefill_runtime_state, "image_grid_thw", None),
+                        device=self.stage_state_device,
+                    ),
+                    "video_grid_thw": _runtime_tensor(
+                        getattr(prefill_runtime_state, "video_grid_thw", None),
+                        device=self.stage_state_device,
+                    ),
                     "stage_input": _runtime_tensor(
                         stage_input,
                         device=self.stage_state_device,
@@ -3508,6 +3536,9 @@ def build_direct_pipeline_manifest(
     max_new_tokens: int | None = None,
     num_frames: int | None = None,
     frame_dir: str | None = None,
+    video_kv_compression: str | None = None,
+    video_kv_keep_ratio: float | None = None,
+    video_kv_keep_tokens_per_window: int | None = None,
     include_runtime_reference: bool | None = None,
 ) -> TextPipelineManifest:
     runtime_config = _build_runtime_config(
@@ -3520,6 +3551,9 @@ def build_direct_pipeline_manifest(
         max_new_tokens=max_new_tokens,
         num_frames=num_frames,
         frame_dir=frame_dir,
+        video_kv_compression=video_kv_compression,
+        video_kv_keep_ratio=video_kv_keep_ratio,
+        video_kv_keep_tokens_per_window=video_kv_keep_tokens_per_window,
         include_runtime_reference=include_runtime_reference,
     )
     stages = [
@@ -3559,6 +3593,9 @@ def build_direct_hybrid_manifest(
     max_new_tokens: int | None = None,
     num_frames: int | None = None,
     frame_dir: str | None = None,
+    video_kv_compression: str | None = None,
+    video_kv_keep_ratio: float | None = None,
+    video_kv_keep_tokens_per_window: int | None = None,
     backend: str = "hybrid",
     include_runtime_reference: bool | None = None,
 ) -> TextHybridManifest:
@@ -3573,6 +3610,9 @@ def build_direct_hybrid_manifest(
         max_new_tokens=max_new_tokens,
         num_frames=num_frames,
         frame_dir=frame_dir,
+        video_kv_compression=video_kv_compression,
+        video_kv_keep_ratio=video_kv_keep_ratio,
+        video_kv_keep_tokens_per_window=video_kv_keep_tokens_per_window,
         include_runtime_reference=include_runtime_reference,
     )
     parsed_tp_degrees = parse_tp_degrees(tp_degrees)
@@ -3601,6 +3641,9 @@ def build_direct_tp_manifest(
     max_new_tokens: int | None = None,
     num_frames: int | None = None,
     frame_dir: str | None = None,
+    video_kv_compression: str | None = None,
+    video_kv_keep_ratio: float | None = None,
+    video_kv_keep_tokens_per_window: int | None = None,
     include_runtime_reference: bool | None = None,
 ) -> TensorParallelManifest:
     pipeline_manifest = build_direct_pipeline_manifest(
@@ -3614,6 +3657,9 @@ def build_direct_tp_manifest(
         max_new_tokens=max_new_tokens,
         num_frames=num_frames,
         frame_dir=frame_dir,
+        video_kv_compression=video_kv_compression,
+        video_kv_keep_ratio=video_kv_keep_ratio,
+        video_kv_keep_tokens_per_window=video_kv_keep_tokens_per_window,
         include_runtime_reference=include_runtime_reference,
     )
     parsed_tp_degrees = parse_tp_degrees(tp_degrees)

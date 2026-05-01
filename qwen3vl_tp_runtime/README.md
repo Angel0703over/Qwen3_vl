@@ -31,6 +31,8 @@ Qwen3-VL 分布式推理 runtime 原型。主路径支持 `pp`、`tp`、`hybrid`
 - `--stage-ranges 0:17 18:35`
 - `--tp-degrees 2 1`
 - `--transport-pin-memory`：实验性 pinned CPU transport staging，默认关闭。
+- `--video-kv-compression none|uniform|swa`：实验性 video KV selector stats，默认 `none`，不修改 KV。
+- `--video-kv-keep-ratio 0.5` 或 `--video-kv-keep-tokens-per-window 72`：selector budget，二选一。
 
 ## 当前状态
 
@@ -43,6 +45,7 @@ Qwen3-VL 分布式推理 runtime 原型。主路径支持 `pp`、`tp`、`hybrid`
 | HYBRID | PP+TP 组合层，runtime input 已收口到 `hybrid_runtime_inputs_v1` |
 | transport payload | 不传 root/full/replay payload，不传 dense derived attention/RoPE tensor |
 | comm dtype | 默认 `bfloat16` |
+| KV cache | 20A `StageKVCache`、20B `VideoWindowCacheIndex`、20C-1 `uniform/swa` planner-only selector 已通过验证 |
 
 ## 修改效果
 
@@ -56,6 +59,10 @@ Qwen3-VL 分布式推理 runtime 原型。主路径支持 `pp`、`tp`、`hybrid`
 | Step 15 derived shared payload | `12,093,371` bytes | `12,068,291` bytes |
 | Step 16 decode 小 tensor | 每 step 追加 mask / 新建 token tensor | 预分配 mask buffer / 复用 token buffer |
 | Step 16 pinned memory | 无实验开关 | `--transport-pin-memory` opt-in，A/B 后保持默认关闭 |
+| Step 20A KV cache | decode 每层每步 `torch.cat` + clone cache | runtime-only `StageKVCache` append/view，旧路径保留 |
+| Step 20B video window cache | 无 window -> KV location 索引 | runtime-only multimodal prefill stats 记录窗口 metadata |
+| Step 20C-0 video KV planner | 无窗口内压缩 plan | prefill stats 记录 planner-only `video_kv_compression_plan`，不改 KV |
+| Step 20C-1 video KV selector | 只能记录 all tokens | opt-in `uniform/swa` selected token stats；真实 KV 不变 |
 | PP/HYBRID worker wrapper | `GenerateWorker/DecodeWorker` 薄封装 | 直接调用 phase impl |
 | transport 旧别名 | `StageHandoffTransport` 兼容 subclass | 统一 `StageCommunicator` |
 | HYBRID helper 命名 | `runtime_input` helper | vLLM-style `model_input` helper |
@@ -75,6 +82,9 @@ Qwen3-VL 分布式推理 runtime 原型。主路径支持 `pp`、`tp`、`hybrid`
 - `hexgen_core/modules/hybrid_parallel.py`：PP+TP HYBRID 后端。
 - `hexgen_core/generate_buffers.py`：runtime-only generate decode 小 buffer 复用。
 - `hexgen_core/schema.py`：manifest、rank context、runtime input schema。
+- `models/qwen3vl/execution/kv_cache.py`：runtime-only 连续 KV buffer。
+- `models/qwen3vl/execution/video_window_cache.py`：video window metadata 和 `window -> KV location` 索引。
+- `models/qwen3vl/execution/video_kv_compression.py`：planner-only video KV compression stats，不修改 KV。
 - `models/qwen3vl/runtime_builder.py`：从 `model_path` 构建 stage/rank `StageState`。
 - `models/qwen3vl/runtime_mm_stage.py`：multimodal shared/runtime tensor rebuild。
 - `models/qwen3vl/runtime_text_stage.py`：text runtime input rebuild 和 stage materialization。

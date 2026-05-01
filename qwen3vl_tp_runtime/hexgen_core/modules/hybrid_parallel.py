@@ -67,6 +67,10 @@ from ..stage import (
 )
 from ..transport import StageCommunicator
 from ...models.qwen3vl.execution import (
+    StageKVCache,
+    attach_video_window_cache_index,
+    build_video_kv_compression_plan,
+    build_stage_kv_cache,
     forward_text_embeddings,
     trace_text_decode_logits_tp_with_runtime_cache,
     trace_text_decode_stage_tp_with_runtime_cache,
@@ -243,6 +247,13 @@ def _build_model_input_broadcast_payload(
     payload["stage_handoff"] = {
         "stage_input": stage_input,
     }
+    payload["video_kv_compression"] = str(runtime_config.get("video_kv_compression", "none"))
+    if runtime_config.get("video_kv_keep_ratio") is not None:
+        payload["video_kv_keep_ratio"] = float(runtime_config["video_kv_keep_ratio"])
+    if runtime_config.get("video_kv_keep_tokens_per_window") is not None:
+        payload["video_kv_keep_tokens_per_window"] = int(
+            runtime_config["video_kv_keep_tokens_per_window"]
+        )
 
     stage_visuals = runtime_config.get("_mm_startup_stage_visuals")
     stage_visual_payload = None
@@ -325,6 +336,21 @@ def _restore_stage_state_from_model_input(
     runtime_config["_mm_startup_contract_ready"] = True
     runtime_config["_mm_frontend_state_ready"] = True
     restored["stage_input"] = stage_input
+    restored["video_kv_compression"] = str(model_input.get("video_kv_compression", "none"))
+    runtime_config["video_kv_compression"] = restored["video_kv_compression"]
+    if model_input.get("video_kv_keep_ratio") is not None:
+        restored["video_kv_keep_ratio"] = float(model_input["video_kv_keep_ratio"])
+        runtime_config["video_kv_keep_ratio"] = restored["video_kv_keep_ratio"]
+    else:
+        runtime_config.pop("video_kv_keep_ratio", None)
+    if model_input.get("video_kv_keep_tokens_per_window") is not None:
+        restored["video_kv_keep_tokens_per_window"] = int(model_input["video_kv_keep_tokens_per_window"])
+        runtime_config["video_kv_keep_tokens_per_window"] = restored["video_kv_keep_tokens_per_window"]
+    else:
+        runtime_config.pop("video_kv_keep_tokens_per_window", None)
+    for key in ("mm_token_type_ids", "image_grid_thw", "video_grid_thw"):
+        if shared.get(key) is not None:
+            restored[key] = shared[key]
     if shared.get("rope_deltas") is not None:
         restored["rope_deltas"] = shared["rope_deltas"]
     stage_visuals = model_input.get("stage_visuals")
@@ -1445,6 +1471,7 @@ def _run_text_generate_hybrid_phase_impl(
     phase_kind: str,
     current_token_id: int | None,
     cache_by_layer: dict[int, tuple[torch.Tensor | None, torch.Tensor | None]] | None,
+    stage_kv_cache: StageKVCache | None,
     comm_dtype: torch.dtype,
     tp_attn_math_mode: str,
     tp_mlp_math_mode: str,
@@ -1550,8 +1577,9 @@ def _run_text_generate_hybrid_phase_impl(
                 tp_src_rank=rank_stage.leader_rank,
                 attn_math_mode=tp_attn_math_mode,
                 mlp_math_mode=tp_mlp_math_mode,
-                cache_by_layer={},
+                cache_by_layer={} if stage_kv_cache is None else None,
                 profile_phase=phase_kind,
+                stage_kv_cache=stage_kv_cache,
             )
             stage_output = trace["logits"]
             if runtime_state.get("hidden_stage_output") is not None:
@@ -1562,7 +1590,7 @@ def _run_text_generate_hybrid_phase_impl(
                 norm_diff = (trace["norm_output"] - runtime_state["norm_output"]).abs()
                 norm_max = norm_diff.max().item()
                 norm_mean = norm_diff.mean().item()
-            updated_cache = trace["cache_by_layer"]
+            updated_cache = trace["cache_by_layer"] if stage_kv_cache is None else None
         else:
             prefill_runtime_state = strip_runtime_layer_cache(runtime_state)
             trace = trace_text_decode_stage_tp_with_runtime_cache(
@@ -1575,11 +1603,12 @@ def _run_text_generate_hybrid_phase_impl(
                 tp_src_rank=rank_stage.leader_rank,
                 attn_math_mode=tp_attn_math_mode,
                 mlp_math_mode=tp_mlp_math_mode,
-                cache_by_layer={},
+                cache_by_layer={} if stage_kv_cache is None else None,
                 profile_phase=phase_kind,
+                stage_kv_cache=stage_kv_cache,
             )
             stage_output = trace["stage_output"]
-            updated_cache = trace["cache_by_layer"]
+            updated_cache = trace["cache_by_layer"] if stage_kv_cache is None else None
     elif phase_kind == "decode":
         if is_last_stage:
             trace = trace_text_decode_logits_tp_with_runtime_cache(
@@ -1594,9 +1623,10 @@ def _run_text_generate_hybrid_phase_impl(
                 mlp_math_mode=tp_mlp_math_mode,
                 cache_by_layer=cache_by_layer,
                 profile_phase=phase_kind,
+                stage_kv_cache=stage_kv_cache,
             )
             stage_output = trace["logits"]
-            updated_cache = trace["cache_by_layer"]
+            updated_cache = trace["cache_by_layer"] if stage_kv_cache is None else None
             if runtime_state.get("hidden_stage_output") is not None:
                 hidden_stage_diff = (trace["stage_output"] - runtime_state["hidden_stage_output"]).abs()
                 hidden_stage_max = hidden_stage_diff.max().item()
@@ -1618,9 +1648,10 @@ def _run_text_generate_hybrid_phase_impl(
                 mlp_math_mode=tp_mlp_math_mode,
                 cache_by_layer=cache_by_layer,
                 profile_phase=phase_kind,
+                stage_kv_cache=stage_kv_cache,
             )
             stage_output = trace["stage_output"]
-            updated_cache = trace["cache_by_layer"]
+            updated_cache = trace["cache_by_layer"] if stage_kv_cache is None else None
     else:
         raise ValueError(f"不支持的 phase_kind={phase_kind!r}")
 
@@ -1683,6 +1714,22 @@ def _run_text_generate_hybrid_phase_impl(
     }
     if return_tensor and is_last_stage and rank_stage.local_rank == 0:
         stats["stage_output_tensor"] = stage_output
+    stage_kv_cache_summary = None
+    if stage_kv_cache is not None:
+        stage_kv_cache_summary = stage_kv_cache.summary()
+        stats["stage_kv_cache"] = stage_kv_cache_summary
+    if phase_kind == "prefill" and runtime_state.get("video_window_cache") is not None:
+        video_window_cache = runtime_state["video_window_cache"]
+        stats["video_window_cache"] = video_window_cache
+        video_kv_compression_plan = build_video_kv_compression_plan(
+            video_window_cache=video_window_cache,
+            stage_kv_cache_summary=stage_kv_cache_summary,
+            method=str(runtime_state.get("video_kv_compression", "none")),
+            keep_ratio=runtime_state.get("video_kv_keep_ratio"),
+            keep_tokens_per_window=runtime_state.get("video_kv_keep_tokens_per_window"),
+        )
+        if video_kv_compression_plan is not None:
+            stats["video_kv_compression_plan"] = video_kv_compression_plan
     return stats, updated_cache
 
 
@@ -1696,6 +1743,7 @@ def _run_text_generate_hybrid_phase(
     phase_kind: str,
     current_token_id: int | None,
     cache_by_layer: dict[int, tuple[torch.Tensor | None, torch.Tensor | None]] | None,
+    stage_kv_cache: StageKVCache | None,
     comm_dtype: torch.dtype,
     tp_attn_math_mode: str,
     tp_mlp_math_mode: str,
@@ -1710,6 +1758,7 @@ def _run_text_generate_hybrid_phase(
         phase_kind=phase_kind,
         current_token_id=current_token_id,
         cache_by_layer=cache_by_layer,
+        stage_kv_cache=stage_kv_cache,
         comm_dtype=comm_dtype,
         tp_attn_math_mode=tp_attn_math_mode,
         tp_mlp_math_mode=tp_mlp_math_mode,
@@ -1761,6 +1810,25 @@ def _run_text_generate_hybrid_rank(
             "config_spec": config_spec,
             "rotary_emb": build_text_rotary_embedding(config_spec, device=device),
         }
+    stage_kv_cache = (
+        build_stage_kv_cache(
+            prefill_seq_len=int(stage_state["prefill_seq_len"]),
+            max_new_tokens=int(stage_state["max_new_tokens"]),
+        )
+        if runtime_only_generate
+        else None
+    )
+    attach_video_window_cache_index(
+        stage_state,
+        owner_rank=rank,
+        stage_idx=rank_stage.stage_idx,
+        layer_start=int(stage_state["start_idx"]),
+        layer_end=int(stage_state["end_idx"]),
+        tp_rank=rank_stage.local_rank,
+        tp_degree=rank_stage.tp_degree,
+        cache_max_seq_len=None if stage_kv_cache is None else stage_kv_cache.max_seq_len,
+        sample_fps=manifest.runtime_config.get("sample_fps"),
+    )
 
     if runtime_only_generate:
         prefill_state = _build_runtime_only_text_generate_phase_state(
@@ -1785,6 +1853,7 @@ def _run_text_generate_hybrid_rank(
         phase_kind="prefill",
         current_token_id=None,
         cache_by_layer=None,
+        stage_kv_cache=stage_kv_cache,
         comm_dtype=comm_dtype,
         tp_attn_math_mode=tp_attn_math_mode,
         tp_mlp_math_mode=tp_mlp_math_mode,
@@ -1796,7 +1865,11 @@ def _run_text_generate_hybrid_rank(
         src=manifest.stage_rank_groups[-1][0],
     )
     generated_token_ids = [current_token_id]
-    cache_by_layer = prefill_cache if prefill_cache is not None else build_generate_cache_map(stage_state)
+    cache_by_layer = (
+        None
+        if stage_kv_cache is not None
+        else prefill_cache if prefill_cache is not None else build_generate_cache_map(stage_state)
+    )
     step_stats = []
     step_output_tensors = []
     attention_mask_buffer = None
@@ -1855,6 +1928,7 @@ def _run_text_generate_hybrid_rank(
             phase_kind="decode",
             current_token_id=current_token_id,
             cache_by_layer=cache_by_layer,
+            stage_kv_cache=stage_kv_cache,
             comm_dtype=comm_dtype,
             tp_attn_math_mode=tp_attn_math_mode,
             tp_mlp_math_mode=tp_mlp_math_mode,

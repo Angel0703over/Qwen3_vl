@@ -22,6 +22,7 @@ from qwen3vl_tp_runtime.scripts.runtime_cli import (
     _reject_unsupported_generate_debug_flags,
     _require_debug_path_opt_in,
     build_even_stage_ranges,
+    _validate_args,
 )
 
 
@@ -79,6 +80,81 @@ class RuntimeCliModesTest(unittest.TestCase):
 
         self.assertFalse(default_args.transport_pin_memory)
         self.assertTrue(pinned_args.transport_pin_memory)
+
+    def test_video_kv_selector_defaults_to_half_keep_ratio(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "--modality",
+                "multimodal",
+                "--mode",
+                "generate",
+                "--backend",
+                "tp",
+                "--tp",
+                "2",
+                "--video-kv-compression",
+                "uniform",
+            ]
+        )
+
+        kwargs = _build_direct_manifest_kwargs(args)
+
+        self.assertEqual(kwargs["video_kv_compression"], "uniform")
+        self.assertEqual(kwargs["video_kv_keep_ratio"], 0.5)
+        self.assertIsNone(kwargs["video_kv_keep_tokens_per_window"])
+
+    def test_video_kv_selector_rejects_ratio_and_token_budget_together(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "--modality",
+                "multimodal",
+                "--mode",
+                "generate",
+                "--backend",
+                "tp",
+                "--tp",
+                "2",
+                "--video-kv-compression",
+                "swa",
+                "--video-kv-keep-ratio",
+                "0.5",
+                "--video-kv-keep-tokens-per-window",
+                "32",
+            ]
+        )
+        stderr = io.StringIO()
+
+        with self.assertRaises(SystemExit):
+            with redirect_stderr(stderr):
+                _validate_args(parser, args)
+
+        self.assertIn("--video-kv-keep-ratio 和 --video-kv-keep-tokens-per-window", stderr.getvalue())
+
+    def test_video_kv_selector_is_multimodal_generate_only(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "--modality",
+                "text",
+                "--mode",
+                "generate",
+                "--backend",
+                "tp",
+                "--tp",
+                "2",
+                "--video-kv-compression",
+                "uniform",
+            ]
+        )
+        stderr = io.StringIO()
+
+        with self.assertRaises(SystemExit):
+            with redirect_stderr(stderr):
+                _validate_args(parser, args)
+
+        self.assertIn("--video-kv-compression 当前只支持 multimodal generate", stderr.getvalue())
 
     def test_even_stage_ranges_split_model_layers_by_pp_degree(self) -> None:
         self.assertEqual(build_even_stage_ranges(num_layers=36, pp_degree=2), ["0:17", "18:35"])

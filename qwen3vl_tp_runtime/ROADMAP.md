@@ -2,185 +2,203 @@
 
 这份 Roadmap 只保留当前方向、已完成效果和下一步。详细数字看 `BASELINE.md`，完整交接看 `SESSION_HANDOFF.md`。
 
+## 当前方向
+
+- `PP / TP / HYBRID` 是主路径：启动时直接从 `model_path` 构建 `StageState`。
+- `PP` 和 `TP` 是基础后端；`HYBRID` 是 PP+TP 组合层。
+- 主路径只围绕 correctness-first runtime 继续推进。
+- 当前阶段重点：KV cache 管理，不考虑 vLLM serving 体系。
+
 ## 当前状态
 
-- `PP / TP / HYBRID` 都已从 `model_path` 直接构建 `StageState`。
-- `PP` 和 `TP` 是基础后端；`HYBRID` 是组合后端。
-- `backend=tp` 已独立，不依赖 HYBRID。
-- TP decoder/MLP projection 已 rank-local materialize。
-- pure TP multimodal 已是 rank0/input-owner startup contract。
-- HYBRID runtime input 已收口到 `hybrid_runtime_inputs_v1`。
-- `--comm-dtype` 默认值已改为 `bfloat16`。
-- Step 15 已结束：空 slot 清理、derived shared tensor 本地重建、`stage_input/deepstack_by_layer` owner 语义已冻结。
-- Step 16 已结束：decode 小 tensor 复用已落地，`--transport-pin-memory` A/B 已完成，默认关闭。
+| 方向 | 状态 |
+| --- | --- |
+| direct runtime | `PP / TP / HYBRID` 已稳定 |
+| TP 后端 | 已独立，不依赖 HYBRID |
+| TP 权重 | decoder/MLP projection 已 rank-local materialize |
+| multimodal startup | 不传 root/full/replay payload，不传 dense derived tensors |
+| runtime input | pure TP 已避免 dense `stage_input` broadcast；HYBRID schema 已固化 |
+| comm dtype | 默认 `bfloat16` |
+| Step 15 payload | 已结束，owner/rebuild 语义已冻结 |
+| Step 16 buffer/pinned | 已结束，`--transport-pin-memory` 保持 opt-in |
+| Step 20A KV cache | 已结束，`StageKVCache` 真实 Jetson smoke 和 16-token long decode 通过 |
+| Step 20B video window cache | 已结束，只记录窗口 metadata，不压缩/删除/回取 KV |
+| Step 20C-0 video KV planner | 已结束，只记录 compression plan，不压缩/删除/回取 KV |
+| Step 20C-1 video KV selector | 已结束，`uniform/swa` opt-in 只记录 selected token stats |
 
 ## 已完成效果
 
 | 阶段 | 修改前 | 修改后 | 效果 |
 | --- | --- | --- | --- |
-| TP 独立后端 | TP 借用 HYBRID manifest/runner | 独立 `TensorParallelManifest / TensorParallelRunner` | PP/TP/HYBRID 边界清楚 |
-| startup contract `stage_output` | contract 带 reference `stage_output` | 只传后续 stage 必需的 `stage_input` | `7,563,328 -> 4,353,088` bytes |
-| startup derived tensor | 传 dense `attention_mask/cos/sin` | non-stage0 本地重建 | `4,353,088 -> 3,245,806` bytes |
-| HYBRID `tp_degree=1` | stage1 仍记录伪 TP collective | single-rank collective bypass | rank2 TP collective `648.46 MiB -> 0 B` |
-| TP comm dtype | 默认 `float32` 通信 | 默认 `bfloat16` 通信 | `tp-mm` collective `449.12 -> 221.48 MiB` |
-| pure TP runtime input | generate 时广播 dense `stage_input` | 本地 embedding / local stage input | runtime input events `4 -> 0` |
-| Step 15 空 slot | payload 带 `None` tensor slot | 跳过 `None` slot | key count 下降，bytes 不变 |
-| Step 15 derived shared | 传 `attention_mask_2d/position_ids` | 可重建时本地恢复 | affected payload 少 `25,080` bytes |
-| Step 15 大 payload | `stage_input/deepstack` 语义未冻结 | owner/rebuild 规则写清楚 | 后续删大 tensor 有安全边界 |
-| Step 16 decode 小 tensor | 每 step `cat(mask, ones)` / 新建 token tensor | 预分配 mask buffer / 复用 token buffer | 减少 decode loop 小分配，payload bytes 不变 |
-| Step 16 pinned memory | 无实验开关 | `--transport-pin-memory` best-effort pinned CPU staging | TP 小幅变快，CUDA peak 不变，收益不大所以默认关闭 |
-| 代码冗余清理 | PP/HYBRID 有 worker 薄封装和 transport 旧别名 | 直接 phase impl + `StageCommunicator` | 主路径 API 更窄 |
-| vLLM-style 命名 | HYBRID helper 叫 `runtime_input` | 内部 helper 改为 `model_input` | 代码更直观，wire protocol 不变 |
+| TP 独立后端 | TP 借用 HYBRID 路径 | 独立 `TensorParallelRunner` | 后端边界清楚 |
+| startup contract | 带 reference `stage_output` 和 dense derived tensors | 只传必要 input/metadata | startup payload 下降 |
+| HYBRID `tp_degree=1` | stage1 记录伪 TP collective | single-rank bypass | rank2 TP collective 归零 |
+| TP comm dtype | 默认 `float32` | 默认 `bfloat16` | TP collective bytes 约减半 |
+| pure TP runtime input | 广播 dense `stage_input` | 本地 embedding / local stage input | broadcast events 归零 |
+| Step 15 payload | 空 slot 和部分 derived shared tensor 仍传输 | `None` slot 跳过，`attention_mask_2d/position_ids` 可重建时本地恢复 | payload 更薄 |
+| Step 16 decode buffer | 每 step 新建小 tensor | 复用 decode mask/token buffer | 减少小分配 |
+| Step 16 pinned memory | 无开关 | `--transport-pin-memory` opt-in | 小幅收益，默认关闭 |
+| Step 20A KV cache | decode 用 `torch.cat([past,current])` 并 clone cache | `StageKVCache` append/view，旧路径保留 | correctness 不变，CUDA peak 基本持平 |
+| Step 20B video window cache | 没有 window -> KV location 索引 | prefill log 记录 video window metadata | correctness 不变，后续可做窗口压缩/检索 |
 
-## 已结束：16. Buffer reuse / pinned memory
+## KV Cache 路线
 
-目标：
+当前按这四层推进：
 
-- 减少 hidden / handoff / decode tensor 的重复分配和 clone。
-- 评估 CPU transport 前后的 pinned memory 是否值得引入。
-- 不改变 correctness、payload 协议和 TP shard scope。
+| 模块 | 参考对象 | KV 管理位置 | 状态 | 核心作用 |
+| --- | --- | --- | --- | --- |
+| `StageKVCacheManager` | Jupiter | 每个 Jetson / stage / rank 本地都有 | 已完成：当前代码名是 `LayerKVCache / StageKVCache` | 管理本 stage/rank 的 K/V，替代零散 `cache_by_layer` |
+| `VideoWindowCacheManager` | 自己设计 + ReKV 思想 | 每个 Jetson / stage / rank 本地元数据副本 | 已完成：当前代码名是 `VideoWindowCacheIndex` | 按时间窗口组织视频流 KV，建立 `window -> KV location` 映射 |
+| 窗口内视觉 KV 压缩 | InfiniPot-V | 产生该窗口 KV 的 Jetson 本地执行 | 下一步 | 在单个窗口内筛选/压缩 visual token KV，控制窗口 KV 规模 |
+| 历史窗口检索回取 | ReKV | 全局检索 + 本地/远端回取 | 后续 | query 来时找相关历史窗口，只回取必要 KV，避免 GPU cache 无限增长 |
+
+## 20A. StageKVCacheManager
+
+状态：已结束。
+
+代码位置：
+
+- `models/qwen3vl/execution/kv_cache.py`
+- `LayerKVCache`
+- `StageKVCache`
 
 完成内容：
 
-1. 已完成 allocation / clone 盘点：`BUFFER_REUSE_AUDIT.md`。
-2. 已完成 decode loop 小 tensor reuse：`PP / TP / HYBRID` runtime-only generate 共享 `generate_buffers.py`。
-3. 已完成 pinned memory opt-in：`--transport-pin-memory`，覆盖 TP collective 和 tensor payload CPU staging。
-4. KV cache 的 `full_key/full_value` clone 和 `torch.cat([past, current])` 留到 KV cache manager 阶段。
+- runtime-only generate 创建 stage-local/rank-local KV buffer。
+- prefill/decode 直接 append K/V，再通过 view 读取有效长度。
+- 有 `StageKVCache` 时不再走 decode 每步 `torch.cat([past,current])`。
+- 有 `StageKVCache` 时不再 clone `full_key/full_value` 回 `cache_by_layer`。
+- 非 runtime-only 路径保留旧 `cache_by_layer` guard。
 
-真实 A/B：
+验证结果：
 
-- 目录：`baseline_runs/20260501-step16-pinned-ab/`。
-- `tp-mm-generate` generated ids/text 不变，payload bytes 不变。
-- pinned total time 从 `53.47 / 53.21s` 到 `53.01 / 52.97s`。
-- pinned TP collective time 从 `24.34 / 23.76s` 到 `23.91 / 23.51s`。
-- CUDA peak allocated 不上升；rank0 reserved 约多 `2 MiB`。
-- HYBRID 功能性 A/B 通过，但 rank0/rank1 共用 jetson2，只作为 correctness 验证。
-- 结论：保留 opt-in，不改默认值。
+| case | 结果 |
+| --- | --- |
+| `tp-text-generate` | generated ids/text 不变 |
+| `tp-mm-generate` | generated ids/text 不变 |
+| `hybrid-mm-generate` | generated ids/text 不变 |
+| `tp-mm-generate MAX_NEW_TOKENS=16` | generated ids/text 不变 |
 
-已验证：
+Profile：
 
-- `py_compile` 已覆盖 `generate_buffers.py` 和三个后端。
-- `run-runtime-core-regression.sh --skip-baseline-checks` 已通过，包含 distributed transport 单测。
-- 真实 Jetson A/B 已完成。
+- 短 smoke：`baseline_runs/20260501-step20a-kv-cache-smoke/`
+- 16-token long decode：`baseline_runs/20260501-step20a-kv-cache-long-decode/`
+- 长 decode `stage_kv_cache.tensor_bytes=47,407,104` / rank。
+- CUDA peak 与 `baseline_runs/20260430-bfloat16-default/` 基本持平。
 
-验收：
+## 20B. VideoWindowCacheManager
 
-- generated ids/text 不变。
-- `weight_load.tp_weight_sharded=true` 不回退。
-- CUDA peak allocated 不上升；reserved 小幅波动已解释。
-- transport/time 有 before/after 记录。
-- `BASELINE.md` / `SESSION_HANDOFF.md` 已更新实际结果。
+状态：已结束。
 
-## 当前下一步：20. KV cache 管理部分
+代码位置：
 
-当前只围绕三条路线推进：Jupiter-style 连续 KV buffer、InfiniPot-V-style 视觉 token 压缩、ReKV-style 历史窗口检索。vLLM serving 体系暂不考虑。
+- `models/qwen3vl/execution/video_window_cache.py`
+- `VideoWindowId`
+- `VideoWindowMetadata`
+- `KVLocation`
+- `VideoWindowCacheIndex`
 
-### 20A. Jupiter-style 连续 KV buffer
+完成内容：
 
-先做这个。
+- 从 `mm_token_type_ids == 2` 的连续区间识别 video windows。
+- 记录 token range、frame range、time range、grid metadata。
+- 记录本 rank 的 KV location：owner rank、stage、layer range、TP rank、local KV offset。
+- `PP / TP / HYBRID` runtime-only multimodal prefill stats 输出 `video_window_cache`。
+- 只做观测：不删除 KV、不压缩 KV、不跨机回取 KV。
+
+验证结果：
+
+| case | 结果 | window metadata |
+| --- | --- | --- |
+| `tp-mm-generate` | generated ids/text 不变 | 每 rank `4` windows / `576` video tokens |
+| `hybrid-mm-generate` | generated ids/text 不变 | 每 rank `4` windows / `576` video tokens |
+
+Profile：
+
+- `baseline_runs/20260501-step20b-video-window-cache/`
+- `tp-mm` elapsed `53.22-53.28s`，CUDA peak `6.52-6.53 GiB`。
+- `hybrid-mm` elapsed `33.00-33.15s`，CUDA peak 与 Step 20A 基本持平。
+- metadata bytes：TP/HYBRID stage0 `2027` bytes，HYBRID stage1 `2031` bytes。
+
+## 20C. 窗口内视觉 KV 压缩
+
+状态：20C-0 / 20C-1 已冻结，下一步是 20C-2 compression contract。
 
 目标：
 
-- 提前在 GPU 上为每个本地 stage/rank 分配连续 KV buffer。
-- prefill/decode 直接把 K/V 写入 buffer。
-- 用 `current_length` 记录有效长度。
-- 避免 decode 每步 `torch.cat([past, current])`。
-- 避免每层每步 `full_key/full_value.detach().clone()`。
+- 在单个 video window 内筛选或压缩 visual token KV。
+- 优先保留时间/空间上更重要的 token。
+- 先做 opt-in，默认完整 KV 路径保持 correctness guard。
 
-Jupiter 对照：
+对照 InfiniPot-V：
 
-- `Jupiter/tasks/medusa_llama/kv_cache.py` 的 `KVCache.cat()` 是蓝本。
-- 它不是重新 `torch.cat`，而是 `narrow -> copy_ -> current_length += append_len`。
-- 我们不直接复制模块，而是做适配 Qwen3-VL `PP / TP / HYBRID` 的 stage-local / rank-local 版本。
+- 源码参考：`InfiniPot-V/kvcache_utils.py::process_kv_cache` 和 `InfiniPot-V/qwen_inference_ovu.py::_block_wise_prefill`。
+- InfiniPot-V 是 block-wise video prefill：每个视频块跑 vision frontend + LLM forward，然后压缩非最后块的视觉 KV。
+- 它的策略是 `uniform`、`swa` 和 `infinipot-v`，其中 `infinipot-v` 结合 TaR recent-query similarity 和 value-norm。
+- 我们第一阶段不改成 block-wise frontend；直接复用 20A `StageKVCache` 和 20B `VideoWindowCacheIndex`。
+- 压缩只在产生该 KV 的本地 stage/rank/layer shard 上执行，不广播 dense KV，non-input-owner 不重新跑视觉 frontend。
+
+建议接口：
+
+- 新模块：`models/qwen3vl/execution/video_kv_compression.py`。
+- CLI opt-in：当前支持 `--video-kv-compression none|uniform|swa`，默认 `none`；`infinipot-v` 放到 20C-4。
+- budget 参数：先用 `--video-kv-keep-ratio` 或 `--video-kv-keep-tokens-per-window`，二选一后固定。
 
 实现顺序：
 
-1. 新增轻量 KV cache 对象：
-   - 建议文件：`models/qwen3vl/execution/kv_cache.py`。
-   - `LayerKVCache`：管理单层 key/value buffer。
-   - `StageKVCache`：管理本 stage 的多个 layer。
-2. 第一版只支持 runtime-only generate：
-   - `batch_size=1` 或当前 smoke 覆盖的 batch。
-   - `max_seq_len = prefill_seq_len + max_new_tokens`。
-   - 不碰 replay/capture/debug。
-3. 在 prefill 后创建或填充 `StageKVCache`：
-   - PP：每个 PP stage 只保存本 stage layer range。
-   - TP：每个 TP rank 只保存本地 KV head shard。
-   - HYBRID：每个 stage 内每个 TP rank 都本地保存自己的 shard。
-4. attention 路径加 opt-in cache 参数：
-   - 有 `StageKVCache` 时走 `append/get_view`。
-   - 没有 cache 时保留当前 `cache_by_layer` + `torch.cat` 旧路径。
-5. stage trace 更新：
-   - 不再把 `full_key/full_value` clone 回 `cache_by_layer`。
-   - 返回同一个 cache handle 或轻量 cache metadata。
+| 阶段 | 内容 | 验收 |
+| --- | --- | --- |
+| 20C-0 planner/stats | 已新增窗口压缩 plan，只计算每个 window 的 keep budget、候选 token、预计 bytes，不改 KV | 真实 Jetson `tp-mm` / `hybrid-mm` 通过 |
+| 20C-1 opt-in selector | 已实现 `uniform` 和 `swa` token 选择；只依赖 window token range 和本地 KV shape | `uniform` 真实 Jetson `tp-mm` / `hybrid-mm` 通过；`swa` 有单测 |
+| 20C-2 compression contract | 物理压缩前先解决 attention mask 和 key length 对齐；明确压缩后 `StageKVCache.current_length`、past length、position 语义 | 有单测覆盖 mask/key 长度匹配；默认路径仍不变 |
+| 20C-3 opt-in compaction | 在本地 `StageKVCache` 中压缩 visual token KV，保留 text/system/instruction KV | opt-in 有压缩率、CUDA peak、elapsed、输出差异记录 |
+| 20C-4 InfiniPot-V selector | 加入 TaR + value-norm 选择器；score 来自本地 K/V，不重跑 frontend | 与 `uniform/swa` 对比质量和资源收益 |
+
+20C-0 / 20C-1 只做统计，暂不物理删除 KV。
+20C-2 是 20C-3 的前置协议闸门：当前 decode mask 仍按完整 prefill 长度构造，不能直接删除 visual KV。
 
 验收：
 
-- `tp-text-generate` / `tp-mm-generate` generated ids/text 不变。
-- `hybrid-mm-generate` generated ids/text 不变。
-- `weight_load.tp_weight_sharded=true` 不回退。
-- decode 阶段 `torch.cat([past, current])` 次数下降到 0。
-- `full_key/full_value.detach().clone()` 次数下降到 0。
-- 长 decode 下 allocation 或 elapsed 有解释；即使 CUDA peak 因预分配上升，也要能说明原因。
+- 默认路径 generated ids/text 不变。
+- opt-in 压缩路径有明确压缩率、CUDA peak、输出差异记录。
+- non-input-owner 不重新跑视觉 frontend。
+- TP/HYBRID 下每个 rank 只压缩自己的 local KV shard；不新增跨 rank KV 传输。
+- rank log 记录 before/after token count、KV bytes、selector、window id、layer range。
 
-### 20B. InfiniPot-V-style 视觉 token KV 压缩
+## 后续：20D. 历史窗口检索回取
 
-第二阶段再做。
-
-目标：
-
-- 关注视频输入里的时间冗余和空间语义重要性。
-- 对视觉 token 的 KV 做压缩或筛选。
-- 在 cache budget 下优先保留重要 token。
-
-边界：
-
-- 先做 opt-in，不影响默认 correctness baseline。
-- 不让 non-input-owner 重新跑视觉 frontend。
-- 保留默认完整 KV 路径作为 correctness guard。
-
-### 20C. ReKV-style 历史窗口检索回取
-
-第三阶段再做。
+状态：待规划。
 
 目标：
 
-- 长视频场景下不让 GPU KV 无限增长。
-- query 到来时检索相关历史窗口。
-- 只把必要 KV 回取到模型上下文。
+- 长视频场景下，GPU 不无限保存所有历史窗口 KV。
+- query 来时检索相关历史窗口。
+- 只把必要 KV 回取到当前上下文。
 
-边界：
+验收：
 
-- 先规划全局检索 + 本地/远端回取接口。
-- 再决定 RAM/磁盘/远端存储策略。
-- 不影响短视频默认路径。
+- 默认短视频路径不受影响。
+- 检索命中窗口、回取 bytes、回取耗时可观测。
+- 支持本地回取，再考虑远端回取。
 
-当前不考虑：
+## 暂不推进
 
-- vLLM-style BlockPool / prefix cache / serving scheduler。
-- paged/block cache 只有在 20A/20B/20C 稳定后再重新评估。
-
-## 后续队列
-
-| step | 任务 | 目标 | 验收重点 |
-| --- | --- | --- | --- |
-| 17（这条先不需要做） | PP handoff overlap | 尝试让 PP handoff 与本地计算重叠 | correctness 不变，wait 时间下降，无死锁 |
-| 18（这条先不需要做） | Stage partition 搜索 | 搜索更好的 stage range，支持异构 Jetson | 每组有 correctness + perf |
-| 19（这条先不需要做） | Embedding / lm_head vocab parallelism | 研究 vocab parallel embedding / lm_head | token/logits/top-k 语义稳定 |
-| 20 | KV cache 管理部分 | Jupiter-style 连续 KV、InfiniPot-V 压缩、ReKV 检索 | generated ids/text 不变，decode cat/clone 下降，长视频 KV 增长可控 |
-| 21 | Serving engine 方向 | scheduler、paged KV、batching、streaming | correctness/baseline 稳定后再推进 |
+| step | 任务 | 原因 |
+| --- | --- | --- |
+| 17 | PP handoff overlap | 当前先做 KV 管理 |
+| 18 | Stage partition 搜索 | KV 路线稳定后再做 |
+| 19 | Embedding / lm_head vocab parallelism | 与当前 KV 管理无直接关系 |
+| 21 | Serving engine | 暂不考虑 vLLM-style BlockPool / prefix cache / scheduler |
 
 ## 固定规则
 
-- KV cache 当前阶段先不对照 vLLM serving 体系，重点放在 Jupiter / InfiniPot-V / ReKV 三条路线。
-- 其他步骤如果需要对照 vLLM，写清楚哪些能照搬、哪些不能照搬。
-- 本轮只改一个主目标。
-- payload/transport 改动必须记录 before/after keys、tensor count、bytes。
-- 性能改动必须保留 before/after runtime records。
-- `StageState` 是主路径术语；`bundle` 只保留给 replay/debug/capture。
-- 内部函数名优先用 vLLM-style `model_input`；已有 wire key/protocol 不为命名重构单独改动。
+- 主路径对象叫 `StageState`。
+- `bundle` 只保留给 replay/debug/capture。
 - `hexgen_core/modules/` 只放 `pipeline_parallel.py`、`tensor_parallel.py`、`hybrid_parallel.py`。
 - HYBRID 可以调用 PP/TP helper；TP 不能反向依赖 HYBRID。
+- payload/transport 改动必须记录 before/after keys、tensor count、bytes。
+- 性能改动必须保留 before/after runtime records。
+- 当前 KV 阶段优先 Jupiter / InfiniPot-V / ReKV 路线，不照搬 vLLM serving 体系。
 
 ## 常用同步
 

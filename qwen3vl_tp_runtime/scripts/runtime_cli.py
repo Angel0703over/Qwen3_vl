@@ -103,6 +103,12 @@ def _resolve_defaults(args: argparse.Namespace, parser: argparse.ArgumentParser 
     if args.dump_topk is None:
         args.dump_topk = args.topk
     ParallelConfig.from_args(args, parser).apply(args)
+    if (
+        getattr(args, "video_kv_compression", "none") != "none"
+        and getattr(args, "video_kv_keep_ratio", None) is None
+        and getattr(args, "video_kv_keep_tokens_per_window", None) is None
+    ):
+        args.video_kv_keep_ratio = 0.5
 
 
 def _raise_or_parser_error(parser: argparse.ArgumentParser | None, message: str) -> None:
@@ -160,6 +166,7 @@ def build_even_stage_ranges(*, num_layers: int, pp_degree: int) -> list[str]:
 def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     _reject_unsupported_debug_transport_backend(parser, args)
     _reject_unsupported_generate_debug_flags(parser, args)
+    _validate_video_kv_selector_args(parser, args)
     live_runners = _runtime_dep("LIVE_RUNNERS")
     if getattr(args, "tp", None) is not None and args.tp <= 0:
         parser.error(f"--tp 必须大于 0，当前拿到 {args.tp}。")
@@ -203,6 +210,21 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         return
 
     parser.error(f"未知 backend={args.backend!r}")
+
+
+def _validate_video_kv_selector_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    method = getattr(args, "video_kv_compression", "none")
+    keep_ratio = getattr(args, "video_kv_keep_ratio", None)
+    keep_tokens = getattr(args, "video_kv_keep_tokens_per_window", None)
+    if keep_ratio is not None and keep_tokens is not None:
+        parser.error("--video-kv-keep-ratio 和 --video-kv-keep-tokens-per-window 不能同时使用。")
+    if keep_ratio is not None and not (0.0 < float(keep_ratio) <= 1.0):
+        parser.error(f"--video-kv-keep-ratio 必须在 (0, 1]，当前拿到 {keep_ratio}。")
+    if keep_tokens is not None and int(keep_tokens) <= 0:
+        parser.error(f"--video-kv-keep-tokens-per-window 必须大于 0，当前拿到 {keep_tokens}。")
+    if method != "none":
+        if args.modality != "multimodal" or args.mode != "generate":
+            parser.error("--video-kv-compression 当前只支持 multimodal generate 主路径。")
 
 
 def _debug_path_warnings(args: argparse.Namespace) -> list[str]:
@@ -320,6 +342,9 @@ def _build_direct_manifest_kwargs(args: argparse.Namespace) -> dict:
     else:
         kwargs["num_frames"] = args.num_frames
         kwargs["frame_dir"] = args.frame_dir
+        kwargs["video_kv_compression"] = args.video_kv_compression
+        kwargs["video_kv_keep_ratio"] = args.video_kv_keep_ratio
+        kwargs["video_kv_keep_tokens_per_window"] = args.video_kv_keep_tokens_per_window
         if args.mode == "decode":
             kwargs["decode_token_id"] = args.decode_token_id
         elif args.mode == "generate":

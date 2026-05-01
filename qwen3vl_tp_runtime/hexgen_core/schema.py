@@ -37,7 +37,15 @@ class HybridRuntimeInputSchema:
             "stage_handoff",
         )
     )
-    MULTIMODAL_ALLOWED_KEYS = MULTIMODAL_REQUIRED_KEYS | frozenset(("stage_visuals",))
+    MULTIMODAL_VIDEO_KV_SELECTOR_KEYS = frozenset(
+        (
+            "video_kv_compression",
+            "video_kv_keep_ratio",
+            "video_kv_keep_tokens_per_window",
+        )
+    )
+    MULTIMODAL_VIDEO_KV_SELECTOR_METHODS = frozenset(("none", "uniform", "swa"))
+    MULTIMODAL_ALLOWED_KEYS = MULTIMODAL_REQUIRED_KEYS | frozenset(("stage_visuals",)) | MULTIMODAL_VIDEO_KV_SELECTOR_KEYS
     MULTIMODAL_SHARED_REQUIRED_KEYS = frozenset(
         (
             "input_ids",
@@ -232,6 +240,7 @@ class HybridRuntimeInputSchema:
             context=context,
             scope="multimodal runtime_inputs",
         )
+        cls._validate_multimodal_video_kv_selector(payload, context=context)
 
         shared = payload.get("shared")
         if not isinstance(shared, dict):
@@ -319,6 +328,54 @@ class HybridRuntimeInputSchema:
                     "multimodal runtime input deepstack value 必须是 tensor 或 None，"
                     f"context={context} key={layer_idx!r}"
                 )
+
+    @classmethod
+    def _validate_multimodal_video_kv_selector(cls, payload: dict[str, Any], *, context: str) -> None:
+        method = payload.get("video_kv_compression", "none")
+        if not isinstance(method, str):
+            raise RuntimeError(
+                "multimodal runtime input video_kv_compression 必须是 str，"
+                f"context={context}"
+            )
+        if method not in cls.MULTIMODAL_VIDEO_KV_SELECTOR_METHODS:
+            raise RuntimeError(
+                "multimodal runtime input video_kv_compression 不在协议内，"
+                f"context={context} method={method!r}"
+            )
+        keep_ratio = payload.get("video_kv_keep_ratio")
+        keep_tokens = payload.get("video_kv_keep_tokens_per_window")
+        if keep_ratio is not None:
+            try:
+                keep_ratio_value = float(keep_ratio)
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError(
+                    "multimodal runtime input video_kv_keep_ratio 必须是数字或省略，"
+                    f"context={context}"
+                ) from exc
+            if not (0.0 < keep_ratio_value <= 1.0):
+                raise RuntimeError(
+                    "multimodal runtime input video_kv_keep_ratio 必须在 (0, 1]，"
+                    f"context={context} value={keep_ratio!r}"
+                )
+        if keep_tokens is not None:
+            try:
+                keep_tokens_value = int(keep_tokens)
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError(
+                    "multimodal runtime input video_kv_keep_tokens_per_window 必须是整数或省略，"
+                    f"context={context}"
+                ) from exc
+            if keep_tokens_value <= 0:
+                raise RuntimeError(
+                    "multimodal runtime input video_kv_keep_tokens_per_window 必须大于 0，"
+                    f"context={context} value={keep_tokens!r}"
+                )
+        if keep_ratio is not None and keep_tokens is not None:
+            raise RuntimeError(
+                "multimodal runtime input video_kv_keep_ratio 和 "
+                "video_kv_keep_tokens_per_window 不能同时存在，"
+                f"context={context}"
+            )
 
     @classmethod
     def _assert_allowed_keys(

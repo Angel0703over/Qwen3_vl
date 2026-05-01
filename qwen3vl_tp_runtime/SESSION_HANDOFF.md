@@ -51,6 +51,10 @@ bash sync-to-jetson2.sh --host 10.126.126.4 --git-changed
 | comm dtype | 默认 `bfloat16` |
 | Step 15 | 已结束，payload owner/rebuild 语义已冻结 |
 | Step 16 | 已结束：decode 小 tensor 复用 + pinned memory A/B，`--transport-pin-memory` 保持默认关闭 |
+| Step 20A | 第一版已通过真实 Jetson smoke：runtime-only generate 使用 `StageKVCache` |
+| Step 20B | 已通过真实 Jetson smoke：runtime-only multimodal prefill 记录 `VideoWindowCacheIndex` |
+| Step 20C-0 | 已通过真实 Jetson smoke：runtime-only multimodal prefill 记录 planner-only `video_kv_compression_plan` |
+| Step 20C-1 | 已实现 `uniform/swa` opt-in selector stats；`uniform` 真实 Jetson smoke 已冻结 |
 
 ## 关键 Before / After
 
@@ -94,6 +98,11 @@ bash sync-to-jetson2.sh --host 10.126.126.4 --git-changed
 | 当前性能 baseline | `baseline_runs/20260430-bfloat16-default/` |
 | Step 15 payload baseline | `baseline_runs/20260430-step15-derived-rebuild/` |
 | Step 16 pinned A/B | `baseline_runs/20260501-step16-pinned-ab/` |
+| Step 20A KV cache smoke | `baseline_runs/20260501-step20a-kv-cache-smoke/` |
+| Step 20A KV cache long decode | `baseline_runs/20260501-step20a-kv-cache-long-decode/` |
+| Step 20B video window cache | `baseline_runs/20260501-step20b-video-window-cache/` |
+| Step 20C-0 video KV planner | `baseline_runs/20260501-step20c0-video-kv-plan/` |
+| Step 20C-1 video KV selector | `baseline_runs/20260501-step20c1-selector/` |
 
 固定输出：
 
@@ -125,7 +134,7 @@ bash qwen3vl_tp_runtime/scripts/helpers/run-runtime-core-regression.sh
 
 ## 当前下一步
 
-`ROADMAP.md` step 16：`Buffer reuse / pinned memory` 已结束。
+`ROADMAP.md` step 20A/20B 已落地，20C-0 planner/stats 已冻结真实 Jetson smoke，下一步是 20C-1 opt-in selector。
 
 完成内容：
 
@@ -133,6 +142,8 @@ bash qwen3vl_tp_runtime/scripts/helpers/run-runtime-core-regression.sh
 2. decode loop 小 tensor reuse 已完成，涉及 `generate_buffers.py` 和 `PP / TP / HYBRID` runtime-only generate。
 3. pinned memory opt-in 已完成：运行时加 `--transport-pin-memory`。
 4. 真实 Jetson A/B 已记录在 `baseline_runs/20260501-step16-pinned-ab/`。
+5. 新增 `models/qwen3vl/execution/kv_cache.py`，包含 `LayerKVCache / StageKVCache`。
+6. `PP / TP / HYBRID` runtime-only generate 已接入 `StageKVCache`；非 runtime-only 仍走旧 `cache_by_layer`。
 
 Step 16 结论：
 
@@ -142,9 +153,53 @@ Step 16 结论：
 - CUDA peak allocated 不上升；rank0 reserved 约多 `2 MiB`。
 - 收益偏小，`--transport-pin-memory` 保持 opt-in，不改默认。
 
+Step 20A 当前结论：
+
+- 有 `StageKVCache` 时，attention 走 append/view，不再在该路径 clone `full_key/full_value` 回 `cache_by_layer`。
+- `test/test_kv_cache.py` 已加入本地回归。
+- `run-runtime-core-regression.sh --skip-baseline-checks` 已通过。
+- 真实 Jetson smoke 已通过：`tp-text-generate`、`tp-mm-generate`、`hybrid-mm-generate` generated ids/text 不变。
+- `stage_kv_cache.tensor_bytes`：
+  - `tp-text`：`1,474,560` bytes / rank。
+  - `tp-mm`：`46,522,368` bytes / rank。
+  - `hybrid-mm`：stage0 rank0/rank1 `23,261,184` bytes，stage1 rank2 `46,522,368` bytes。
+- CUDA peak 与 `baseline_runs/20260430-bfloat16-default/` 基本持平。
+- 已补 `MAX_NEW_TOKENS=16` 长 decode profile：
+  - 输出与固定 long baseline 一致。
+  - `stage_kv_cache.tensor_bytes=47,407,104` bytes / rank。
+  - CUDA peak `6.52-6.53 GiB`，TP collective `225.70 MiB`，与旧 long baseline 基本一致。
+
+Step 20B 当前结论：
+
+- 新增 `models/qwen3vl/execution/video_window_cache.py`。
+- `VideoWindowCacheIndex` 从 `mm_token_type_ids == 2` 的连续区间生成 window metadata。
+- prefill stats 新增 `video_window_cache`，每个 rank 记录本地 owner/stage/layer/TP/KV offset。
+- 真实 Jetson smoke 已通过：
+  - `tp-mm-generate-step20b`：每 rank `4` windows / `576` video tokens / `2027` metadata bytes。
+  - `hybrid-mm-generate-step20b`：每 rank `4` windows / `576` video tokens；stage0 `2027` bytes，stage1 `2031` bytes。
+  - generated ids/text 仍是 `[87140, 15946, 3837, 101177]` / `视频中，一名`。
+- 只记录 metadata；没有 KV 删除、压缩或跨机回取。
+
+Step 20C-0 / 20C-1 当前结论：
+
+- 新增 `models/qwen3vl/execution/video_kv_compression.py`。
+- prefill stats 新增 `video_kv_compression_plan`。
+- 当前仍是 planner-only：`mutates_kv=false`、`compression_enabled=false`。
+- 默认 method 是 `none`，keep token 等于 original token。
+- opt-in `uniform/swa` 只记录 selected token stats；不修改真实 KV。
+- 已通过本地 `test_video_kv_compression.py`、`test_video_window_cache.py`、`test_runtime_summary.py` 和相关 `py_compile`。
+- 真实 Jetson smoke 已冻结：
+  - `tp-mm-generate-step20c0-j23`：rank0 jetson2，rank1 jetson3。
+  - `hybrid-mm-generate-step20c0-j23shared`：rank0/rank1 jetson2，rank2 jetson3。
+  - `tp-mm-generate-step20c1-uniform-j23` 和 `hybrid-mm-generate-step20c1-uniform-j23shared`。
+  - generated ids/text 仍是 `[87140, 15946, 3837, 101177]` / `视频中，一名`。
+  - `tp-mm` plan：每 rank `4` windows / `576` original / `576` keep / `0` drop，estimated KV bytes `42,467,328`。
+  - `hybrid-mm` stage0 plan：estimated KV bytes `21,233,664`；stage1 plan：`42,467,328`。
+  - 20C-1 `uniform`：每 rank `576 / 288 / 288` original/keep/drop；TP 和 HYBRID stage1 预计可省 `21,233,664` bytes，HYBRID stage0 预计可省 `10,616,832` bytes。
+
 下一步建议：
 
-- 开始 step 20：`KV cache 管理部分`。
+- 进入 20C-2 compression contract：先定义物理压缩后 key length、attention mask、position/current_length 的一致性规则，再考虑真正 compaction。
 - 当前重点只放前三条路线：
   - Jupiter-style 连续 KV buffer：提前分配 GPU KV，用 `current_length` 避免 decode 每步 `torch.cat`。
   - InfiniPot-V-style 视觉 token KV 压缩：关注视频时间冗余和空间语义重要性。

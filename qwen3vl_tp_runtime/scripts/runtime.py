@@ -408,6 +408,33 @@ def build_parser() -> argparse.ArgumentParser:
             "Gloo transport and record pin-memory usage in runtime_metrics."
         ),
     )
+    parser.add_argument(
+        "--video-kv-compression",
+        choices=["none", "uniform", "swa"],
+        default="none",
+        help=(
+            "Planner-only opt-in video KV selector. Default 'none' records all "
+            "video tokens and does not mutate KV."
+        ),
+    )
+    parser.add_argument(
+        "--video-kv-keep-ratio",
+        type=float,
+        default=None,
+        help=(
+            "Planner-only video KV keep ratio for --video-kv-compression "
+            "uniform|swa. If omitted for an opt-in selector, defaults to 0.5."
+        ),
+    )
+    parser.add_argument(
+        "--video-kv-keep-tokens-per-window",
+        type=int,
+        default=None,
+        help=(
+            "Planner-only absolute keep token budget per video window. "
+            "Mutually exclusive with --video-kv-keep-ratio."
+        ),
+    )
 
     parser.add_argument("--tp-attn-math", choices=["orig", "float32", "bfloat16"], default="orig")
     parser.add_argument("--tp-mlp-math", choices=["orig", "float32", "bfloat16"], default="orig")

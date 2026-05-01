@@ -581,6 +581,8 @@ class HybridDirectLoaderTest(unittest.TestCase):
     def test_multimodal_runtime_only_tp_leader_broadcasts_runtime_inputs_not_scaffold(self) -> None:
         manifest = _build_manifest(stage_ranges=[(0, 17)], tp_degrees=[2], modality="multimodal")
         manifest.runtime_config["include_runtime_reference"] = False
+        manifest.runtime_config["video_kv_compression"] = "uniform"
+        manifest.runtime_config["video_kv_keep_ratio"] = 0.5
         manifest.runtime_config["_mm_startup_contract_ready"] = True
         rank_stage = HybridRankContext(
             stage_idx=0,
@@ -656,6 +658,8 @@ class HybridDirectLoaderTest(unittest.TestCase):
         self.assertNotIn("scaffold", sent_meta)
         sent_runtime_inputs_meta = sent_meta["runtime_inputs"]
         self.assertEqual(sent_runtime_inputs_meta["protocol"], "hybrid_runtime_inputs_v1")
+        self.assertEqual(sent_runtime_inputs_meta["video_kv_compression"], "uniform")
+        self.assertEqual(sent_runtime_inputs_meta["video_kv_keep_ratio"], 0.5)
         for field_name in (
             "layers",
             "module_name",
@@ -696,8 +700,12 @@ class HybridDirectLoaderTest(unittest.TestCase):
         self.assertEqual(restored_scaffold["save_dtype"], "float32")
         self.assertTrue(torch.equal(restored_scaffold["stage_input"], stage_input))
         self.assertTrue(torch.equal(restored_scaffold["rope_deltas"], rope_deltas))
+        self.assertEqual(restored_scaffold["video_kv_compression"], "uniform")
+        self.assertEqual(restored_scaffold["video_kv_keep_ratio"], 0.5)
         materialize_runtime_config = materialize_mock.call_args.kwargs["runtime_config"]
         self.assertTrue(torch.equal(materialize_runtime_config["_mm_startup_shared"]["input_ids"], input_ids))
+        self.assertEqual(materialize_runtime_config["video_kv_compression"], "uniform")
+        self.assertEqual(materialize_runtime_config["video_kv_keep_ratio"], 0.5)
         self.assertTrue(
             torch.equal(
                 materialize_runtime_config["_mm_startup_stage_handoffs"][0]["stage_input"],

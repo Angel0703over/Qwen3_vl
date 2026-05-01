@@ -24,6 +24,7 @@ from .decoder import (
     trace_decoder_layer_cached_tp,
     trace_decoder_layer_tp,
 )
+from .kv_cache import StageKVCache
 from .mlp import forward_mlp, forward_mlp_tp
 from ..functional import rms_norm
 
@@ -215,6 +216,7 @@ def trace_text_decode_stage_with_runtime_cache(
     hidden_states: torch.Tensor,
     stage_state: dict,
     cache_by_layer: dict[int, tuple[torch.Tensor | None, torch.Tensor | None]] | None = None,
+    stage_kv_cache: StageKVCache | None = None,
 ) -> dict:
     traces = []
     output = hidden_states
@@ -225,12 +227,17 @@ def trace_text_decode_stage_with_runtime_cache(
     for layer_bundle in stage_state["layers"]:
         layer_runtime_state = compose_layer_state(layer_bundle, stage_state)
         layer_idx = int(layer_bundle["layer_idx"])
-        past_key, past_value = current_cache.get(
-            layer_idx,
-            (layer_runtime_state.get("past_key"), layer_runtime_state.get("past_value")),
-        )
-        layer_runtime_state["past_key"] = past_key
-        layer_runtime_state["past_value"] = past_value
+        if stage_kv_cache is None:
+            past_key, past_value = current_cache.get(
+                layer_idx,
+                (layer_runtime_state.get("past_key"), layer_runtime_state.get("past_value")),
+            )
+            layer_runtime_state["past_key"] = past_key
+            layer_runtime_state["past_value"] = past_value
+        else:
+            layer_runtime_state["past_key"] = None
+            layer_runtime_state["past_value"] = None
+            layer_runtime_state["layer_kv_cache"] = stage_kv_cache.get_or_create(layer_idx)
 
         layer_trace = trace_decoder_layer_cached(output, layer_runtime_state)
         deepstack_embeds = get_deepstack_embeds(stage_state, layer_idx)
@@ -240,16 +247,18 @@ def trace_text_decode_stage_with_runtime_cache(
         layer_trace["post_deepstack"] = post_deepstack
         traces.append(layer_trace)
 
-        updated_cache[layer_idx] = (
-            layer_trace["full_key"].detach().clone(),
-            layer_trace["full_value"].detach().clone(),
-        )
+        if stage_kv_cache is None:
+            updated_cache[layer_idx] = (
+                layer_trace["full_key"].detach().clone(),
+                layer_trace["full_value"].detach().clone(),
+            )
         output = post_deepstack
 
     return {
         "stage_output": output,
         "layer_traces": traces,
         "cache_by_layer": updated_cache,
+        "stage_kv_cache": stage_kv_cache,
     }
 
 
@@ -257,11 +266,13 @@ def trace_text_decode_logits_with_runtime_cache(
     layer_input: torch.Tensor,
     stage_state: dict,
     cache_by_layer: dict[int, tuple[torch.Tensor | None, torch.Tensor | None]] | None = None,
+    stage_kv_cache: StageKVCache | None = None,
 ) -> dict:
     stage_trace = trace_text_decode_stage_with_runtime_cache(
         layer_input,
         stage_state,
         cache_by_layer=cache_by_layer,
+        stage_kv_cache=stage_kv_cache,
     )
     norm_output = rms_norm(
         stage_trace["stage_output"],
@@ -279,6 +290,7 @@ def trace_text_decode_logits_with_runtime_cache(
         "norm_output": norm_output,
         "logits": logits,
         "cache_by_layer": stage_trace["cache_by_layer"],
+        "stage_kv_cache": stage_trace["stage_kv_cache"],
         "layer_traces": stage_trace["layer_traces"],
     }
 
@@ -295,6 +307,7 @@ def trace_text_decode_stage_tp_with_runtime_cache(
     mlp_math_mode: str = "orig",
     cache_by_layer: dict[int, tuple[torch.Tensor | None, torch.Tensor | None]] | None = None,
     profile_phase: str | None = None,
+    stage_kv_cache: StageKVCache | None = None,
 ) -> dict:
     traces = []
     output = hidden_states
@@ -308,12 +321,17 @@ def trace_text_decode_stage_tp_with_runtime_cache(
         layer_runtime_state["tp_profile_phase"] = profile_phase or (
             "decode" if layer_idx in current_cache else "prefill"
         )
-        past_key, past_value = current_cache.get(
-            layer_idx,
-            (layer_runtime_state.get("past_key"), layer_runtime_state.get("past_value")),
-        )
-        layer_runtime_state["past_key"] = past_key
-        layer_runtime_state["past_value"] = past_value
+        if stage_kv_cache is None:
+            past_key, past_value = current_cache.get(
+                layer_idx,
+                (layer_runtime_state.get("past_key"), layer_runtime_state.get("past_value")),
+            )
+            layer_runtime_state["past_key"] = past_key
+            layer_runtime_state["past_value"] = past_value
+        else:
+            layer_runtime_state["past_key"] = None
+            layer_runtime_state["past_value"] = None
+            layer_runtime_state["layer_kv_cache"] = stage_kv_cache.get_or_create(layer_idx)
 
         layer_trace = trace_decoder_layer_cached_tp(
             output,
@@ -333,16 +351,18 @@ def trace_text_decode_stage_tp_with_runtime_cache(
         layer_trace["post_deepstack"] = post_deepstack
         traces.append(layer_trace)
 
-        updated_cache[layer_idx] = (
-            layer_trace["full_key"].detach().clone(),
-            layer_trace["full_value"].detach().clone(),
-        )
+        if stage_kv_cache is None:
+            updated_cache[layer_idx] = (
+                layer_trace["full_key"].detach().clone(),
+                layer_trace["full_value"].detach().clone(),
+            )
         output = post_deepstack
 
     return {
         "stage_output": output,
         "layer_traces": traces,
         "cache_by_layer": updated_cache,
+        "stage_kv_cache": stage_kv_cache,
     }
 
 
@@ -358,6 +378,7 @@ def trace_text_decode_logits_tp_with_runtime_cache(
     mlp_math_mode: str = "orig",
     cache_by_layer: dict[int, tuple[torch.Tensor | None, torch.Tensor | None]] | None = None,
     profile_phase: str | None = None,
+    stage_kv_cache: StageKVCache | None = None,
 ) -> dict:
     stage_trace = trace_text_decode_stage_tp_with_runtime_cache(
         layer_input,
@@ -371,6 +392,7 @@ def trace_text_decode_logits_tp_with_runtime_cache(
         mlp_math_mode=mlp_math_mode,
         cache_by_layer=cache_by_layer,
         profile_phase=profile_phase,
+        stage_kv_cache=stage_kv_cache,
     )
     norm_output = rms_norm(
         stage_trace["stage_output"],
@@ -388,6 +410,7 @@ def trace_text_decode_logits_tp_with_runtime_cache(
         "norm_output": norm_output,
         "logits": logits,
         "cache_by_layer": stage_trace["cache_by_layer"],
+        "stage_kv_cache": stage_trace["stage_kv_cache"],
         "layer_traces": stage_trace["layer_traces"],
     }
 

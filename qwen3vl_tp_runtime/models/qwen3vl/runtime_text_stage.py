@@ -737,6 +737,12 @@ def _restore_multimodal_prefill_runtime_tensors(
             restored_mm_state.rope_deltas,
             device=torch.device("cpu"),
         )
+    for key in ("mm_token_type_ids", "image_grid_thw", "video_grid_thw"):
+        if restored.get(key) is not None:
+            continue
+        value = getattr(restored_mm_state, key, None)
+        if value is not None:
+            restored[key] = _runtime_tensor(value, device=torch.device("cpu"))
     return restored
 
 
