@@ -1022,6 +1022,9 @@ class PayloadSummary:
     tensor_numels: dict[str, int] = field(default_factory=dict)
     tensor_bytes: dict[str, int] = field(default_factory=dict)
     total_tensor_bytes: int = 0
+    transport_pin_memory_requested: bool | None = None
+    transport_pin_memory_used: bool | None = None
+    transport_pin_memory_tensor_count: int | None = None
 
     @classmethod
     def empty(cls) -> "PayloadSummary":

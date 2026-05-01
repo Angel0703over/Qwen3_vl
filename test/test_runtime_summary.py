@@ -236,6 +236,8 @@ class RuntimeSummaryTest(unittest.TestCase):
         self.assertEqual(metrics["transport"]["event_count"], 2)
         self.assertEqual(metrics["transport"]["totals_by_kind"]["startup_contract"]["tensor_bytes"], 32)
         self.assertEqual(metrics["transport"]["totals_by_kind"]["tp_collective"]["tensor_bytes"], 32)
+        self.assertEqual(metrics["transport"]["pin_memory"]["requested_event_count"], 0)
+        self.assertEqual(metrics["transport"]["pin_memory"]["used_event_count"], 0)
         tp_event = metrics["transport"]["events"][1]
         self.assertEqual(tp_event["phase"], "prefill")
         self.assertEqual(tp_event["layer_idx"], 3)

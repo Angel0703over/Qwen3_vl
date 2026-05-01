@@ -138,6 +138,9 @@ def _summarize_transport_events(events: list[dict[str, Any]]) -> dict[str, Any]:
         }
     )
     normalized_events: list[dict[str, Any]] = []
+    pin_memory_requested_event_count = 0
+    pin_memory_used_event_count = 0
+    pin_memory_tensor_count = 0
     for event in events:
         normalized = dict(event)
         kind = str(normalized.get("kind") or "other")
@@ -145,6 +148,11 @@ def _summarize_transport_events(events: list[dict[str, Any]]) -> dict[str, Any]:
         elapsed = float(normalized.get("elapsed_seconds") or 0.0)
         object_bytes = float(normalized.get("object_bytes") or 0.0)
         tensor_bytes = float(normalized.get("total_tensor_bytes") or 0.0)
+        if bool(normalized.get("transport_pin_memory_requested")):
+            pin_memory_requested_event_count += 1
+        if bool(normalized.get("transport_pin_memory_used")):
+            pin_memory_used_event_count += 1
+            pin_memory_tensor_count += int(normalized.get("transport_pin_memory_tensor_count") or 0)
         normalized["elapsed_seconds"] = _round_seconds(elapsed)
         normalized_events.append(normalized)
 
@@ -176,6 +184,11 @@ def _summarize_transport_events(events: list[dict[str, Any]]) -> dict[str, Any]:
         "totals_by_channel": {
             key: _finalize(value)
             for key, value in sorted(totals_by_channel.items())
+        },
+        "pin_memory": {
+            "requested_event_count": pin_memory_requested_event_count,
+            "used_event_count": pin_memory_used_event_count,
+            "used_tensor_count": pin_memory_tensor_count,
         },
     }
 

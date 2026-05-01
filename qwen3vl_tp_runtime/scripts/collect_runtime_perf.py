@@ -297,6 +297,7 @@ def collect_log_record(case_id: str, path: Path) -> dict[str, Any]:
             "tp_collective_seconds": _transport_bucket(transport_metrics, "tp_collective").get("elapsed_seconds"),
             "tp_collective_breakdown": _summarize_tp_collective_breakdown(transport_metrics),
             "tp_collective_substage_seconds": _summarize_tp_collective_substages(transport_metrics),
+            "transport_pin_memory": transport_metrics.get("pin_memory"),
             "transport_event_count": transport_metrics.get("event_count"),
         },
         "weight_load": {

@@ -7,7 +7,13 @@ from typing import Any
 import torch
 import torch.distributed as dist
 
-from .distributed import record_transport_profile_event
+from .distributed import (
+    copy_tensor_to_cpu_transport,
+    empty_cpu_transport_tensor,
+    move_cpu_transport_tensor_to_device,
+    record_transport_profile_event,
+    transport_pin_memory_enabled,
+)
 from .schema import PayloadSummary, StageHandoffPayload
 from .stage import build_stage_handoff_target_dtypes
 
@@ -270,6 +276,7 @@ def send_payload(
     tensor_dtypes = {}
     tensor_numels = {}
     tensor_bytes = {}
+    pin_memory_tensor_count = 0
     for name, tensor in items:
         _send_string(name, dst)
         _send_scalar(0 if tensor is None else 1, dst)
@@ -283,7 +290,9 @@ def send_payload(
         wire_dtype = _resolve_wire_dtype(tensor, comm_dtype)
         _send_scalar(_dtype_to_code(tensor.dtype), dst)
         _send_scalar(_dtype_to_code(wire_dtype), dst)
-        payload_cpu = tensor.detach().to("cpu", dtype=wire_dtype).contiguous()
+        payload_cpu, pinned = copy_tensor_to_cpu_transport(tensor, dtype=wire_dtype)
+        if pinned:
+            pin_memory_tensor_count += 1
         _send_shape(payload_cpu.shape, dst)
         dist.send(payload_cpu, dst=dst)
         tensor_shapes[name] = tuple(payload_cpu.shape)
@@ -300,6 +309,9 @@ def send_payload(
         tensor_numels=tensor_numels,
         tensor_bytes=tensor_bytes,
         total_tensor_bytes=sum(tensor_bytes.values()),
+        transport_pin_memory_requested=transport_pin_memory_enabled(),
+        transport_pin_memory_used=pin_memory_tensor_count > 0,
+        transport_pin_memory_tensor_count=pin_memory_tensor_count,
     )
 
 
@@ -324,13 +336,13 @@ def recv_payload(
         source_dtype = _code_to_dtype(_recv_scalar(src))
         wire_dtype = _code_to_dtype(_recv_scalar(src))
         shape = _recv_shape(src)
-        tensor_cpu = torch.empty(shape, dtype=wire_dtype)
+        tensor_cpu, _pinned = empty_cpu_transport_tensor(shape, dtype=wire_dtype)
         dist.recv(tensor_cpu, src=src)
 
         target_dtype = source_dtype
         if target_dtypes is not None and name in target_dtypes:
             target_dtype = target_dtypes[name]
-        payload[name] = tensor_cpu.to(device=device, dtype=target_dtype)
+        payload[name] = move_cpu_transport_tensor_to_device(tensor_cpu, device=device, dtype=target_dtype)
     return payload
 
 
@@ -397,7 +409,7 @@ def broadcast_payload(
             )
         )
         if tensor is not None:
-            tensor_cpu = tensor.detach().to("cpu", dtype=wire_dtype).contiguous()
+            tensor_cpu, _pinned = copy_tensor_to_cpu_transport(tensor, dtype=wire_dtype)
             expected_shape = _broadcast_shape(tensor_cpu.shape, src=src, group=group)
             if tuple(tensor_cpu.shape) != tuple(expected_shape):
                 raise RuntimeError(
@@ -406,14 +418,14 @@ def broadcast_payload(
                 )
         else:
             expected_shape = _broadcast_shape(None, src=src, group=group)
-            tensor_cpu = torch.empty(expected_shape, dtype=wire_dtype)
+            tensor_cpu, _pinned = empty_cpu_transport_tensor(expected_shape, dtype=wire_dtype)
         if tensor_cpu.numel() > 0:
             dist.broadcast(tensor_cpu, src=src, group=group)
 
         target_dtype = source_dtype
         if target_dtypes is not None and name in target_dtypes:
             target_dtype = target_dtypes[name]
-        restored[name] = tensor_cpu.to(device=device, dtype=target_dtype)
+        restored[name] = move_cpu_transport_tensor_to_device(tensor_cpu, device=device, dtype=target_dtype)
     return restored
 
 

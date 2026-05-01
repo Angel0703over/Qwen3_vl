@@ -10,6 +10,7 @@
 | 长期目标 profile | `baseline_runs/20260429-longterm-profile/` | TP/HYBRID direct runtime、weight shard、payload/perf |
 | 当前性能 baseline | `baseline_runs/20260430-bfloat16-default/` | `bfloat16` 默认通信 dtype 后的性能 |
 | Step 15 payload baseline | `baseline_runs/20260430-step15-derived-rebuild/` | 最新 multimodal payload keys/bytes |
+| Step 16 pinned A/B | `baseline_runs/20260501-step16-pinned-ab/` | decode buffer reuse 后的 pinned memory opt-in 对照 |
 
 ## 固定输出
 
@@ -54,7 +55,31 @@
 | Step 15 空 tensor slot | `tp-mm`: `12` keys / `12,093,371` bytes | `11` keys / `12,093,371` bytes | key count 下降，bytes 不变 |
 | Step 15 derived shared | `tp-mm`: `11` keys / `12,093,371` bytes | `9` keys / `12,068,291` bytes | 少 `25,080` bytes |
 | Step 15 hybrid stage1 startup | `7` keys / `3,245,384` bytes | `5` keys / `3,220,304` bytes | 少 `25,080` bytes |
+| Step 16 decode 小 tensor | 每 step 追加 attention mask / 新建 token tensor | 预分配 decode mask buffer / 复用 token buffer | payload bytes 不变，减少 decode loop 小分配 |
+| Step 16 pinned memory | 无开关 | `--transport-pin-memory` opt-in | TP 小幅变快，CUDA peak allocated 不变，默认关闭 |
 | vLLM-style 函数命名 | HYBRID helper 叫 `runtime_input` | 内部 helper 改为 `model_input` | wire protocol 和 bytes 不变 |
+
+## Step 16 Pinned Memory A/B
+
+目录：`baseline_runs/20260501-step16-pinned-ab/`。
+
+| case | rank | total s | TP coll s | startup/scaffold/handoff | TP coll bytes | CUDA peak alloc/reserved | pin used | correctness |
+| --- | ---: | ---: | ---: | --- | ---: | --- | ---: | --- |
+| `tp-mm-generate-step16-default-j23` | 0 | `53.47` | `24.34` | `11.51 MiB / 0 B / 0 B` | `221.48 MiB` | `6.53 / 6.74 GiB` | `0` | pass |
+| `tp-mm-generate-step16-default-j23` | 1 | `53.21` | `23.76` | `11.51 MiB / 0 B / 0 B` | `221.48 MiB` | `6.52 / 6.73 GiB` | `0` | pass |
+| `tp-mm-generate-step16-pinned-j23` | 0 | `53.01` | `23.91` | `11.51 MiB / 0 B / 0 B` | `221.48 MiB` | `6.53 / 6.74 GiB` | `289` | pass |
+| `tp-mm-generate-step16-pinned-j23` | 1 | `52.97` | `23.51` | `11.51 MiB / 0 B / 0 B` | `221.48 MiB` | `6.52 / 6.73 GiB` | `289` | pass |
+| `hybrid-mm-generate-step16-default-j23shared` | 0/1/2 | `32.69-32.85` | `2.25 / 1.58 / 0.00` | bytes unchanged | `113.82 MiB / 113.82 MiB / 0 B` | unchanged | `0` | pass |
+| `hybrid-mm-generate-step16-pinned-j23shared` | 0/1/2 | `32.80-32.96` | `2.27 / 1.49 / 0.00` | bytes unchanged | `113.82 MiB / 113.82 MiB / 0 B` | unchanged | `154 / 149 / 1` | pass |
+
+结论：
+
+- generated ids/text 固定为 `[87140, 15946, 3837, 101177]` / `视频中，一名`。
+- `--transport-pin-memory` 不改变 payload bytes、TP collective bytes 或 weight shard scope。
+- 纯 TP total time 小幅下降约 `0.24-0.46s`，TP collective time 小幅下降约 `0.25-0.43s`。
+- CUDA peak allocated 不上升；TP rank0 reserved 约多 `2 MiB`。
+- HYBRID A/B 因 rank0/rank1 共用 jetson2，只作为功能性验证。
+- 当前收益不大，保持默认关闭。
 
 ## Step 15 Payload 结论
 
@@ -143,11 +168,14 @@ bash sync-to-jetson2.sh --host 10.126.126.4 --git-changed
 
 ## 当前下一步
 
-下一阶段是 `ROADMAP.md` step 16：`Buffer reuse / pinned memory`。
+下一阶段是 `ROADMAP.md` step 20：`KV cache 管理部分`。
 
-要求：
+Step 16 已关闭：
 
-- 先统计 hidden / handoff / decode tensor 的 clone 和分配位置。
-- 先做低风险 buffer reuse。
-- pinned memory 只做 opt-in 实验。
-- 必须保留 before/after CUDA peak、transport time 和 generated ids/text。
+- allocation / clone 盘点已完成：`BUFFER_REUSE_AUDIT.md`。
+- decode loop 小 tensor reuse 已完成，本地轻量回归通过。
+- pinned memory opt-in 已完成：`--transport-pin-memory`。
+- 真实 Jetson A/B 已记录在 `baseline_runs/20260501-step16-pinned-ab/`。
+- KV cache clone/cat 留到 step 20 的 Jupiter-style 连续 KV buffer 阶段。
+- InfiniPot-V-style 视觉 token 压缩和 ReKV-style 历史窗口检索作为后续重点。
+- 暂不考虑 vLLM-style BlockPool / prefix cache / serving scheduler。

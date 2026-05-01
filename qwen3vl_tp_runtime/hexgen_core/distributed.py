@@ -16,6 +16,12 @@ _PICKLE_WIRE_FORMAT_MAGIC = b"HXPK1"
 _TORCH_WIRE_FORMAT_MAGIC = b"HXTS1"
 _STARTUP_TIMING_EVENTS: list[dict[str, Any]] = []
 _TRANSPORT_PROFILE_EVENTS: list[dict[str, Any]] = []
+_TRANSPORT_PIN_MEMORY_ENABLED = os.getenv("HEXGEN_TRANSPORT_PIN_MEMORY", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 
 def getenv_int(name: str, default: int) -> int:
@@ -56,6 +62,54 @@ def get_transport_profile_events() -> list[dict[str, Any]]:
     return [dict(event) for event in _TRANSPORT_PROFILE_EVENTS]
 
 
+def set_transport_pin_memory_enabled(enabled: bool) -> None:
+    global _TRANSPORT_PIN_MEMORY_ENABLED
+    _TRANSPORT_PIN_MEMORY_ENABLED = bool(enabled)
+
+
+def transport_pin_memory_enabled() -> bool:
+    return bool(_TRANSPORT_PIN_MEMORY_ENABLED)
+
+
+def empty_cpu_transport_tensor(
+    shape: torch.Size | tuple[int, ...],
+    *,
+    dtype: torch.dtype,
+) -> tuple[torch.Tensor, bool]:
+    if transport_pin_memory_enabled():
+        try:
+            return torch.empty(shape, dtype=dtype, pin_memory=True), True
+        except RuntimeError:
+            pass
+    return torch.empty(shape, dtype=dtype), False
+
+
+def copy_tensor_to_cpu_transport(
+    tensor: torch.Tensor,
+    *,
+    dtype: torch.dtype,
+) -> tuple[torch.Tensor, bool]:
+    if transport_pin_memory_enabled():
+        try:
+            payload, pinned = empty_cpu_transport_tensor(tuple(tensor.shape), dtype=dtype)
+            if pinned:
+                payload.copy_(tensor.detach().to(dtype=dtype), non_blocking=False)
+                return payload.contiguous(), True
+        except RuntimeError:
+            pass
+    return tensor.detach().to("cpu", dtype=dtype).contiguous(), False
+
+
+def move_cpu_transport_tensor_to_device(
+    tensor: torch.Tensor,
+    *,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    non_blocking = bool(transport_pin_memory_enabled() and tensor.device.type == "cpu" and tensor.is_pinned())
+    return tensor.to(device=device, dtype=dtype, non_blocking=non_blocking)
+
+
 def _shape_to_list(shape: Any) -> list[int] | None:
     if shape is None:
         return None
@@ -87,6 +141,15 @@ def _summary_to_profile_fields(summary: Any | None) -> dict[str, Any]:
     tensor_dtypes = getattr(summary, "tensor_dtypes", {}) or {}
     tensor_numels = getattr(summary, "tensor_numels", {}) or {}
     tensor_bytes = getattr(summary, "tensor_bytes", {}) or {}
+    pin_memory_requested = getattr(summary, "transport_pin_memory_requested", None)
+    if pin_memory_requested is None:
+        pin_memory_requested = transport_pin_memory_enabled()
+    pin_memory_used = getattr(summary, "transport_pin_memory_used", None)
+    if pin_memory_used is None:
+        pin_memory_used = False
+    pin_memory_tensor_count = getattr(summary, "transport_pin_memory_tensor_count", None)
+    if pin_memory_tensor_count is None:
+        pin_memory_tensor_count = 0
     return {
         "is_empty": bool(getattr(summary, "is_empty", False)),
         "num_tensors": int(getattr(summary, "num_tensors", 0)),
@@ -108,6 +171,9 @@ def _summary_to_profile_fields(summary: Any | None) -> dict[str, Any]:
             for key, value in tensor_bytes.items()
         },
         "total_tensor_bytes": int(getattr(summary, "total_tensor_bytes", 0) or 0),
+        "transport_pin_memory_requested": bool(pin_memory_requested),
+        "transport_pin_memory_used": bool(pin_memory_used),
+        "transport_pin_memory_tensor_count": int(pin_memory_tensor_count or 0),
     }
 
 
@@ -126,6 +192,24 @@ def _single_tensor_profile(tensor: torch.Tensor, *, dtype: torch.dtype) -> dict[
         "tensor_bytes": {"tensor": tensor_bytes},
         "total_tensor_bytes": tensor_bytes,
     }
+
+
+def _pin_memory_tensor_count(payload: dict[str, torch.Tensor | None] | None) -> int:
+    if payload is None:
+        return 0
+    count = 0
+    for tensor in payload.values():
+        if torch.is_tensor(tensor) and tensor.device.type == "cpu" and tensor.is_pinned():
+            count += 1
+    return count
+
+
+def _annotate_payload_summary_pin_memory(summary: Any, payload: dict[str, torch.Tensor | None] | None) -> Any:
+    pin_count = _pin_memory_tensor_count(payload)
+    summary.transport_pin_memory_requested = transport_pin_memory_enabled()
+    summary.transport_pin_memory_used = pin_count > 0
+    summary.transport_pin_memory_tensor_count = pin_count
+    return summary
 
 
 def _merge_profile_context(
@@ -164,6 +248,7 @@ def _collective_dtype_profile(
     gloo_collective_seconds: float,
     cpu_to_device_seconds: float,
     payload_prepare_seconds: float | None = None,
+    pin_memory_used: bool = False,
 ) -> dict[str, Any]:
     return {
         "world_size": int(world_size),
@@ -179,6 +264,8 @@ def _collective_dtype_profile(
         "device_to_cpu_seconds": _round_profile_seconds(device_to_cpu_seconds),
         "gloo_collective_seconds": _round_profile_seconds(gloo_collective_seconds),
         "cpu_to_device_seconds": _round_profile_seconds(cpu_to_device_seconds),
+        "transport_pin_memory_requested": transport_pin_memory_enabled(),
+        "transport_pin_memory_used": bool(pin_memory_used),
     }
 
 
@@ -203,6 +290,7 @@ def record_transport_profile_event(
         "status": status,
         "elapsed_seconds": None if elapsed_seconds is None else round(float(elapsed_seconds), 6),
         "object_bytes": object_bytes,
+        "transport_pin_memory_requested": transport_pin_memory_enabled(),
         **_summary_to_profile_fields(summary),
     }
     if extra:
@@ -291,7 +379,7 @@ def all_reduce_cpu(
 
     start = time.perf_counter()
     copy_to_cpu_start = time.perf_counter()
-    reduced = local_tensor.detach().to("cpu", dtype=comm_dtype)
+    reduced, pin_memory_used = copy_tensor_to_cpu_transport(local_tensor, dtype=comm_dtype)
     device_to_cpu_seconds = time.perf_counter() - copy_to_cpu_start
     gloo_collective_seconds = 0.0
     try:
@@ -319,6 +407,7 @@ def all_reduce_cpu(
                         device_to_cpu_seconds=device_to_cpu_seconds,
                         gloo_collective_seconds=gloo_collective_seconds,
                         cpu_to_device_seconds=0.0,
+                        pin_memory_used=pin_memory_used,
                     ),
                 },
                 profile_context,
@@ -326,7 +415,7 @@ def all_reduce_cpu(
         )
         raise
     copy_to_device_start = time.perf_counter()
-    result = reduced.to(device=target_device, dtype=target_dtype)
+    result = move_cpu_transport_tensor_to_device(reduced, device=target_device, dtype=target_dtype)
     cpu_to_device_seconds = time.perf_counter() - copy_to_device_start
     record_transport_profile_event(
         channel="all_reduce_cpu",
@@ -347,6 +436,7 @@ def all_reduce_cpu(
                     device_to_cpu_seconds=device_to_cpu_seconds,
                     gloo_collective_seconds=gloo_collective_seconds,
                     cpu_to_device_seconds=cpu_to_device_seconds,
+                    pin_memory_used=pin_memory_used,
                 ),
             },
             profile_context,
@@ -369,9 +459,15 @@ def all_gather_cpu(
 
     start = time.perf_counter()
     copy_to_cpu_start = time.perf_counter()
-    payload = local_tensor.detach().to("cpu", dtype=comm_dtype).contiguous()
+    payload, payload_pin_memory_used = copy_tensor_to_cpu_transport(local_tensor, dtype=comm_dtype)
     device_to_cpu_seconds = time.perf_counter() - copy_to_cpu_start
-    gathered = [torch.empty_like(payload) for _ in range(world_size)]
+    gathered = []
+    gathered_pin_memory_used = False
+    for _ in range(world_size):
+        tensor, pinned = empty_cpu_transport_tensor(tuple(payload.shape), dtype=payload.dtype)
+        gathered.append(tensor)
+        gathered_pin_memory_used = gathered_pin_memory_used or pinned
+    pin_memory_used = payload_pin_memory_used or gathered_pin_memory_used
     gloo_collective_seconds = 0.0
     try:
         collective_start = time.perf_counter()
@@ -400,6 +496,7 @@ def all_gather_cpu(
                         device_to_cpu_seconds=device_to_cpu_seconds,
                         gloo_collective_seconds=gloo_collective_seconds,
                         cpu_to_device_seconds=0.0,
+                        pin_memory_used=pin_memory_used,
                     ),
                 },
                 profile_context,
@@ -407,7 +504,10 @@ def all_gather_cpu(
         )
         raise
     copy_to_device_start = time.perf_counter()
-    result = [tensor.to(device=target_device, dtype=target_dtype) for tensor in gathered]
+    result = [
+        move_cpu_transport_tensor_to_device(tensor, device=target_device, dtype=target_dtype)
+        for tensor in gathered
+    ]
     cpu_to_device_seconds = time.perf_counter() - copy_to_device_start
     record_transport_profile_event(
         channel="all_gather_cpu",
@@ -416,24 +516,25 @@ def all_gather_cpu(
         summary=None,
         elapsed_seconds=time.perf_counter() - start,
         extra=_merge_profile_context(
-                {
-                    **_single_tensor_profile(local_tensor, dtype=comm_dtype),
-                    "world_size": int(world_size),
-                    "total_tensor_bytes": int(payload.numel() * payload.element_size() * world_size),
-                    **_collective_dtype_profile(
-                        source_tensor=local_tensor,
-                        reference_tensor=local_tensor,
-                        target_device=target_device,
-                        target_dtype=target_dtype,
-                        comm_dtype=comm_dtype,
-                        world_size=world_size,
-                        device_to_cpu_seconds=device_to_cpu_seconds,
-                        gloo_collective_seconds=gloo_collective_seconds,
-                        cpu_to_device_seconds=cpu_to_device_seconds,
-                    ),
-                },
-                profile_context,
-            ),
+            {
+                **_single_tensor_profile(local_tensor, dtype=comm_dtype),
+                "world_size": int(world_size),
+                "total_tensor_bytes": int(payload.numel() * payload.element_size() * world_size),
+                **_collective_dtype_profile(
+                    source_tensor=local_tensor,
+                    reference_tensor=local_tensor,
+                    target_device=target_device,
+                    target_dtype=target_dtype,
+                    comm_dtype=comm_dtype,
+                    world_size=world_size,
+                    device_to_cpu_seconds=device_to_cpu_seconds,
+                    gloo_collective_seconds=gloo_collective_seconds,
+                    cpu_to_device_seconds=cpu_to_device_seconds,
+                    pin_memory_used=pin_memory_used,
+                ),
+            },
+            profile_context,
+        ),
     )
     return result
 
@@ -456,10 +557,10 @@ def broadcast_cpu(
     start = time.perf_counter()
     payload_prepare_start = time.perf_counter()
     if tensor is None:
-        payload = torch.empty(reference_tensor.shape, dtype=comm_dtype)
+        payload, pin_memory_used = empty_cpu_transport_tensor(tuple(reference_tensor.shape), dtype=comm_dtype)
         device_to_cpu_seconds = 0.0
     else:
-        payload = tensor.detach().to("cpu", dtype=comm_dtype).contiguous()
+        payload, pin_memory_used = copy_tensor_to_cpu_transport(tensor, dtype=comm_dtype)
         device_to_cpu_seconds = time.perf_counter() - payload_prepare_start
     payload_prepare_seconds = time.perf_counter() - payload_prepare_start
     gloo_collective_seconds = 0.0
@@ -490,6 +591,7 @@ def broadcast_cpu(
                         gloo_collective_seconds=gloo_collective_seconds,
                         cpu_to_device_seconds=0.0,
                         payload_prepare_seconds=payload_prepare_seconds,
+                        pin_memory_used=pin_memory_used,
                     ),
                 },
                 profile_context,
@@ -497,7 +599,11 @@ def broadcast_cpu(
         )
         raise
     copy_to_device_start = time.perf_counter()
-    result = payload.to(device=reference_tensor.device, dtype=reference_tensor.dtype)
+    result = move_cpu_transport_tensor_to_device(
+        payload,
+        device=reference_tensor.device,
+        dtype=reference_tensor.dtype,
+    )
     cpu_to_device_seconds = time.perf_counter() - copy_to_device_start
     record_transport_profile_event(
         channel="broadcast_cpu",
@@ -520,6 +626,7 @@ def broadcast_cpu(
                     gloo_collective_seconds=gloo_collective_seconds,
                     cpu_to_device_seconds=cpu_to_device_seconds,
                     payload_prepare_seconds=payload_prepare_seconds,
+                    pin_memory_used=pin_memory_used,
                 ),
             },
             profile_context,
@@ -731,12 +838,13 @@ def recv_tensor_payload_cpu(
     _record_startup_timing("tensor-recv", message, elapsed)
     from .schema import PayloadSummary
 
+    summary = _annotate_payload_summary_pin_memory(PayloadSummary.from_payload(payload), payload)
     record_transport_profile_event(
         channel="tensor-recv",
         operation="recv",
         label=label,
         peer=src,
-        summary=PayloadSummary.from_payload(payload),
+        summary=summary,
         elapsed_seconds=elapsed,
     )
     startup_log(
@@ -788,12 +896,13 @@ def broadcast_tensor_payload_cpu(
     _record_startup_timing("tensor-bcast", message, elapsed)
     from .schema import PayloadSummary
 
+    summary = _annotate_payload_summary_pin_memory(PayloadSummary.from_payload(restored), restored)
     record_transport_profile_event(
         channel="tensor-bcast",
         operation="broadcast",
         label=label,
         peer=src,
-        summary=PayloadSummary.from_payload(restored),
+        summary=summary,
         elapsed_seconds=elapsed,
     )
     startup_log(

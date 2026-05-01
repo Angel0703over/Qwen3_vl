@@ -14,6 +14,11 @@ from ..distributed import (
     startup_log,
     startup_timer,
 )
+from ..generate_buffers import (
+    build_decode_attention_mask_buffer,
+    decode_attention_mask_view,
+    fill_decode_input_ids,
+)
 from ..gen_hetero_groups import (
     build_hybrid_layout,
     build_p2p_lists,
@@ -1327,6 +1332,8 @@ def _build_runtime_only_text_generate_phase_state(
     attention_mask_2d: torch.Tensor,
     config_spec,
     rotary_emb,
+    decode_input_ids_buffer: torch.Tensor | None = None,
+    mm_dummy_embed_tokens_weight: torch.Tensor | None = None,
 ) -> StageState:
     query_len = int(stage_state["prefill_seq_len"]) if phase_kind == "prefill" else 1
     runtime_state = dict(stage_state)
@@ -1362,15 +1369,23 @@ def _build_runtime_only_text_generate_phase_state(
         runtime_state["cos"] = stage_state["prefill_cos"]
         runtime_state["sin"] = stage_state["prefill_sin"]
     elif is_multimodal and phase_kind == "decode":
-        decode_input_ids = torch.zeros(
-            (int(stage_state["batch_size"]), 1),
-            device=infer_runtime_tensor_device(stage_state),
-            dtype=infer_runtime_token_dtype(stage_state),
+        decode_input_ids = (
+            torch.zeros(
+                (int(stage_state["batch_size"]), 1),
+                device=infer_runtime_tensor_device(stage_state),
+                dtype=infer_runtime_token_dtype(stage_state),
+            )
+            if decode_input_ids_buffer is None
+            else decode_input_ids_buffer.zero_()
         )
-        dummy_embed_tokens_weight = torch.zeros(
-            (1, int(config_spec.hidden_size)),
-            device=infer_runtime_tensor_device(stage_state),
-            dtype=infer_runtime_tensor_dtype(stage_state),
+        dummy_embed_tokens_weight = (
+            torch.zeros(
+                (1, int(config_spec.hidden_size)),
+                device=infer_runtime_tensor_device(stage_state),
+                dtype=infer_runtime_tensor_dtype(stage_state),
+            )
+            if mm_dummy_embed_tokens_weight is None
+            else mm_dummy_embed_tokens_weight
         )
         decode_state = build_mm_decode_state_from_weights(
             decode_input_ids=decode_input_ids,
@@ -1408,10 +1423,14 @@ def _build_runtime_only_text_generate_phase_state(
     if phase_kind == "prefill" and stage_state.get("input_ids") is not None:
         runtime_state["input_ids"] = stage_state["input_ids"]
     if phase_kind == "decode":
-        runtime_state["decode_input_ids"] = torch.zeros(
-            (int(stage_state["batch_size"]), 1),
-            device=infer_runtime_tensor_device(stage_state),
-            dtype=infer_runtime_token_dtype(stage_state),
+        runtime_state["decode_input_ids"] = (
+            torch.zeros(
+                (int(stage_state["batch_size"]), 1),
+                device=infer_runtime_tensor_device(stage_state),
+                dtype=infer_runtime_token_dtype(stage_state),
+            )
+            if decode_input_ids_buffer is None
+            else decode_input_ids_buffer
         )
     return runtime_state
 
@@ -1456,10 +1475,9 @@ def _run_text_generate_hybrid_phase_impl(
             elif phase_kind == "decode":
                 if current_token_id is None:
                     raise ValueError("decode phase 需要 current_token_id，但当前拿到 None。")
-                decode_input_ids = torch.tensor(
-                    [[current_token_id]],
-                    device=infer_runtime_tensor_device(runtime_state),
-                    dtype=runtime_state["decode_input_ids"].dtype,
+                decode_input_ids = fill_decode_input_ids(
+                    runtime_state["decode_input_ids"],
+                    current_token_id,
                 )
                 leader_input = forward_text_embeddings(decode_input_ids, runtime_state)
                 runtime_state["decode_input_ids_runtime"] = decode_input_ids
@@ -1781,7 +1799,25 @@ def _run_text_generate_hybrid_rank(
     cache_by_layer = prefill_cache if prefill_cache is not None else build_generate_cache_map(stage_state)
     step_stats = []
     step_output_tensors = []
-    current_attention_mask_2d = stage_state["prefill_attention_mask_2d"]
+    attention_mask_buffer = None
+    decode_input_ids_buffer = None
+    mm_dummy_embed_tokens_weight = None
+    if runtime_only_generate:
+        attention_mask_buffer = build_decode_attention_mask_buffer(
+            stage_state["prefill_attention_mask_2d"],
+            max_new_tokens=int(stage_state["max_new_tokens"]),
+        )
+        decode_input_ids_buffer = torch.empty(
+            (int(stage_state["batch_size"]), 1),
+            device=infer_runtime_tensor_device(stage_state),
+            dtype=infer_runtime_token_dtype(stage_state),
+        )
+        if str(stage_state.get("modality", "text")) == "multimodal":
+            mm_dummy_embed_tokens_weight = torch.zeros(
+                (1, int(runtime_only_context["config_spec"].hidden_size)),
+                device=infer_runtime_tensor_device(stage_state),
+                dtype=infer_runtime_tensor_dtype(stage_state),
+            )
 
     decode_iterable = (
         range(int(stage_state["max_new_tokens"]) - 1)
@@ -1790,16 +1826,10 @@ def _run_text_generate_hybrid_rank(
     )
     for step_payload in decode_iterable:
         if runtime_only_generate:
-            current_attention_mask_2d = torch.cat(
-                [
-                    current_attention_mask_2d,
-                    torch.ones(
-                        (current_attention_mask_2d.shape[0], 1),
-                        device=current_attention_mask_2d.device,
-                        dtype=current_attention_mask_2d.dtype,
-                    ),
-                ],
-                dim=-1,
+            current_attention_mask_2d = decode_attention_mask_view(
+                attention_mask_buffer,
+                prefill_seq_len=int(stage_state["prefill_seq_len"]),
+                step_idx=int(step_payload),
             )
             decode_state = _build_runtime_only_text_generate_phase_state(
                 stage_state,
@@ -1807,6 +1837,8 @@ def _run_text_generate_hybrid_rank(
                 attention_mask_2d=current_attention_mask_2d,
                 config_spec=runtime_only_context["config_spec"],
                 rotary_emb=runtime_only_context["rotary_emb"],
+                decode_input_ids_buffer=decode_input_ids_buffer,
+                mm_dummy_embed_tokens_weight=mm_dummy_embed_tokens_weight,
             )
         else:
             decode_state = build_generate_phase_state(

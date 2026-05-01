@@ -24,6 +24,10 @@ from qwen3vl_tp_runtime.hexgen_core import (
     run_text_generate_pipeline_rank,
     run_text_pipeline_rank,
 )
+from qwen3vl_tp_runtime.hexgen_core.distributed import (
+    set_transport_pin_memory_enabled,
+    transport_pin_memory_enabled,
+)
 from qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel import TextHybridRunner
 from qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel import run_tensor_parallel_rank
 from qwen3vl_tp_runtime.debug.tp_debug import TpDebugConfig
@@ -395,6 +399,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--comm-dtype", choices=["auto", "float16", "float32", "bfloat16"], default="bfloat16")
     parser.add_argument("--device", choices=["cpu", "cuda"], default="cuda")
     parser.add_argument("--topk", type=int, default=5)
+    parser.add_argument(
+        "--transport-pin-memory",
+        action="store_true",
+        default=transport_pin_memory_enabled(),
+        help=(
+            "Opt-in experiment: use best-effort pinned CPU staging buffers for "
+            "Gloo transport and record pin-memory usage in runtime_metrics."
+        ),
+    )
 
     parser.add_argument("--tp-attn-math", choices=["orig", "float32", "bfloat16"], default="orig")
     parser.add_argument("--tp-mlp-math", choices=["orig", "float32", "bfloat16"], default="orig")
@@ -448,6 +461,7 @@ def run_args(args: argparse.Namespace, parser: argparse.ArgumentParser | None = 
     _require_debug_path_opt_in(parser, args)
     _validate_args(parser, args)
     _emit_debug_path_warnings(args)
+    set_transport_pin_memory_enabled(args.transport_pin_memory)
 
     if args.backend == "hf":
         _run_hf_generate(args)

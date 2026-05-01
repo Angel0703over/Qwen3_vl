@@ -61,6 +61,25 @@ class RuntimeCliModesTest(unittest.TestCase):
 
         self.assertEqual(args.comm_dtype, "bfloat16")
 
+    def test_transport_pin_memory_is_opt_in(self) -> None:
+        parser = build_parser()
+        base_args = [
+            "--modality",
+            "text",
+            "--mode",
+            "generate",
+            "--backend",
+            "tp",
+            "--tp",
+            "2",
+        ]
+
+        default_args = parser.parse_args(base_args)
+        pinned_args = parser.parse_args([*base_args, "--transport-pin-memory"])
+
+        self.assertFalse(default_args.transport_pin_memory)
+        self.assertTrue(pinned_args.transport_pin_memory)
+
     def test_even_stage_ranges_split_model_layers_by_pp_degree(self) -> None:
         self.assertEqual(build_even_stage_ranges(num_layers=36, pp_degree=2), ["0:17", "18:35"])
         self.assertEqual(build_even_stage_ranges(num_layers=37, pp_degree=2), ["0:18", "19:36"])
