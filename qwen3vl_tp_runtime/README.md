@@ -30,8 +30,10 @@ Qwen3-VL 分布式推理 runtime 原型。主路径支持 `pp`、`tp`、`hybrid`
 
 - `--stage-ranges 0:17 18:35`
 - `--tp-degrees 2 1`
+- `--video-path /path/to/video.mp4`：完整视频文件输入；本地文件先用 `ffmpeg` 抽临时帧，再进 Qwen processor。不传时继续使用 `--frame-dir + --num-frames`。
+- `--video-fps 2.0` 或 `--video-nframes 8`：完整视频采样参数，二选一。
 - `--transport-pin-memory`：实验性 pinned CPU transport staging，默认关闭。
-- `--video-kv-compression none|uniform|swa`：实验性 video KV selector stats，默认 `none`，不修改 KV。
+- `--video-kv-compression none|uniform|swa|infinipot-v`：实验性 video KV compaction，默认 `none` 不修改 KV。
 - `--video-kv-keep-ratio 0.5` 或 `--video-kv-keep-tokens-per-window 72`：selector budget，二选一。
 
 ## 当前状态
@@ -45,7 +47,8 @@ Qwen3-VL 分布式推理 runtime 原型。主路径支持 `pp`、`tp`、`hybrid`
 | HYBRID | PP+TP 组合层，runtime input 已收口到 `hybrid_runtime_inputs_v1` |
 | transport payload | 不传 root/full/replay payload，不传 dense derived attention/RoPE tensor |
 | comm dtype | 默认 `bfloat16` |
-| KV cache | 20A `StageKVCache`、20B `VideoWindowCacheIndex`、20C-1 `uniform/swa` planner-only selector 已通过验证 |
+| KV cache | 20A `StageKVCache`、20B `VideoWindowCacheIndex`、20C-4 `infinipot-v` opt-in compaction 已通过真实 Jetson smoke；阶段先冻结到这里 |
+| 完整视频输入 | `--video-path` 已通过 HF/PP/TP/HYBRID smoke；frame-dir 旧路径回归不变 |
 
 ## 修改效果
 
@@ -63,6 +66,10 @@ Qwen3-VL 分布式推理 runtime 原型。主路径支持 `pp`、`tp`、`hybrid`
 | Step 20B video window cache | 无 window -> KV location 索引 | runtime-only multimodal prefill stats 记录窗口 metadata |
 | Step 20C-0 video KV planner | 无窗口内压缩 plan | prefill stats 记录 planner-only `video_kv_compression_plan`，不改 KV |
 | Step 20C-1 video KV selector | 只能记录 all tokens | opt-in `uniform/swa` selected token stats；真实 KV 不变 |
+| Step 20C-2 compression contract | selector 只有 token stats | prefill stats 记录 `video_kv_compression_contract_v1`，明确 physical KV length、mask key length 和 logical position 语义 |
+| Step 20C-3 opt-in compaction | selector 只做统计 | `uniform` opt-in 后 active KV bytes 约减半；默认 `none` 不变 |
+| Step 20C-4 InfiniPot-V selector | `uniform/swa` 只按 token range 选 token | `infinipot-v` 用本地 K/V value-norm + TaR 打分，active KV bytes 约减半 |
+| Step 21 full video input | 只能直接使用准备好的 frame 目录 | `--video-path` 完整视频输入跑通，startup payload 不传原始视频/frame bytes |
 | PP/HYBRID worker wrapper | `GenerateWorker/DecodeWorker` 薄封装 | 直接调用 phase impl |
 | transport 旧别名 | `StageHandoffTransport` 兼容 subclass | 统一 `StageCommunicator` |
 | HYBRID helper 命名 | `runtime_input` helper | vLLM-style `model_input` helper |
@@ -84,13 +91,17 @@ Qwen3-VL 分布式推理 runtime 原型。主路径支持 `pp`、`tp`、`hybrid`
 - `hexgen_core/schema.py`：manifest、rank context、runtime input schema。
 - `models/qwen3vl/execution/kv_cache.py`：runtime-only 连续 KV buffer。
 - `models/qwen3vl/execution/video_window_cache.py`：video window metadata 和 `window -> KV location` 索引。
-- `models/qwen3vl/execution/video_kv_compression.py`：planner-only video KV compression stats，不修改 KV。
+- `models/qwen3vl/execution/video_kv_compression.py`：video KV compression plan、contract 和 opt-in `StageKVCache` compaction。
 - `models/qwen3vl/runtime_builder.py`：从 `model_path` 构建 stage/rank `StageState`。
 - `models/qwen3vl/runtime_mm_stage.py`：multimodal shared/runtime tensor rebuild。
 - `models/qwen3vl/runtime_text_stage.py`：text runtime input rebuild 和 stage materialization。
 - `models/qwen3vl/weights/`：权重 index、load plan、TP shard slicing。
 - `scripts/runtime.py`：统一 CLI 入口。
 - `scripts/helpers/`：稳定 smoke wrapper。
+- `scripts/helpers/run-step22-smoke-matrix.sh`：Step 22 一键 smoke matrix runner，生成 baseline 目录、checker 输出和 perf table。
+- `scripts/smoke_matrix.py`：Step 22 固定 smoke 矩阵和 expected generated ids/text。
+- `scripts/check_baseline_logs.py`：baseline checker，验证 generated、rank、transport bytes、consume-only 和 TP shard。
+- `scripts/collect_runtime_perf.py`：baseline perf collector，统一生成 total/startup/handoff/TP collective/CUDA peak/loaded weights/stage KV bytes 表格。
 
 ## 调试路径
 

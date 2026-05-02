@@ -853,6 +853,7 @@ def build_mm_decode_state_from_weights(
     device: torch.device,
     compute_dtype: torch.dtype,
     rotary_emb=None,
+    logical_position_start: int | None = None,
 ) -> MmRuntimeState:
     decode_input_ids = decode_input_ids.to(device=device)
     attention_mask_2d = attention_mask_2d.to(device=device)
@@ -869,6 +870,7 @@ def build_mm_decode_state_from_weights(
         decode_input_ids=decode_input_ids,
         attention_mask_2d=attention_mask_2d,
         rope_deltas=rope_deltas,
+        logical_position_start=logical_position_start,
     )
     attention_mask = build_text_causal_mask(
         inputs_embeds,

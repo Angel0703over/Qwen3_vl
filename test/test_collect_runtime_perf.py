@@ -27,6 +27,13 @@ class CollectRuntimePerfTest(unittest.TestCase):
                                 "pipeline_type": "text_generate",
                                 "generated_token_ids": [1, 2],
                                 "generated_text": "ok",
+                                "prefill": {
+                                    "stage_kv_cache": {
+                                        "max_seq_len": 20,
+                                        "allocated_layers": 36,
+                                        "tensor_bytes": 4096,
+                                    },
+                                },
                                 "weight_load": {
                                     "loaded_weight_tensor_bytes": 2048,
                                     "tp_weight_sharded": True,
@@ -48,7 +55,10 @@ class CollectRuntimePerfTest(unittest.TestCase):
         self.assertEqual(record["timing"]["prepare_session_seconds"], 0.58)
         self.assertEqual(record["timing"]["materialize_stage_seconds"], 0.03)
         self.assertEqual(record["weight_load"]["loaded_weight_tensor_bytes"], 2048)
-        self.assertIn("tp-text-generate", records_to_markdown(records))
+        self.assertEqual(record["stage_kv_cache"]["tensor_bytes"], 4096)
+        markdown = records_to_markdown(records)
+        self.assertIn("stage KV bytes", markdown)
+        self.assertIn("4.00 KiB", markdown)
 
     def test_prefers_runtime_metrics_from_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -138,6 +148,20 @@ class CollectRuntimePerfTest(unittest.TestCase):
                                 "peak_reserved_bytes": 2048,
                             },
                         },
+                        "prefill": {
+                            "stage_kv_cache": {
+                                "max_seq_len": 10,
+                                "allocated_layers": 2,
+                                "tensor_bytes": 1000,
+                                "active_tensor_bytes": 800,
+                            },
+                            "stage_kv_cache_after_compaction": {
+                                "max_seq_len": 10,
+                                "allocated_layers": 2,
+                                "tensor_bytes": 1000,
+                                "active_tensor_bytes": 400,
+                            },
+                        },
                     }
                 ),
                 encoding="utf-8",
@@ -193,6 +217,9 @@ class CollectRuntimePerfTest(unittest.TestCase):
             },
         )
         self.assertEqual(records[0]["memory"]["cuda_peak_allocated_bytes"], 1024)
+        self.assertEqual(records[0]["stage_kv_cache"]["tensor_bytes"], 1000)
+        self.assertEqual(records[0]["stage_kv_cache"]["active_tensor_bytes"], 400)
+        self.assertIn("400 B / 1000 B", records_to_markdown(records))
 
 
 if __name__ == "__main__":

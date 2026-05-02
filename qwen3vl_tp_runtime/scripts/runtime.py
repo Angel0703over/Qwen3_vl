@@ -37,7 +37,7 @@ from qwen3vl_tp_runtime.models.qwen3vl import (
     build_direct_tp_manifest,
 )
 from qwen3vl_tp_runtime.models.qwen3vl.processing import (
-    build_inputs,
+    build_inputs_with_metadata,
     build_text_inputs,
     list_frames,
     load_model,
@@ -83,6 +83,15 @@ def _build_script_namespace(args: argparse.Namespace) -> argparse.Namespace:
         prompt=args.prompt,
         num_frames=args.num_frames,
         frame_dir=args.frame_dir,
+        video_path=args.video_path,
+        video_url=args.video_url,
+        video_fps=args.video_fps,
+        video_nframes=args.video_nframes,
+        video_start=args.video_start,
+        video_end=args.video_end,
+        video_min_frames=args.video_min_frames,
+        video_max_frames=args.video_max_frames,
+        sample_fps=args.sample_fps,
         decode_token_id=args.decode_token_id,
         max_new_tokens=args.max_new_tokens,
         stage_ranges=args.stage_ranges,
@@ -127,16 +136,30 @@ def _run_hf_generate(args: argparse.Namespace) -> None:
     device = next(model.parameters()).device
 
     if args.modality == "multimodal":
-        frame_paths = list_frames(args.num_frames, args.frame_dir)
-        inputs = build_inputs(
+        if args.video_path is None and args.video_url is None:
+            frame_paths = list_frames(args.num_frames, args.frame_dir)
+            frame_paths_for_builder = frame_paths
+        else:
+            frame_paths = []
+            frame_paths_for_builder = None
+        inputs, video_input_metadata = build_inputs_with_metadata(
             processor,
-            frame_paths,
+            frame_paths_for_builder,
+            video_path=args.video_path,
+            video_url=args.video_url,
             prompt=args.prompt,
             sample_fps=args.sample_fps,
+            video_fps=args.video_fps,
+            video_nframes=args.video_nframes,
+            video_start=args.video_start,
+            video_end=args.video_end,
+            video_min_frames=args.video_min_frames,
+            video_max_frames=args.video_max_frames,
             add_generation_prompt=True,
         )
     else:
         frame_paths = []
+        video_input_metadata = None
         inputs = build_text_inputs(
             processor,
             args.prompt,
@@ -179,9 +202,10 @@ def _run_hf_generate(args: argparse.Namespace) -> None:
         "generated_text": decoded_texts[0] if decoded_texts else "",
     }
     if args.modality == "multimodal":
-        summary["num_frames"] = len(frame_paths)
+        summary["num_frames"] = int(video_input_metadata.get("frame_count") or len(frame_paths))
         summary["frame_paths"] = frame_paths
         summary["sample_fps"] = args.sample_fps
+        summary["video_input"] = video_input_metadata
 
     summary = _attach_runtime_metrics(
         summary,
@@ -333,6 +357,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--frame-dir", type=str, default=FRAME_DIR)
     parser.add_argument("--num-frames", type=int, default=8)
     parser.add_argument("--sample-fps", type=int, default=1)
+    parser.add_argument("--video-path", type=str, default=None)
+    parser.add_argument("--video-url", type=str, default=None)
+    parser.add_argument("--video-fps", type=float, default=None)
+    parser.add_argument("--video-nframes", type=int, default=None)
+    parser.add_argument("--video-start", type=float, default=None)
+    parser.add_argument("--video-end", type=float, default=None)
+    parser.add_argument("--video-min-frames", type=int, default=None)
+    parser.add_argument("--video-max-frames", type=int, default=None)
     parser.add_argument("--prompt", type=str, default="请用中文简要介绍一下人工智能。")
     parser.add_argument("--decode-token-id", type=int, default=None)
     parser.add_argument("--max-new-tokens", type=int, default=4)
@@ -410,11 +442,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--video-kv-compression",
-        choices=["none", "uniform", "swa"],
+        choices=["none", "uniform", "swa", "infinipot-v"],
         default="none",
         help=(
-            "Planner-only opt-in video KV selector. Default 'none' records all "
-            "video tokens and does not mutate KV."
+            "Opt-in runtime-only video KV compaction selector. Default 'none' "
+            "records all video tokens and does not mutate KV. 'infinipot-v' "
+            "uses local K/V value-norm plus recent-query TaR scores."
         ),
     )
     parser.add_argument(
@@ -422,8 +455,8 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=None,
         help=(
-            "Planner-only video KV keep ratio for --video-kv-compression "
-            "uniform|swa. If omitted for an opt-in selector, defaults to 0.5."
+            "Video KV keep ratio for --video-kv-compression "
+            "uniform|swa|infinipot-v. If omitted for an opt-in selector, defaults to 0.5."
         ),
     )
     parser.add_argument(
@@ -431,7 +464,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help=(
-            "Planner-only absolute keep token budget per video window. "
+            "Absolute keep token budget per video window. "
             "Mutually exclusive with --video-kv-keep-ratio."
         ),
     )

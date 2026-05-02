@@ -17,7 +17,7 @@
 
 ## Before / After
 
-before 对照目录：`baseline_runs/20260430-step15-payload-profile/`。
+before 对照来自旧 payload profile 记录；该旧 profile 已移出 `baseline_runs/`，这里只保留最终 derived rebuild baseline。
 
 | path | before keys / tensor bytes | after keys / tensor bytes | removed |
 | --- | ---: | ---: | --- |

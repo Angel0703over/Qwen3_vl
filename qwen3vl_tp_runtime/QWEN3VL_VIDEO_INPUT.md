@@ -4,7 +4,7 @@
 
 ## 结论
 
-当前项目已经走了 Qwen 官方支持的“预抽帧列表”路径：
+当前项目已经支持两条路径：
 
 ```text
 frame_dir/*.jpg
@@ -12,7 +12,16 @@ frame_dir/*.jpg
   -> processor(...)
   -> pixel_values_videos / video_grid_thw / mm_token_type_ids
   -> frontend_state
+
+video_path
+  -> ffmpeg_frame_adapter 或 pyav_frame_adapter 抽临时帧
+  -> qwen_vl_utils.process_vision_info
+  -> processor(...)
+  -> pixel_values_videos / video_grid_thw / mm_token_type_ids
+  -> frontend_state
 ```
+
+真实 Jetson baseline 见 `baseline_runs/20260502-step21-video-input/`：`test/demo.mp4 --video-nframes 4` 已通过 HF/PP/TP/HYBRID smoke，frame-dir 旧路径回归不变。
 
 如果要支持真实完整视频，Qwen3-VL 的推荐入口不是先手写抽帧脚本，而是把 message 里的 `video` 改成视频路径或 URL：
 
@@ -196,7 +205,15 @@ image_grid_thw / video_grid_thw
 
 当前项目只需要在 input builder 层扩展，不应该改变 PP/TP/HYBRID 主路径。
 
-建议新增 runtime config / CLI 字段：
+当前代码已完成第一版接入：
+
+- `models/qwen3vl/processing/builders.py`：`VideoInputSpec`、`build_video_messages`、`build_inputs_with_metadata`。
+- `scripts/runtime.py`：支持 `--video-path` / `--video-url` 和 Qwen 采样参数。
+- `scripts/helpers/run-*-mm-generate.sh`：支持 `VIDEO_PATH` / `VIDEO_URL` 环境变量。
+- 本地 `video_path` 第一版使用 `ffmpeg` media adapter 抽临时帧，再交给 Qwen processor；这是为了绕开当前 Jetson 环境里 `torchvision/av` reader 卡住的问题。
+- 分布式路径仍只让 stage0 / input-owner 跑 video decode 和视觉 frontend。
+
+已接入 runtime config / CLI 字段：
 
 - `video_path`
 - `video_url`
@@ -213,8 +230,11 @@ image_grid_thw / video_grid_thw
 frame_paths != None:
   video = ["file://frame0.jpg", "file://frame1.jpg", ...]
 
-video_path/video_url != None:
-  video = "/path/to/video.mp4" 或 "https://..."
+video_path != None:
+  ffmpeg 临时抽帧 -> video = ["file://frame0.jpg", ...]
+
+video_url != None:
+  video = "https://..."
 ```
 
 其他逻辑保持一致：

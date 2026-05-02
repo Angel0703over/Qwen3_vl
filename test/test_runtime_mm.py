@@ -524,8 +524,8 @@ class RuntimeMmTest(unittest.TestCase):
             "qwen3vl_tp_runtime.models.qwen3vl.vision.runtime.list_frames",
             return_value=["/tmp/f0.png", "/tmp/f1.png"],
         ) as list_frames_mock, patch(
-            "qwen3vl_tp_runtime.models.qwen3vl.vision.runtime.build_inputs",
-            return_value=fake_inputs,
+            "qwen3vl_tp_runtime.models.qwen3vl.vision.runtime.build_inputs_with_metadata",
+            return_value=(fake_inputs, {"frame_count": 2}),
         ) as build_inputs_mock:
             batch = build_mm_frontend_batch(
                 {
@@ -537,10 +537,70 @@ class RuntimeMmTest(unittest.TestCase):
 
         load_processor_mock.assert_called_once_with("/tmp/fake-model")
         list_frames_mock.assert_called_once_with(2, "/tmp/frames")
-        build_inputs_mock.assert_called_once_with(fake_processor, ["/tmp/f0.png", "/tmp/f1.png"])
+        build_inputs_mock.assert_called_once_with(
+            fake_processor,
+            ["/tmp/f0.png", "/tmp/f1.png"],
+            video_path=None,
+            video_url=None,
+            sample_fps=1,
+            video_fps=None,
+            video_nframes=None,
+            video_start=None,
+            video_end=None,
+            video_min_frames=None,
+            video_max_frames=None,
+        )
         self.assertIs(batch.raw_inputs, fake_inputs)
         self.assertEqual(batch.frame_paths, ["/tmp/f0.png", "/tmp/f1.png"])
         self.assertEqual(batch.num_frames, 2)
+
+    def test_build_mm_frontend_batch_uses_full_video_without_listing_frames(self) -> None:
+        from qwen3vl_tp_runtime.models.qwen3vl.vision.runtime import build_mm_frontend_batch
+
+        fake_processor = object()
+        fake_inputs = _FakeBatch(input_ids=torch.tensor([[1, 2, 3]], dtype=torch.long))
+        with patch(
+            "qwen3vl_tp_runtime.models.qwen3vl.vision.runtime.load_processor",
+            return_value=fake_processor,
+        ), patch(
+            "qwen3vl_tp_runtime.models.qwen3vl.vision.runtime.list_frames",
+        ) as list_frames_mock, patch(
+            "qwen3vl_tp_runtime.models.qwen3vl.vision.runtime.build_inputs_with_metadata",
+            return_value=(
+                fake_inputs,
+                {
+                    "source": "video_path",
+                    "frame_count": 6,
+                    "video_path_basename": "sample.mp4",
+                },
+            ),
+        ) as build_inputs_mock:
+            batch = build_mm_frontend_batch(
+                {
+                    "model_path": "/tmp/fake-model",
+                    "video_path": "/tmp/sample.mp4",
+                    "video_nframes": 6,
+                }
+            )
+
+        list_frames_mock.assert_not_called()
+        build_inputs_mock.assert_called_once_with(
+            fake_processor,
+            None,
+            video_path="/tmp/sample.mp4",
+            video_url=None,
+            sample_fps=1,
+            video_fps=None,
+            video_nframes=6,
+            video_start=None,
+            video_end=None,
+            video_min_frames=None,
+            video_max_frames=None,
+        )
+        self.assertIs(batch.raw_inputs, fake_inputs)
+        self.assertEqual(batch.frame_paths, [])
+        self.assertEqual(batch.num_frames, 6)
+        self.assertEqual(batch.video_input_metadata["video_path_basename"], "sample.mp4")
 
     def test_prepare_mm_frontend_plan_parts_builds_plan_from_runtime_batch(self) -> None:
         from qwen3vl_tp_runtime.models.qwen3vl.vision.runtime import prepare_mm_frontend_plan_parts

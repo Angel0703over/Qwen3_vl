@@ -1,21 +1,24 @@
 # qwen3vl_tp_runtime Baseline
 
-这份文档只记录当前要拿来回归的 baseline、关键 before/after 效果和验收字段。历史细节留在 `baseline_runs/*/README.md` 和 rank logs 里。
+这份文档只保留当前回归要看的 baseline、关键 before/after 和验收字段。每轮完整表格、rank log 和原始 JSON 保留在 `baseline_runs/*/README.md`。
 
 ## 推荐对照目录
 
 | 目的 | 目录 | 用途 |
 | --- | --- | --- |
 | correctness baseline | `baseline_runs/20260428/` | 固定 generated ids/text |
-| 长期目标 profile | `baseline_runs/20260429-longterm-profile/` | TP/HYBRID direct runtime、weight shard、payload/perf |
 | 当前性能 baseline | `baseline_runs/20260430-bfloat16-default/` | `bfloat16` 默认通信 dtype 后的性能 |
-| Step 15 payload baseline | `baseline_runs/20260430-step15-derived-rebuild/` | 最新 multimodal payload keys/bytes |
+| Step 15 payload baseline | `baseline_runs/20260430-step15-derived-rebuild/` | multimodal payload keys/bytes |
 | Step 16 pinned A/B | `baseline_runs/20260501-step16-pinned-ab/` | decode buffer reuse 后的 pinned memory opt-in 对照 |
-| Step 20A KV cache smoke | `baseline_runs/20260501-step20a-kv-cache-smoke/` | `StageKVCache` 真实 Jetson correctness/perf |
-| Step 20A KV cache long decode | `baseline_runs/20260501-step20a-kv-cache-long-decode/` | `MAX_NEW_TOKENS=16` 的长 decode profile |
+| Step 20A KV cache smoke | `baseline_runs/20260501-step20a-kv-cache-smoke/` | `StageKVCache` correctness/perf |
+| Step 20A long decode | `baseline_runs/20260501-step20a-kv-cache-long-decode/` | `MAX_NEW_TOKENS=16` profile |
 | Step 20B video window cache | `baseline_runs/20260501-step20b-video-window-cache/` | `VideoWindowCacheIndex` metadata correctness/perf |
-| Step 20C-0 video KV planner | `baseline_runs/20260501-step20c0-video-kv-plan/` | planner-only `video_kv_compression_plan` correctness/perf |
-| Step 20C-1 video KV selector | `baseline_runs/20260501-step20c1-selector/` | opt-in `uniform/swa` selected token stats |
+| Step 20C-0 planner | `baseline_runs/20260501-step20c0-video-kv-plan/` | planner-only compression plan |
+| Step 20C-1 selector | `baseline_runs/20260501-step20c1-selector/` | `uniform/swa` selected token stats |
+| Step 20C-3 compaction | `baseline_runs/20260502-step20c3-compaction/` | `uniform` opt-in physical compaction |
+| Step 20C-4 InfiniPot-V selector | `baseline_runs/20260502-step20c4-infinipot-selector/` | `infinipot-v` opt-in local K/V scoring |
+| Step 21 full video input | `baseline_runs/20260502-step21-video-input/` | `--video-path` 完整视频输入 |
+| Step 22 smoke automation | `baseline_runs/20260502-step22-2node-smoke/` | 2-node smoke matrix 子集，checker/perf table 产物完整 |
 
 ## 固定输出
 
@@ -27,7 +30,7 @@
 
 ## 当前性能快照
 
-主要来自 `baseline_runs/20260430-bfloat16-default/runtime-perf-table.md`。
+来自 `baseline_runs/20260430-bfloat16-default/runtime-perf-table.md`。
 
 | case | rank | total s | startup bytes | scaffold bytes | handoff bytes | TP coll s | TP coll bytes | CUDA peak | loaded weights |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -53,175 +56,96 @@
 | --- | ---: | ---: | --- |
 | startup contract 移除 `stage_output` | `13` tensors / `7,563,328` bytes | `12` tensors / `4,353,088` bytes | 少传 reference output |
 | startup contract 移除 dense derived tensor | `12` tensors / `4,353,088` bytes | `9` tensors / `3,245,806` bytes | `attention_mask/cos/sin` 本地重建 |
-| HYBRID stage1 `tp_degree=1` bypass | `648.46 MiB` TP collective / `1.525s` | `0 B` / `0s` | 清掉 single-rank 伪 collective |
-| pure TP comm dtype | `449.12 MiB` / `44-45s` collective | `224.56 MiB` / `24-25s` opt-in | generated ids/text 不变 |
-| `bfloat16` 默认落地 | 需要显式 `--comm-dtype bfloat16` | 默认 `torch.bfloat16` | `tp-mm` 默认 collective `221.48 MiB` |
-| pure TP runtime input broadcast | `4` events / `6,451,200` bytes per rank | `0` events / `0` bytes | 本地 embedding 或 local stage input |
-| Step 15 空 tensor slot | `tp-mm`: `12` keys / `12,093,371` bytes | `11` keys / `12,093,371` bytes | key count 下降，bytes 不变 |
-| Step 15 derived shared | `tp-mm`: `11` keys / `12,093,371` bytes | `9` keys / `12,068,291` bytes | 少 `25,080` bytes |
-| Step 15 hybrid stage1 startup | `7` keys / `3,245,384` bytes | `5` keys / `3,220,304` bytes | 少 `25,080` bytes |
-| Step 16 decode 小 tensor | 每 step 追加 attention mask / 新建 token tensor | 预分配 decode mask buffer / 复用 token buffer | payload bytes 不变，减少 decode loop 小分配 |
-| Step 16 pinned memory | 无开关 | `--transport-pin-memory` opt-in | TP 小幅变快，CUDA peak allocated 不变，默认关闭 |
-| vLLM-style 函数命名 | HYBRID helper 叫 `runtime_input` | 内部 helper 改为 `model_input` | wire protocol 和 bytes 不变 |
-| Step 20B video window cache | 无 window -> KV location 索引 | prefill stats 输出 `video_window_cache` | 只加 metadata，generated ids/text 不变 |
-| Step 20C-1 video KV selector | `method=none` 只保留 all tokens | opt-in `uniform/swa` 记录 selected token stats | 真实 KV 不变；`uniform` 预计可保留一半 video KV |
+| HYBRID stage1 `tp_degree=1` bypass | `648.46 MiB` TP collective | `0 B` | 清掉 single-rank 伪 collective |
+| pure TP comm dtype | `449.12 MiB` collective | `221.48 MiB` collective | 默认 `bfloat16` |
+| pure TP runtime input broadcast | `4` events / rank | `0` events | 本地 embedding 或 local stage input |
+| Step 15 derived shared | `12,093,371` bytes | `12,068,291` bytes | 少传可重建 shared tensors |
+| Step 16 decode 小 tensor | 每 step 新建 mask/token tensor | 复用 decode mask/token buffer | 减少小分配 |
+| Step 16 pinned memory | 无开关 | `--transport-pin-memory` | 小幅收益，默认关闭 |
+| Step 20A KV cache | decode `torch.cat` + clone cache | `StageKVCache` append/view | 输出不变 |
+| Step 20B video window cache | 无 window 索引 | 记录 `window -> KV location` metadata | 输出不变 |
+| Step 20C-3 `uniform` compaction | selector 只做统计 | opt-in 物理 compact 本地 KV | active KV bytes 约减半 |
+| Step 20C-4 `infinipot-v` selector | range-based token selection | 本地 K/V value-norm + TaR scoring | active KV bytes 约减半 |
 
-## Step 16 Pinned Memory A/B
+## Step 20 KV 管理 Baseline
 
-目录：`baseline_runs/20260501-step16-pinned-ab/`。
+| 阶段 | case | 关键结果 |
+| --- | --- | --- |
+| 20A | `tp-text-generate` | `stage_kv_cache.tensor_bytes=1,474,560` / rank，输出不变 |
+| 20A | `tp-mm-generate` | `stage_kv_cache.tensor_bytes=46,522,368` / rank，输出不变 |
+| 20A | `hybrid-mm-generate` | stage0 `23,261,184` bytes，stage1 `46,522,368` bytes，输出不变 |
+| 20A long | `tp-mm MAX_NEW_TOKENS=16` | `stage_kv_cache.tensor_bytes=47,407,104` / rank，输出不变 |
+| 20B | `tp-mm` / `hybrid-mm` | 每 rank `4` windows / `576` video tokens，只记录 metadata |
+| 20C-0 | planner | `method=none`，`576 / 576 / 0` original/keep/drop，不改 KV |
+| 20C-1 | selector | `uniform keep_ratio=0.5` 计划 `576 / 288 / 288`，不改 KV |
+| 20C-2 | contract | 固化 physical KV length、attention mask key length、logical position 规则 |
+| 20C-3 | `uniform` compaction | prefill physical length `627 -> 339`，输出不变 |
+| 20C-4 | `infinipot-v` selector | score 来自本地 K/V，输出不变 |
 
-| case | rank | total s | TP coll s | startup/scaffold/handoff | TP coll bytes | CUDA peak alloc/reserved | pin used | correctness |
-| --- | ---: | ---: | ---: | --- | ---: | --- | ---: | --- |
-| `tp-mm-generate-step16-default-j23` | 0 | `53.47` | `24.34` | `11.51 MiB / 0 B / 0 B` | `221.48 MiB` | `6.53 / 6.74 GiB` | `0` | pass |
-| `tp-mm-generate-step16-default-j23` | 1 | `53.21` | `23.76` | `11.51 MiB / 0 B / 0 B` | `221.48 MiB` | `6.52 / 6.73 GiB` | `0` | pass |
-| `tp-mm-generate-step16-pinned-j23` | 0 | `53.01` | `23.91` | `11.51 MiB / 0 B / 0 B` | `221.48 MiB` | `6.53 / 6.74 GiB` | `289` | pass |
-| `tp-mm-generate-step16-pinned-j23` | 1 | `52.97` | `23.51` | `11.51 MiB / 0 B / 0 B` | `221.48 MiB` | `6.52 / 6.73 GiB` | `289` | pass |
-| `hybrid-mm-generate-step16-default-j23shared` | 0/1/2 | `32.69-32.85` | `2.25 / 1.58 / 0.00` | bytes unchanged | `113.82 MiB / 113.82 MiB / 0 B` | unchanged | `0` | pass |
-| `hybrid-mm-generate-step16-pinned-j23shared` | 0/1/2 | `32.80-32.96` | `2.27 / 1.49 / 0.00` | bytes unchanged | `113.82 MiB / 113.82 MiB / 0 B` | unchanged | `154 / 149 / 1` | pass |
+## Step 20C Compaction 对照
 
-结论：
-
-- generated ids/text 固定为 `[87140, 15946, 3837, 101177]` / `视频中，一名`。
-- `--transport-pin-memory` 不改变 payload bytes、TP collective bytes 或 weight shard scope。
-- 纯 TP total time 小幅下降约 `0.24-0.46s`，TP collective time 小幅下降约 `0.25-0.43s`。
-- CUDA peak allocated 不上升；TP rank0 reserved 约多 `2 MiB`。
-- HYBRID A/B 因 rank0/rank1 共用 jetson2，只作为功能性验证。
-- 当前收益不大，保持默认关闭。
-
-## Step 20A KV Cache Smoke
-
-目录：`baseline_runs/20260501-step20a-kv-cache-smoke/`。
-
-| case | rank | total s | CUDA peak | `stage_kv_cache.tensor_bytes` | generated |
-| --- | ---: | ---: | ---: | ---: | --- |
-| `tp-text-generate-step20a` | 0 | `9.07` | `4.91 GiB` | `1,474,560` | pass |
-| `tp-text-generate-step20a` | 1 | `8.96` | `4.91 GiB` | `1,474,560` | pass |
-| `tp-mm-generate-step20a` | 0 | `53.44` | `6.53 GiB` | `46,522,368` | pass |
-| `tp-mm-generate-step20a` | 1 | `53.36` | `6.52 GiB` | `46,522,368` | pass |
-| `hybrid-mm-generate-step20a` | 0 | `32.51` | `3.73 GiB` | `23,261,184` | pass |
-| `hybrid-mm-generate-step20a` | 1 | `32.55` | `3.23 GiB` | `23,261,184` | pass |
-| `hybrid-mm-generate-step20a` | 2 | `32.62` | `5.47 GiB` | `46,522,368` | pass |
+| case | method | rank | total s | CUDA peak | TP coll | active KV before -> after | video tokens | generated |
+| --- | --- | ---: | ---: | ---: | --- | ---: | --- | --- |
+| `tp-mm-generate-step20c3-uniform-j23` | `uniform` | 0/1 | `53.69` | `6.52-6.53 GiB` | `24.10-24.72s / 221.48 MiB` | `46,227,456 -> 24,993,792` | `576 -> 288` | pass |
+| `hybrid-mm-generate-step20c3-uniform-j23shared` | `uniform` | 0/1/2 | `32.37-32.49` | `3.23-5.47 GiB` | stage0 `113.82 MiB`，stage1 `0 B` | stage0 `23,113,728 -> 12,496,896`，stage1 `46,227,456 -> 24,993,792` | `576 -> 288` | pass |
+| `tp-mm-generate-step20c4-infinipot-j23` | `infinipot-v` | 0/1 | `53.52` | `6.53-6.54 GiB` | `23.68-24.48s / 221.48 MiB` | `46,227,456 -> 24,993,792` | `576 -> 288` | pass |
+| `hybrid-mm-generate-step20c4-infinipot-j23shared` | `infinipot-v` | 0/1/2 | `32.81-32.90` | `3.23-5.49 GiB` | stage0 `113.82 MiB`，stage1 `0 B` | stage0 `23,113,728 -> 12,496,896`，stage1 `46,227,456 -> 24,993,792` | `576 -> 288` | pass |
 
 结论：
 
-- text 固定输出 `[104455, 9909, 9286, 16488]` / `人工智能（Artificial`。
-- multimodal 固定输出 `[87140, 15946, 3837, 101177]` / `视频中，一名`。
-- TP ranks 保持 `tp_weight_sharded=true`；HYBRID stage1 rank2 是 `tp_degree=1`，`tp_weight_sharded=false` 和 `TP coll bytes=0 B` 符合预期。
-- CUDA peak 与 `baseline_runs/20260430-bfloat16-default/` 基本持平；KV 预分配 bytes 已由 `stage_kv_cache.tensor_bytes` 记录。
+- `uniform` 和 `infinipot-v` 在当前短 smoke 中都保持固定 multimodal 输出。
+- 两者压缩率相同，active KV bytes 约减半。
+- allocated KV buffer bytes 不变，因为当前仍预分配整块 buffer，只收紧 active length。
+- `infinipot-v` 的 token selection 来自本地 K/V scoring；质量收益需要更长视频和更多问题评估。
 
-长 decode 补充 profile：`baseline_runs/20260501-step20a-kv-cache-long-decode/`。
+## Step 21 完整视频输入 Baseline
 
-| case | rank | total s | CUDA peak | TP coll s | TP coll bytes | `stage_kv_cache.tensor_bytes` |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `tp-mm-generate-long-step20a` | 0 | `62.98` | `6.53 GiB` | `29.17` | `225.70 MiB` | `47,407,104` |
-| `tp-mm-generate-long-step20a` | 1 | `62.94` | `6.52 GiB` | `28.51` | `225.70 MiB` | `47,407,104` |
+来自 `baseline_runs/20260502-step21-video-input/`。输入为 `test/demo.mp4 --video-nframes 4`，Jetson 上使用 `pyav_frame_adapter`，`video_grid_thw=[[2, 40, 74]]`。
 
-长 decode 结论：
+| case | rank | total s | generated ids/text | startup | handoff | TP collective | CUDA peak |
+| --- | ---: | ---: | --- | ---: | ---: | ---: | ---: |
+| `hf-mm-generate-video-builder-prompt` | - | `37.12` | `[87140, 108869, 100369, 102122]` / `视频展示了两个场景` | `0 B` | `0 B` | `0 B` | `9.76 GiB` |
+| `pp-mm-generate-video` | 0/1 | `74.54-76.42` | same | `7.42 MiB` | `7.41 MiB` | `0 B` | `7.44-7.48 GiB` |
+| `tp-mm-generate-video` | 0/1 | `106.15-106.20` | same | `29.10 MiB` | `0 B` | `55.12-55.69s / 533.67 MiB` | `8.85-8.86 GiB` |
+| `hybrid-mm-generate-video-pp2tp1` | 0/1 | `58.76-58.79` | same | `7.42 MiB` | `7.41 MiB` | `0 B` | `7.45-7.50 GiB` |
+| `tp-mm-generate-frame-regression` | 0/1 | `53.06-53.08` | `[87140, 15946, 3837, 101177]` / `视频中，一名` | `11.51 MiB` | `0 B` | `23.84-24.63s / 221.48 MiB` | `6.52-6.53 GiB` |
 
-- 16-token generated ids/text 与固定 baseline 完全一致。
-- 短 decode `max_seq=631` 时 KV bytes 为 `46,522,368`；长 decode `max_seq=643` 时为 `47,407,104`。
-- CUDA peak 和 TP collective bytes 与旧 `tp-mm-generate-long-default-bfloat16` 基本一致；elapsed 小幅波动属于当前 Jetson/Gloo 运行波动范围。
+Payload 结论：
 
-## Step 20B Video Window Cache
+- PP/HYBRID startup contract：`5` tensors，`7,781,072` bytes，keys 为 `shared.input_ids`、`shared.rope_deltas`、`shared.mm_token_type_ids`、`shared.video_grid_thw`、`stage_handoffs.1.stage_input`。
+- TP startup contract：`9` tensors，`30,515,387` bytes，keys 为 shared tensors、`stage_handoffs.0.stage_input`、`stage_visuals.0.visual_pos_masks` 和 `deepstack_by_layer.0/1/2`。
+- 不传原始视频、frame bytes、root/full/replay payload。
+- non-owner rank 为 `multimodal_frontend_mode=consume-only`。
+- `live-mm-generate` 完整视频 trace 15 分钟未产出 JSON，暂不冻结；后续放到代码/API 清理阶段处理。
 
-目录：`baseline_runs/20260501-step20b-video-window-cache/`。
+## Step 22 Smoke Matrix Baseline
 
-本轮只记录窗口 metadata，不压缩、不删除、不回取 KV。
+来自 `baseline_runs/20260502-step22-2node-smoke/`。这轮由 Codex tool shell 作为 controller 启动；该 shell 看不到 jetson1 的 CUDA device nodes，所以先冻结 jetson2/jetson3 的 2-node 子集。物理 jetson1 普通终端 CUDA 可用，3-rank `hybrid-mm-generate` 后续可通过普通登录/SSH 把 jetson1 作为第三 rank 补跑。
 
-| case | rank | stage | TP rank/degree | generated | windows | video tokens | metadata bytes | token ranges | KV owner/layers |
-| --- | ---: | ---: | --- | --- | ---: | ---: | ---: | --- | --- |
-| `tp-mm-generate-step20b` | 0 | 0 | `0/2` | pass | 4 | 576 | 2027 | `10:154 ... 466:610` | rank0 / `0:35` |
-| `tp-mm-generate-step20b` | 1 | 0 | `1/2` | pass | 4 | 576 | 2027 | `10:154 ... 466:610` | rank1 / `0:35` |
-| `hybrid-mm-generate-step20b` | 0 | 0 | `0/2` | pass | 4 | 576 | 2027 | `10:154 ... 466:610` | rank0 / `0:17` |
-| `hybrid-mm-generate-step20b` | 1 | 0 | `1/2` | pass | 4 | 576 | 2027 | `10:154 ... 466:610` | rank1 / `0:17` |
-| `hybrid-mm-generate-step20b` | 2 | 1 | `0/1` | pass | 4 | 576 | 2031 | `10:154 ... 466:610` | rank2 / `18:35` |
+| case | ranks | total s | generated | key metrics |
+| --- | ---: | ---: | --- | --- |
+| `hf-text-generate` | 1 | `8.76` | `[104455, 9909, 9286, 16488]` / `人工智能（Artificial` | CUDA peak `8.28 GiB` |
+| `hf-mm-generate` | 1 | `10.92` | same text output | CUDA peak `8.55 GiB` |
+| `pp-mm-generate` | 2 | `30.25-30.29` | `[87140, 15946, 3837, 101177]` / `视频中，一名` | startup `3.07 MiB`，handoff `3.08 MiB`，stage KV `44.09 / 44.37 MiB` |
+| `tp-mm-generate` | 2 | `52.95-52.99` | same multimodal output | startup `11.51 MiB`，TP collective `23.83-24.42s / 221.48 MiB` |
+| `tp-mm-generate-long` | 2 | `62.03-62.05` | long decode fixed output | TP collective `27.89-28.58s / 225.70 MiB`，stage KV `44.09 / 45.21 MiB` |
+| `tp-mm-generate-frame-regression` | 2 | `52.96-52.97` | same multimodal output | frame-dir 旧路径回归通过 |
 
-Performance:
+产物：
 
-| case | rank | total s | CUDA peak | TP coll s | TP coll bytes | loaded weights |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `tp-mm-generate-step20b` | 0 | `53.28` | `6.53 GiB` | `24.51` | `221.48 MiB` | `4.83 GiB` |
-| `tp-mm-generate-step20b` | 1 | `53.22` | `6.52 GiB` | `23.80` | `221.48 MiB` | `4.83 GiB` |
-| `hybrid-mm-generate-step20b` | 0 | `33.00` | `3.73 GiB` | `2.34` | `113.82 MiB` | `2.42 GiB` |
-| `hybrid-mm-generate-step20b` | 1 | `33.15` | `3.23 GiB` | `1.64` | `113.82 MiB` | `2.42 GiB` |
-| `hybrid-mm-generate-step20b` | 2 | `33.13` | `5.47 GiB` | `0.00` | `0 B` | `4.11 GiB` |
+- `check-smoke-matrix.txt`：全部 PASS。
+- `runtime-perf-records.json` / `runtime-perf-table.md`：已生成统一 perf 表。
+- `collect-runtime-perf.txt`：perf collector 命令日志。
 
-结论：
+## Payload 规则
 
-- `tp-mm` 和 `hybrid-mm` generated ids/text 都固定为 `[87140, 15946, 3837, 101177]` / `视频中，一名`。
-- 每个 rank 都有本地 `video_window_cache` metadata 副本。
-- `video_window_cache` 只进入 JSON stats，不进入 attention/KV 写入路径。
-- `StageKVCache` 行为、TP collective bytes、CUDA peak 与 Step 20A 基本持平。
-
-## Step 20C-0 Video KV Compression Planner
-
-目录：`baseline_runs/20260501-step20c0-video-kv-plan/`。
-
-本轮只记录 planner-only `video_kv_compression_plan`，不压缩、不删除、不回取 KV。
-
-| case | rank | generated | method | windows | original/keep/drop tokens | estimated KV bytes | plan metadata bytes |
-| --- | ---: | --- | --- | ---: | --- | ---: | ---: |
-| `tp-mm-generate-step20c0-j23` | 0 | pass | `none` | 4 | `576 / 576 / 0` | 42,467,328 | 3,463 |
-| `tp-mm-generate-step20c0-j23` | 1 | pass | `none` | 4 | `576 / 576 / 0` | 42,467,328 | 3,463 |
-| `hybrid-mm-generate-step20c0-j23shared` | 0 | pass | `none` | 4 | `576 / 576 / 0` | 21,233,664 | 3,455 |
-| `hybrid-mm-generate-step20c0-j23shared` | 1 | pass | `none` | 4 | `576 / 576 / 0` | 21,233,664 | 3,455 |
-| `hybrid-mm-generate-step20c0-j23shared` | 2 | pass | `none` | 4 | `576 / 576 / 0` | 42,467,328 | 3,467 |
-
-Performance:
-
-| case | rank | total s | CUDA peak | TP coll s | TP coll bytes | loaded weights |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `tp-mm-generate-step20c0-j23` | 0 | `53.43` | `6.53 GiB` | `24.42` | `221.48 MiB` | `4.83 GiB` |
-| `tp-mm-generate-step20c0-j23` | 1 | `53.28` | `6.52 GiB` | `23.71` | `221.48 MiB` | `4.83 GiB` |
-| `hybrid-mm-generate-step20c0-j23shared` | 0 | `32.19` | `3.73 GiB` | `2.04` | `113.82 MiB` | `2.42 GiB` |
-| `hybrid-mm-generate-step20c0-j23shared` | 1 | `32.29` | `3.23 GiB` | `1.60` | `113.82 MiB` | `2.42 GiB` |
-| `hybrid-mm-generate-step20c0-j23shared` | 2 | `32.30` | `5.47 GiB` | `0.00` | `0 B` | `4.11 GiB` |
-
-结论：
-
-- `tp-mm` 和 `hybrid-mm` generated ids/text 都固定为 `[87140, 15946, 3837, 101177]` / `视频中，一名`。
-- `video_kv_compression_plan.schema=video_kv_compression_plan_v1`。
-- `planner_only=true`、`mutates_kv=false`、`compression_enabled=false`。
-- 默认 `method=none`，因此 keep token 等于 original token，estimated savable bytes 为 `0`。
-- 与 Step 20B 相比，新增的是 JSON stats；attention/KV 路径不变。
-
-## Step 20C-1 Video KV Selector
-
-目录：`baseline_runs/20260501-step20c1-selector/`。
-
-本轮实现 opt-in `uniform` / `swa` selector stats，仍不压缩、不删除、不回取 KV。
-
-| case | rank | generated | method | original/keep/drop tokens | keep/savable KV bytes |
-| --- | ---: | --- | --- | --- | ---: |
-| `tp-mm-generate-step20c1-uniform-j23` | 0 | pass | `uniform` | `576 / 288 / 288` | `21,233,664 / 21,233,664` |
-| `tp-mm-generate-step20c1-uniform-j23` | 1 | pass | `uniform` | `576 / 288 / 288` | `21,233,664 / 21,233,664` |
-| `hybrid-mm-generate-step20c1-uniform-j23shared` | 0 | pass | `uniform` | `576 / 288 / 288` | `10,616,832 / 10,616,832` |
-| `hybrid-mm-generate-step20c1-uniform-j23shared` | 1 | pass | `uniform` | `576 / 288 / 288` | `10,616,832 / 10,616,832` |
-| `hybrid-mm-generate-step20c1-uniform-j23shared` | 2 | pass | `uniform` | `576 / 288 / 288` | `21,233,664 / 21,233,664` |
-
-结论：
-
-- generated ids/text 固定为 `[87140, 15946, 3837, 101177]` / `视频中，一名`。
-- `selector_enabled=true`，rank log 有 `selected_token_sample` / `selected_token_ranges`。
-- `uniform` 真实 Jetson TP/HYBRID smoke 通过；`swa` selector 有单测覆盖。
-- HYBRID runtime input schema 已携带 selector 标量字段；tensor bytes 不变。
-- `mutates_kv=false`、`compression_enabled=false`，attention/KV 路径不变。
-
-## Step 15 Payload 结论
-
-已完成：
-
-- `None` tensor slot 不再进入 startup transport。
-- `shared.attention_mask_2d` 仅在全 1 时省略，并在接收端用 `input_ids` 本地重建。
-- `shared.position_ids` 在可由 `input_ids`、`mm_token_type_ids`、grid metadata 和本地 `mm_config` 重建时省略。
-- `attention_mask/cos/sin` 继续保持本地重建，不进入 generate startup contract。
-- `stage_input/deepstack_by_layer` 不直接删除，只冻结 owner/rebuild 规则。
-
-大 payload owner 规则：
-
-- stage0/input-owner 的 `stage_input` 是 processed `inputs_embeds`；只有每个 TP rank 能本地构建相同 multimodal embeddings 时，才能删除 broadcast。
+- `None` tensor slot 不进入 startup transport。
+- `shared.attention_mask_2d` 可重建时不传。
+- `shared.position_ids` 可重建时不传。
+- `attention_mask/cos/sin` 保持本地重建，不进入 generate startup contract。
+- stage0/input-owner 的 `stage_input` 是 processed `inputs_embeds`。
 - non-stage0 的 `stage_input` 是上一 PP stage 输出，等价于 `intermediate_tensors`，不能从 prompt 本地重建。
-- `deepstack_by_layer` 只发送给实际消费该 layer 的 stage/rank；当前基线只属于 stage0。
+- `deepstack_by_layer` 只发送给实际消费该 layer 的 stage/rank。
 - non-input-owner 不能为了重建 deepstack 重新跑视觉 frontend。
 - 禁止重新引入 `root_input`、`boundaries`、`hidden_states`、`stage_output`、frontend paths 或 replay/full payload。
 
@@ -231,10 +155,52 @@ Performance:
 
 - `generated_token_ids`
 - `generated_text`
-- 所有 distributed ranks 是否成功结束
+- distributed ranks 是否全部成功结束
 - `runtime_metrics.transport` 的 payload keys/count/bytes
 - `runtime_metrics.memory` 的 CUDA peak allocated/reserved
 - `weight_load.loaded_weight_tensor_bytes`
+
+Step 22 checker：
+
+```bash
+PYTHONPATH=. python qwen3vl_tp_runtime/scripts/check_baseline_logs.py \
+  --matrix step22 \
+  --baseline-dir baseline_runs/<new-step22-dir> \
+  --include-optional \
+  --require-transport-metrics
+```
+
+矩阵定义在 `qwen3vl_tp_runtime/scripts/smoke_matrix.py`。单个 case 也可以继续用 `--case-id ... rank*.log` 检查。
+
+Step 22 perf table：
+
+```bash
+PYTHONPATH=. python qwen3vl_tp_runtime/scripts/collect_runtime_perf.py \
+  --baseline-dir baseline_runs/<new-step22-dir> \
+  --matrix step22 \
+  --output-json baseline_runs/<new-step22-dir>/runtime-perf-records.json \
+  --output-md baseline_runs/<new-step22-dir>/runtime-perf-table.md
+```
+
+统一表格字段：`total s`、startup/scaffold/handoff bytes、TP collective seconds/bytes、CUDA peak、loaded weights、`stage KV bytes`。`stage KV bytes` 有 active bytes 时显示 `active / allocated`。
+
+Step 22 一键生成 baseline 目录：
+
+```bash
+TP_HOSTS="local 10.126.126.4" \
+PP_HOSTS="local 10.126.126.4" \
+HYBRID_HOSTS="local 10.126.126.4 10.126.126.5" \
+bash qwen3vl_tp_runtime/scripts/helpers/run-step22-smoke-matrix.sh
+```
+
+包含完整视频 optional cases：
+
+```bash
+VIDEO_PATH=/mnt/ssd/code/Qwen3_vl/test/demo.mp4 \
+bash qwen3vl_tp_runtime/scripts/helpers/run-step22-smoke-matrix.sh --include-optional
+```
+
+脚本会写入 `check-smoke-matrix.txt`、`collect-runtime-perf.txt`、`runtime-perf-records.json`、`runtime-perf-table.md` 和 `README.md`。
 
 TP / HYBRID 额外检查：
 
@@ -284,30 +250,3 @@ NODE_RANK=2 MASTER_ADDR="<rank0-host>" bash "${RUNTIME_ROOT}/scripts/helpers/run
 ```bash
 bash qwen3vl_tp_runtime/scripts/helpers/run-runtime-core-regression.sh
 ```
-
-同步：
-
-```bash
-bash sync-to-jetson2.sh --host 10.126.126.3 --git-changed
-bash sync-to-jetson2.sh --host 10.126.126.4 --git-changed
-```
-
-## 当前下一步
-
-下一阶段是 `ROADMAP.md` step 20：`KV cache 管理部分`。
-
-Step 16 已关闭；Step 20A/20B 已通过真实 Jetson smoke。
-
-- allocation / clone 盘点已完成：`BUFFER_REUSE_AUDIT.md`。
-- decode loop 小 tensor reuse 已完成，本地轻量回归通过。
-- pinned memory opt-in 已完成：`--transport-pin-memory`。
-- 真实 Jetson A/B 已记录在 `baseline_runs/20260501-step16-pinned-ab/`。
-- Jupiter-style 连续 KV buffer 已新增 `LayerKVCache / StageKVCache`。
-- runtime-only `PP / TP / HYBRID` generate 已接入 `StageKVCache`，旧 `cache_by_layer + torch.cat` 路径保留给非 runtime-only。
-- 本地 `run-runtime-core-regression.sh --skip-baseline-checks` 已通过。
-- 真实 Jetson smoke 已冻结 generated ids/text、CUDA peak、`stage_kv_cache.tensor_bytes` 和 elapsed。
-- `MAX_NEW_TOKENS=16` 的长 decode profile 已补齐，目录：`baseline_runs/20260501-step20a-kv-cache-long-decode/`。
-- Video window metadata 已补齐，目录：`baseline_runs/20260501-step20b-video-window-cache/`。
-- 20C-0 planner-only `video_kv_compression_plan` 已冻结真实 Jetson smoke。
-- InfiniPot-V-style 视觉 token 压缩和 ReKV-style 历史窗口检索作为后续重点。
-- 暂不考虑 vLLM-style BlockPool / prefix cache / serving scheduler。

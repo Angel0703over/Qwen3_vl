@@ -70,6 +70,44 @@ class KVCacheTest(unittest.TestCase):
         self.assertEqual(summary["current_lengths"], {4: 3, 7: 1})
         self.assertEqual(summary["tensor_bytes"], 80)
 
+    def test_layer_cache_compacts_prefill_prefix_in_place(self) -> None:
+        cache = LayerKVCache(max_seq_len=6)
+        key = torch.arange(12, dtype=torch.float32).view(1, 1, 6, 2)
+        value = key + 100
+        cache.append(key, value)
+        key_storage_ptr = cache.key_buffer.untyped_storage().data_ptr()
+        value_storage_ptr = cache.value_buffer.untyped_storage().data_ptr()
+
+        stats = cache.compact_prefix([0, 2, 5], original_length=6)
+        key_view, value_view = cache.view()
+
+        self.assertEqual(cache.current_length, 3)
+        self.assertEqual(tuple(key_view.shape), (1, 1, 3, 2))
+        self.assertEqual(cache.key_buffer.untyped_storage().data_ptr(), key_storage_ptr)
+        self.assertEqual(cache.value_buffer.untyped_storage().data_ptr(), value_storage_ptr)
+        self.assertTrue(torch.equal(key_view, key.index_select(-2, torch.tensor([0, 2, 5]))))
+        self.assertTrue(torch.equal(value_view, value.index_select(-2, torch.tensor([0, 2, 5]))))
+        self.assertEqual(stats["active_tensor_bytes_before"], 96)
+        self.assertEqual(stats["active_tensor_bytes_after"], 48)
+        self.assertEqual(stats["active_tensor_bytes_saved"], 48)
+
+    def test_stage_cache_compacts_all_layers(self) -> None:
+        cache = StageKVCache(max_seq_len=5)
+        key = torch.arange(10, dtype=torch.bfloat16).view(1, 1, 5, 2)
+        value = key + 20
+        cache.append(0, key, value)
+        cache.append(2, key + 100, value + 100)
+
+        stats = cache.compact_prefix([1, 3, 4], original_length=5)
+        summary = cache.summary()
+
+        self.assertEqual(stats["layer_count"], 2)
+        self.assertEqual(stats["compact_length"], 3)
+        self.assertEqual(stats["dropped_token_count"], 2)
+        self.assertEqual(summary["current_lengths"], {0: 3, 2: 3})
+        self.assertEqual(summary["tensor_bytes"], 80)
+        self.assertEqual(summary["active_tensor_bytes"], 48)
+
     def test_stage_trace_with_stage_cache_skips_cache_clone(self) -> None:
         original_trace_decoder_layer_cached = stages_module.trace_decoder_layer_cached
         seen_layer_cache = []

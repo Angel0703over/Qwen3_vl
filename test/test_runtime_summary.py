@@ -43,7 +43,16 @@ def _build_generate_phase_stats(predicted_token_id: int) -> dict:
             "allocated_layers": 1,
             "append_count": 1,
             "tensor_bytes": 64,
+            "active_tensor_bytes": 64,
             "current_lengths": {0: 4},
+        }
+        stats["stage_kv_cache_after_compaction"] = {
+            "max_seq_len": 4,
+            "allocated_layers": 1,
+            "append_count": 1,
+            "tensor_bytes": 64,
+            "active_tensor_bytes": 48,
+            "current_lengths": {0: 3},
         }
         stats["video_window_cache"] = {
             "schema": "video_window_cache_index_v1",
@@ -75,6 +84,25 @@ def _build_generate_phase_stats(predicted_token_id: int) -> dict:
             "total_original_tokens": 2,
             "total_keep_tokens": 2,
             "metadata_bytes": 128,
+        }
+        stats["video_kv_compression_contract"] = {
+            "schema": "video_kv_compression_contract_v1",
+            "contract_only": True,
+            "mutates_kv": False,
+            "decode": {
+                "attention_mask_key_length": 4,
+                "stage_kv_current_length_after_query": 4,
+                "requires_position_override": False,
+            },
+        }
+        stats["video_kv_compaction"] = {
+            "schema": "video_kv_compaction_v1",
+            "applied": True,
+            "mutates_kv": True,
+            "compression_enabled": True,
+            "active_tensor_bytes_before": 64,
+            "active_tensor_bytes_after": 48,
+            "active_tensor_bytes_saved": 16,
         }
     return stats
 
@@ -141,8 +169,14 @@ class RuntimeSummaryTest(unittest.TestCase):
         self.assertIn("prefill_topk", summary)
         self.assertIn("step_topks", summary)
         self.assertEqual(summary["prefill"]["stage_kv_cache"]["tensor_bytes"], 64)
+        self.assertEqual(summary["prefill"]["stage_kv_cache_after_compaction"]["active_tensor_bytes"], 48)
         self.assertEqual(summary["prefill"]["video_window_cache"]["window_count"], 1)
         self.assertEqual(summary["prefill"]["video_kv_compression_plan"]["method"], "none")
+        self.assertEqual(summary["prefill"]["video_kv_compaction"]["schema"], "video_kv_compaction_v1")
+        self.assertEqual(
+            summary["prefill"]["video_kv_compression_contract"]["schema"],
+            "video_kv_compression_contract_v1",
+        )
         self.assertNotIn("reference_prefill_topk", summary)
         self.assertNotIn("reference_generated_token_ids", summary)
         self.assertNotIn("token_match", summary)
@@ -220,8 +254,14 @@ class RuntimeSummaryTest(unittest.TestCase):
         self.assertIn("prefill_topk", summary)
         self.assertIn("step_topks", summary)
         self.assertEqual(summary["prefill"]["stage_kv_cache"]["tensor_bytes"], 64)
+        self.assertEqual(summary["prefill"]["stage_kv_cache_after_compaction"]["active_tensor_bytes"], 48)
         self.assertEqual(summary["prefill"]["video_window_cache"]["window_count"], 1)
         self.assertEqual(summary["prefill"]["video_kv_compression_plan"]["method"], "none")
+        self.assertEqual(summary["prefill"]["video_kv_compaction"]["schema"], "video_kv_compaction_v1")
+        self.assertEqual(
+            summary["prefill"]["video_kv_compression_contract"]["schema"],
+            "video_kv_compression_contract_v1",
+        )
         self.assertNotIn("reference_prefill_topk", summary)
         self.assertNotIn("reference_generated_token_ids", summary)
         self.assertNotIn("token_match", summary)

@@ -61,8 +61,11 @@ from ...models.qwen3vl.runtime_builder import (
 from ...models.qwen3vl.execution import (
     StageKVCache,
     attach_video_window_cache_index,
+    build_compact_decode_attention_mask_2d,
+    build_video_kv_compression_contract,
     build_video_kv_compression_plan,
     build_stage_kv_cache,
+    compact_stage_kv_cache_for_video_plan,
     forward_text_embeddings,
     trace_text_decode_logits_with_runtime_cache,
     trace_text_decode_stage_with_runtime_cache,
@@ -967,6 +970,7 @@ def _build_runtime_only_text_generate_phase_state(
     rotary_emb,
     decode_input_ids_buffer: torch.Tensor | None = None,
     mm_dummy_embed_tokens_weight: torch.Tensor | None = None,
+    logical_position_start: int | None = None,
 ) -> StageState:
     query_len = int(stage_state["prefill_seq_len"]) if phase_kind == "prefill" else 1
     runtime_state = dict(stage_state)
@@ -1030,6 +1034,7 @@ def _build_runtime_only_text_generate_phase_state(
             device=_infer_runtime_tensor_device(stage_state),
             compute_dtype=_infer_runtime_tensor_dtype(stage_state),
             rotary_emb=rotary_emb,
+            logical_position_start=logical_position_start,
         )
         runtime_state["attention_mask"] = decode_state.attention_mask
         runtime_state["position_ids"] = decode_state.position_ids
@@ -1260,18 +1265,39 @@ def _run_text_generate_phase_impl(
     if stage_kv_cache is not None:
         stage_kv_cache_summary = stage_kv_cache.summary()
         stats["stage_kv_cache"] = stage_kv_cache_summary
+    if phase_kind == "prefill" and runtime_state.get("video_input_metadata") is not None:
+        stats["video_input"] = runtime_state["video_input_metadata"]
     if phase_kind == "prefill" and runtime_state.get("video_window_cache") is not None:
         video_window_cache = runtime_state["video_window_cache"]
         stats["video_window_cache"] = video_window_cache
         video_kv_compression_plan = build_video_kv_compression_plan(
             video_window_cache=video_window_cache,
             stage_kv_cache_summary=stage_kv_cache_summary,
+            stage_kv_cache=stage_kv_cache,
             method=str(runtime_state.get("video_kv_compression", "none")),
             keep_ratio=runtime_state.get("video_kv_keep_ratio"),
             keep_tokens_per_window=runtime_state.get("video_kv_keep_tokens_per_window"),
+            prefill_seq_len=int(runtime_state["prefill_seq_len"]),
         )
         if video_kv_compression_plan is not None:
             stats["video_kv_compression_plan"] = video_kv_compression_plan
+            video_kv_compression_contract = build_video_kv_compression_contract(
+                compression_plan=video_kv_compression_plan,
+                prefill_seq_len=int(runtime_state["prefill_seq_len"]),
+                decoded_token_count=0,
+                query_len=1,
+            )
+            if video_kv_compression_contract is not None:
+                stats["video_kv_compression_contract"] = video_kv_compression_contract
+            if stage_kv_cache is not None:
+                video_kv_compaction = compact_stage_kv_cache_for_video_plan(
+                    stage_kv_cache=stage_kv_cache,
+                    compression_plan=video_kv_compression_plan,
+                    prefill_seq_len=int(runtime_state["prefill_seq_len"]),
+                )
+                if video_kv_compaction is not None:
+                    stats["video_kv_compaction"] = video_kv_compaction
+                    stats["stage_kv_cache_after_compaction"] = stage_kv_cache.summary()
     if return_tensor:
         stats["stage_output_tensor"] = stage_output
     return stats, updated_cache
@@ -1400,16 +1426,25 @@ class TextGeneratePipelineRunner:
             if stage_kv_cache is not None
             else prefill_cache if prefill_cache is not None else _build_generate_cache_map(stage_state)
         )
+        video_kv_compression_plan = prefill_stats.get("video_kv_compression_plan")
+        video_kv_compaction = prefill_stats.get("video_kv_compaction")
+        compact_video_kv_active = bool(
+            runtime_only_generate
+            and video_kv_compression_plan is not None
+            and isinstance(video_kv_compaction, dict)
+            and video_kv_compaction.get("applied")
+        )
         step_stats = []
         step_output_tensors = []
         attention_mask_buffer = None
         decode_input_ids_buffer = None
         mm_dummy_embed_tokens_weight = None
         if runtime_only_generate:
-            attention_mask_buffer = build_decode_attention_mask_buffer(
-                stage_state["prefill_attention_mask_2d"],
-                max_new_tokens=int(stage_state["max_new_tokens"]),
-            )
+            if not compact_video_kv_active:
+                attention_mask_buffer = build_decode_attention_mask_buffer(
+                    stage_state["prefill_attention_mask_2d"],
+                    max_new_tokens=int(stage_state["max_new_tokens"]),
+                )
             decode_input_ids_buffer = torch.empty(
                 (int(stage_state["batch_size"]), 1),
                 device=_infer_runtime_tensor_device(stage_state),
@@ -1429,11 +1464,31 @@ class TextGeneratePipelineRunner:
         )
         for step_payload in decode_iterable:
             if runtime_only_generate:
-                current_attention_mask_2d = decode_attention_mask_view(
-                    attention_mask_buffer,
-                    prefill_seq_len=int(stage_state["prefill_seq_len"]),
-                    step_idx=int(step_payload),
-                )
+                logical_position_start = None
+                video_kv_decode_contract = None
+                if compact_video_kv_active:
+                    current_attention_mask_2d = build_compact_decode_attention_mask_2d(
+                        stage_state["prefill_attention_mask_2d"],
+                        compression_plan=video_kv_compression_plan,
+                        decoded_token_count=int(step_payload),
+                        query_len=1,
+                    )
+                    video_kv_decode_contract = build_video_kv_compression_contract(
+                        compression_plan=video_kv_compression_plan,
+                        prefill_seq_len=int(stage_state["prefill_seq_len"]),
+                        decoded_token_count=int(step_payload),
+                        query_len=1,
+                    )
+                    if video_kv_decode_contract is not None:
+                        logical_position_start = int(
+                            video_kv_decode_contract["decode"]["decode_position_start"]
+                        )
+                else:
+                    current_attention_mask_2d = decode_attention_mask_view(
+                        attention_mask_buffer,
+                        prefill_seq_len=int(stage_state["prefill_seq_len"]),
+                        step_idx=int(step_payload),
+                    )
                 decode_state = _build_runtime_only_text_generate_phase_state(
                     stage_state,
                     phase_kind="decode",
@@ -1442,8 +1497,10 @@ class TextGeneratePipelineRunner:
                     rotary_emb=runtime_only_context["rotary_emb"],
                     decode_input_ids_buffer=decode_input_ids_buffer,
                     mm_dummy_embed_tokens_weight=mm_dummy_embed_tokens_weight,
+                    logical_position_start=logical_position_start,
                 )
             else:
+                video_kv_decode_contract = None
                 decode_state = _build_generate_phase_state(
                     stage_state,
                     step_payload,
@@ -1461,6 +1518,9 @@ class TextGeneratePipelineRunner:
                 return_tensor=self.return_tensors and rank == world_size - 1,
                 stage_kv_cache=stage_kv_cache,
             )
+            if video_kv_decode_contract is not None:
+                current_step_stats["video_kv_compression_contract"] = video_kv_decode_contract
+                current_step_stats["video_kv_compaction_active"] = True
             current_token_id = _broadcast_token_id(
                 current_step_stats["predicted_token_id"] if rank == world_size - 1 else None,
                 src=world_size - 1,

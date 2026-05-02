@@ -166,6 +166,7 @@ def build_even_stage_ranges(*, num_layers: int, pp_degree: int) -> list[str]:
 def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     _reject_unsupported_debug_transport_backend(parser, args)
     _reject_unsupported_generate_debug_flags(parser, args)
+    _validate_video_input_args(parser, args)
     _validate_video_kv_selector_args(parser, args)
     live_runners = _runtime_dep("LIVE_RUNNERS")
     if getattr(args, "tp", None) is not None and args.tp <= 0:
@@ -225,6 +226,43 @@ def _validate_video_kv_selector_args(parser: argparse.ArgumentParser, args: argp
     if method != "none":
         if args.modality != "multimodal" or args.mode != "generate":
             parser.error("--video-kv-compression 当前只支持 multimodal generate 主路径。")
+
+
+def _validate_video_input_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    video_path = getattr(args, "video_path", None)
+    video_url = getattr(args, "video_url", None)
+    has_full_video_input = video_path is not None or video_url is not None
+    has_video_sampling = any(
+        getattr(args, name, None) is not None
+        for name in (
+            "video_fps",
+            "video_nframes",
+            "video_start",
+            "video_end",
+            "video_min_frames",
+            "video_max_frames",
+        )
+    )
+    if (has_full_video_input or has_video_sampling) and args.modality != "multimodal":
+        parser.error("完整视频输入参数当前只支持 --modality multimodal。")
+    if video_path is not None and video_url is not None:
+        parser.error("--video-path 和 --video-url 不能同时使用。")
+    if has_video_sampling and not has_full_video_input:
+        parser.error("video_* 采样参数只用于 --video-path/--video-url；frame-dir 路径请继续使用 --sample-fps。")
+    if getattr(args, "video_fps", None) is not None and getattr(args, "video_nframes", None) is not None:
+        parser.error("--video-fps 和 --video-nframes 不能同时使用。")
+    if getattr(args, "video_nframes", None) is not None and int(args.video_nframes) <= 0:
+        parser.error(f"--video-nframes 必须大于 0，当前拿到 {args.video_nframes}。")
+    if getattr(args, "video_min_frames", None) is not None and int(args.video_min_frames) <= 0:
+        parser.error(f"--video-min-frames 必须大于 0，当前拿到 {args.video_min_frames}。")
+    if getattr(args, "video_max_frames", None) is not None and int(args.video_max_frames) <= 0:
+        parser.error(f"--video-max-frames 必须大于 0，当前拿到 {args.video_max_frames}。")
+    if (
+        getattr(args, "video_min_frames", None) is not None
+        and getattr(args, "video_max_frames", None) is not None
+        and int(args.video_min_frames) > int(args.video_max_frames)
+    ):
+        parser.error("--video-min-frames 不能大于 --video-max-frames。")
 
 
 def _debug_path_warnings(args: argparse.Namespace) -> list[str]:
@@ -342,6 +380,15 @@ def _build_direct_manifest_kwargs(args: argparse.Namespace) -> dict:
     else:
         kwargs["num_frames"] = args.num_frames
         kwargs["frame_dir"] = args.frame_dir
+        kwargs["sample_fps"] = args.sample_fps
+        kwargs["video_path"] = args.video_path
+        kwargs["video_url"] = args.video_url
+        kwargs["video_fps"] = args.video_fps
+        kwargs["video_nframes"] = args.video_nframes
+        kwargs["video_start"] = args.video_start
+        kwargs["video_end"] = args.video_end
+        kwargs["video_min_frames"] = args.video_min_frames
+        kwargs["video_max_frames"] = args.video_max_frames
         kwargs["video_kv_compression"] = args.video_kv_compression
         kwargs["video_kv_keep_ratio"] = args.video_kv_keep_ratio
         kwargs["video_kv_keep_tokens_per_window"] = args.video_kv_keep_tokens_per_window

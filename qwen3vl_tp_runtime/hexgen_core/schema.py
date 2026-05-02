@@ -44,7 +44,7 @@ class HybridRuntimeInputSchema:
             "video_kv_keep_tokens_per_window",
         )
     )
-    MULTIMODAL_VIDEO_KV_SELECTOR_METHODS = frozenset(("none", "uniform", "swa"))
+    MULTIMODAL_VIDEO_KV_SELECTOR_METHODS = frozenset(("none", "uniform", "swa", "infinipot-v"))
     MULTIMODAL_ALLOWED_KEYS = MULTIMODAL_REQUIRED_KEYS | frozenset(("stage_visuals",)) | MULTIMODAL_VIDEO_KV_SELECTOR_KEYS
     MULTIMODAL_SHARED_REQUIRED_KEYS = frozenset(
         (

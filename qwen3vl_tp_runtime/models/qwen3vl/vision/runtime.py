@@ -8,7 +8,7 @@ from typing import Any
 import torch
 
 from qwen3vl_tp_runtime.models.qwen3vl.processing import (
-    build_inputs,
+    build_inputs_with_metadata,
     list_frames,
     load_processor,
 )
@@ -35,9 +35,17 @@ class MmFrontendBatch:
 
     raw_inputs: dict[str, Any]
     frame_paths: list[str]
+    video_input_metadata: dict[str, Any] | None = None
 
     @property
     def num_frames(self) -> int:
+        metadata = self.video_input_metadata if isinstance(self.video_input_metadata, dict) else {}
+        frame_count = metadata.get("frame_count")
+        if frame_count is not None:
+            try:
+                return int(frame_count)
+            except (TypeError, ValueError):
+                pass
         return len(self.frame_paths)
 
 
@@ -47,11 +55,31 @@ def build_mm_frontend_batch(runtime_config: dict[str, Any]) -> MmFrontendBatch:
     model_path = runtime_config["model_path"]
     processor = load_processor(model_path)
     num_frames = int(runtime_config.get("num_frames", 8))
-    frame_paths = list_frames(num_frames, runtime_config.get("frame_dir"))
-    raw_inputs = build_inputs(processor, frame_paths)
+    video_path = runtime_config.get("video_path")
+    video_url = runtime_config.get("video_url")
+    if video_path is None and video_url is None:
+        frame_paths = list_frames(num_frames, runtime_config.get("frame_dir"))
+        frame_paths_for_builder = frame_paths
+    else:
+        frame_paths = []
+        frame_paths_for_builder = None
+    raw_inputs, video_input_metadata = build_inputs_with_metadata(
+        processor,
+        frame_paths_for_builder,
+        video_path=video_path,
+        video_url=video_url,
+        sample_fps=runtime_config.get("sample_fps", 1),
+        video_fps=runtime_config.get("video_fps"),
+        video_nframes=runtime_config.get("video_nframes"),
+        video_start=runtime_config.get("video_start"),
+        video_end=runtime_config.get("video_end"),
+        video_min_frames=runtime_config.get("video_min_frames"),
+        video_max_frames=runtime_config.get("video_max_frames"),
+    )
     return MmFrontendBatch(
         raw_inputs=raw_inputs,
         frame_paths=frame_paths,
+        video_input_metadata=video_input_metadata,
     )
 
 
@@ -76,6 +104,7 @@ def _prepare_mm_frontend_batch_on_device(
     return frontend_model, MmFrontendBatch(
         raw_inputs=raw_inputs,
         frame_paths=list(frontend_batch.frame_paths),
+        video_input_metadata=frontend_batch.video_input_metadata,
     )
 
 

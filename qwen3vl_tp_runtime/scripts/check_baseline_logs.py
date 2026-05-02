@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from qwen3vl_tp_runtime.scripts.smoke_matrix import SmokeCase, get_smoke_case, iter_smoke_cases
+
 
 class BaselineCheckError(AssertionError):
     pass
@@ -94,7 +96,167 @@ def _get_path(payload: dict[str, Any], dotted_path: str) -> Any:
     return current
 
 
-def _check_common(case_id: str, items: list[RankSummary]) -> list[str]:
+def _get_video_input(summary: dict[str, Any]) -> dict[str, Any]:
+    direct = summary.get("video_input")
+    if isinstance(direct, dict):
+        return direct
+    prefill = summary.get("prefill")
+    if isinstance(prefill, dict) and isinstance(prefill.get("video_input"), dict):
+        return prefill["video_input"]
+    return {}
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _check_rank_count(case_id: str, items: list[RankSummary], smoke_case: SmokeCase | None) -> list[str]:
+    if smoke_case is None or smoke_case.expected_rank_count is None:
+        return []
+    if len(items) != smoke_case.expected_rank_count:
+        return [f"{case_id}: expected {smoke_case.expected_rank_count} rank logs, got {len(items)}"]
+    return []
+
+
+def _check_transport_metrics(
+    case_id: str,
+    items: list[RankSummary],
+    *,
+    require_transport_metrics: bool,
+) -> list[str]:
+    errors: list[str] = []
+    required_buckets = ("startup_contract", "scaffold", "stage_handoff", "tp_collective")
+    forbidden_payload_fragments = (
+        "root_input",
+        "boundaries",
+        "stage_output",
+        "frontend_paths",
+        "frame_paths",
+        "full_payload",
+        "replay",
+    )
+    for item in items:
+        transport = _get_path(item.summary, "runtime_metrics.transport")
+        if not isinstance(transport, dict):
+            if require_transport_metrics:
+                errors.append(f"{item.label}: runtime_metrics.transport missing")
+            continue
+        totals_by_kind = transport.get("totals_by_kind")
+        if not isinstance(totals_by_kind, dict):
+            if require_transport_metrics:
+                errors.append(f"{item.label}: runtime_metrics.transport.totals_by_kind missing")
+            continue
+        for kind in required_buckets:
+            bucket = totals_by_kind.get(kind)
+            if not isinstance(bucket, dict):
+                if require_transport_metrics:
+                    errors.append(f"{item.label}: transport bucket {kind!r} missing")
+                continue
+            for field in ("event_count", "elapsed_seconds", "object_bytes", "tensor_bytes", "total_bytes"):
+                value = bucket.get(field)
+                if value is None:
+                    if require_transport_metrics:
+                        errors.append(f"{item.label}: transport {kind}.{field} missing")
+                    continue
+                if not _is_number(value) or value < 0:
+                    errors.append(f"{item.label}: transport {kind}.{field} must be non-negative number, got {value!r}")
+
+        events = transport.get("events")
+        if isinstance(events, list):
+            for event in events:
+                if not isinstance(event, dict):
+                    continue
+                payload_keys = event.get("payload_keys")
+                if not isinstance(payload_keys, list):
+                    continue
+                for key in payload_keys:
+                    key_text = str(key)
+                    if any(fragment in key_text for fragment in forbidden_payload_fragments):
+                        errors.append(f"{item.label}: forbidden transport payload key {key_text!r}")
+    return errors
+
+
+def _check_expected_smoke_case(
+    case_id: str,
+    items: list[RankSummary],
+    smoke_case: SmokeCase | None,
+    *,
+    require_transport_metrics: bool,
+) -> list[str]:
+    errors = _check_rank_count(case_id, items, smoke_case)
+    if smoke_case is None:
+        errors.extend(_check_transport_metrics(case_id, items, require_transport_metrics=require_transport_metrics))
+        return errors
+
+    for item in items:
+        if item.summary.get("generated_token_ids") != smoke_case.expected_ids:
+            _fail(
+                errors,
+                item.label,
+                "generated_token_ids",
+                smoke_case.expected_ids,
+                item.summary.get("generated_token_ids"),
+            )
+        if item.summary.get("generated_text") != smoke_case.expected_text:
+            _fail(errors, item.label, "generated_text", smoke_case.expected_text, item.summary.get("generated_text"))
+        if smoke_case.backend is not None and item.summary.get("backend") != smoke_case.backend:
+            _fail(errors, item.label, "backend", smoke_case.backend, item.summary.get("backend"))
+        video_input = _get_video_input(item.summary)
+        if smoke_case.expected_video_source is not None and (
+            video_input or smoke_case.require_transport_metrics or require_transport_metrics
+        ):
+            actual_source = video_input.get("source")
+            if actual_source != smoke_case.expected_video_source:
+                _fail(errors, item.label, "video_input.source", smoke_case.expected_video_source, actual_source)
+    errors.extend(
+        _check_transport_metrics(
+            case_id,
+            items,
+            require_transport_metrics=require_transport_metrics or smoke_case.require_transport_metrics,
+        )
+    )
+    return errors
+
+
+def _check_multimodal_consume_only(
+    case_id: str,
+    items: list[RankSummary],
+    smoke_case: SmokeCase | None,
+    *,
+    strict: bool = False,
+) -> list[str]:
+    if smoke_case is not None:
+        is_multimodal = smoke_case.modality == "multimodal"
+        require_consume_only = smoke_case.require_consume_only
+    else:
+        is_multimodal = "-mm-" in case_id
+        require_consume_only = False
+    if not is_multimodal or not require_consume_only:
+        return []
+    if not strict:
+        return []
+
+    errors: list[str] = []
+    for item in items:
+        backend = item.summary.get("backend")
+        rank = item.summary.get("rank")
+        stage_idx = item.summary.get("stage_idx")
+        if backend == "tp":
+            if rank not in (None, 0):
+                _require_frontend_mode(errors, item, "consume-only")
+        elif backend in {"pp", "hybrid"}:
+            if stage_idx not in (None, 0):
+                _require_frontend_mode(errors, item, "consume-only")
+    return errors
+
+
+def _check_common(
+    case_id: str,
+    items: list[RankSummary],
+    *,
+    smoke_case: SmokeCase | None = None,
+    require_transport_metrics: bool = False,
+) -> list[str]:
     errors: list[str] = []
     first_ids = items[0].summary.get("generated_token_ids")
     first_text = items[0].summary.get("generated_text")
@@ -113,19 +275,46 @@ def _check_common(case_id: str, items: list[RankSummary]) -> list[str]:
             _fail(errors, item.label, "token_match", True, summary.get("token_match"))
 
     expected_backend = case_id.split("-", 1)[0]
-    backend_aliases = {"pp": "pp", "tp": "tp", "hybrid": "hybrid"}
+    backend_aliases = {"hf": "hf", "pp": "pp", "tp": "tp", "hybrid": "hybrid"}
     expected_backend = backend_aliases.get(expected_backend)
     if expected_backend is not None:
         for item in items:
             if item.summary.get("backend") != expected_backend:
                 _fail(errors, item.label, "backend", expected_backend, item.summary.get("backend"))
+    errors.extend(
+        _check_expected_smoke_case(
+            case_id,
+            items,
+            smoke_case,
+            require_transport_metrics=require_transport_metrics,
+        )
+    )
+    errors.extend(
+        _check_multimodal_consume_only(
+            case_id,
+            items,
+            smoke_case,
+            strict=require_transport_metrics or bool(smoke_case and smoke_case.require_transport_metrics),
+        )
+    )
     return errors
 
 
-def _check_tp(case_id: str, items: list[RankSummary]) -> list[str]:
-    errors = _check_common(case_id, items)
+def _check_tp(
+    case_id: str,
+    items: list[RankSummary],
+    *,
+    smoke_case: SmokeCase | None = None,
+    require_transport_metrics: bool = False,
+) -> list[str]:
+    errors = _check_common(
+        case_id,
+        items,
+        smoke_case=smoke_case,
+        require_transport_metrics=require_transport_metrics,
+    )
     ranks = sorted(item.summary.get("rank") for item in items)
-    expected_world = len(items)
+    expected_world = smoke_case.expected_rank_count if smoke_case and smoke_case.expected_rank_count else len(items)
     if ranks != list(range(expected_world)):
         errors.append(f"{case_id}: expected ranks {list(range(expected_world))}, got {ranks}")
     for item in items:
@@ -144,8 +333,19 @@ def _check_tp(case_id: str, items: list[RankSummary]) -> list[str]:
     return errors
 
 
-def _check_pp(case_id: str, items: list[RankSummary]) -> list[str]:
-    errors = _check_common(case_id, items)
+def _check_pp(
+    case_id: str,
+    items: list[RankSummary],
+    *,
+    smoke_case: SmokeCase | None = None,
+    require_transport_metrics: bool = False,
+) -> list[str]:
+    errors = _check_common(
+        case_id,
+        items,
+        smoke_case=smoke_case,
+        require_transport_metrics=require_transport_metrics,
+    )
     by_stage = {item.summary.get("stage_idx"): item for item in items}
     expected_stages = list(range(len(items)))
     if sorted(by_stage) != expected_stages:
@@ -155,7 +355,7 @@ def _check_pp(case_id: str, items: list[RankSummary]) -> list[str]:
         _require_true(errors, item, "weight_load.stage_weight_scope_ok")
         _require_equal(errors, item, "start_idx", _get_path(item.summary, "weight_load.stage_start_idx"))
         _require_equal(errors, item, "end_idx", _get_path(item.summary, "weight_load.stage_end_idx"))
-        if case_id.endswith("-mm-generate"):
+        if smoke_case is not None and smoke_case.modality == "multimodal":
             if stage_idx == 0:
                 _require_frontend_mode(errors, item, "active")
                 _require_equal(errors, item, "weight_load.loaded_top_level_weight_names", ["embed_tokens_weight"])
@@ -170,44 +370,72 @@ def _check_pp(case_id: str, items: list[RankSummary]) -> list[str]:
     return errors
 
 
-def _check_hybrid(case_id: str, items: list[RankSummary]) -> list[str]:
-    errors = _check_common(case_id, items)
-    stage0_items = sorted(
-        [item for item in items if item.summary.get("stage_idx") == 0],
-        key=lambda item: item.summary.get("local_rank", -1),
+def _check_hybrid(
+    case_id: str,
+    items: list[RankSummary],
+    *,
+    smoke_case: SmokeCase | None = None,
+    require_transport_metrics: bool = False,
+) -> list[str]:
+    errors = _check_common(
+        case_id,
+        items,
+        smoke_case=smoke_case,
+        require_transport_metrics=require_transport_metrics,
     )
-    stage1_items = [item for item in items if item.summary.get("stage_idx") == 1]
-    if len(stage0_items) != 2 or len(stage1_items) != 1:
-        errors.append(
-            f"{case_id}: expected 2 ranks in stage0 and 1 rank in stage1, "
-            f"got stage0={len(stage0_items)} stage1={len(stage1_items)}"
-        )
+    stage_indices = sorted({item.summary.get("stage_idx") for item in items})
+    if not stage_indices or any(stage_idx is None for stage_idx in stage_indices):
+        errors.append(f"{case_id}: missing stage_idx in hybrid rank summaries")
         return errors
+    expected_stages = list(range(max(stage_indices) + 1))
+    if stage_indices != expected_stages:
+        errors.append(f"{case_id}: expected stages {expected_stages}, got {stage_indices}")
 
-    for local_rank, item in enumerate(stage0_items):
-        _require_equal(errors, item, "local_rank", local_rank)
-        _require_equal(errors, item, "tp_degree", 2)
-        _require_true(errors, item, "weight_load.tp_weight_sharded")
-        _require_equal(errors, item, "weight_load.tp_shard_rank", local_rank)
-        _require_equal(errors, item, "weight_load.tp_shard_world_size", 2)
-        _require_true(errors, item, "weight_load.tp_shard_shape_ok")
-        _require_true(errors, item, "weight_load.tp_stage_loaded_weight_tensor_bytes_equal")
-        _require_true(errors, item, "weight_load.stage_weight_scope_ok")
-        if case_id.endswith("-mm-generate"):
-            _require_equal(errors, item, "weight_load.loaded_top_level_weight_names", ["embed_tokens_weight"])
-
-    stage1 = stage1_items[0]
-    _require_equal(errors, stage1, "local_rank", 0)
-    _require_equal(errors, stage1, "tp_degree", 1)
-    _require_equal(errors, stage1, "weight_load.tp_weight_sharded", False)
-    _require_true(errors, stage1, "weight_load.stage_weight_scope_ok")
-    _require_equal(errors, stage1, "weight_load.loaded_top_level_weight_names", ["final_norm_weight", "lm_head_weight"])
-    if case_id.endswith("-mm-generate"):
-        _require_frontend_mode(errors, stage1, "consume-only")
+    last_stage_idx = max(stage_indices)
+    for stage_idx in stage_indices:
+        stage_items = sorted(
+            [item for item in items if item.summary.get("stage_idx") == stage_idx],
+            key=lambda item: item.summary.get("local_rank", -1),
+        )
+        expected_tp_degree = stage_items[0].summary.get("tp_degree")
+        if expected_tp_degree is not None and len(stage_items) != expected_tp_degree:
+            errors.append(
+                f"{case_id}: stage{stage_idx} expected tp_degree={expected_tp_degree}, got {len(stage_items)} ranks"
+            )
+        for local_rank, item in enumerate(stage_items):
+            _require_equal(errors, item, "local_rank", local_rank)
+            _require_true(errors, item, "weight_load.stage_weight_scope_ok")
+            tp_degree = item.summary.get("tp_degree")
+            if tp_degree and tp_degree > 1:
+                _require_true(errors, item, "weight_load.tp_weight_sharded")
+                _require_equal(errors, item, "weight_load.tp_shard_rank", local_rank)
+                _require_equal(errors, item, "weight_load.tp_shard_world_size", tp_degree)
+                _require_true(errors, item, "weight_load.tp_shard_shape_ok")
+                if _get_path(item.summary, "weight_load.tp_stage_loaded_weight_tensor_bytes_equal") is not None:
+                    _require_true(errors, item, "weight_load.tp_stage_loaded_weight_tensor_bytes_equal")
+            elif tp_degree == 1:
+                _require_equal(errors, item, "weight_load.tp_weight_sharded", False)
+            if smoke_case is not None and smoke_case.modality == "multimodal":
+                if stage_idx == 0:
+                    _require_equal(errors, item, "weight_load.loaded_top_level_weight_names", ["embed_tokens_weight"])
+                elif stage_idx == last_stage_idx:
+                    _require_equal(
+                        errors,
+                        item,
+                        "weight_load.loaded_top_level_weight_names",
+                        ["final_norm_weight", "lm_head_weight"],
+                    )
+                    _require_frontend_mode(errors, item, "consume-only")
     return errors
 
 
-def check_baseline_logs(case_id: str, paths: list[Path]) -> list[RankSummary]:
+def check_baseline_logs(
+    case_id: str,
+    paths: list[Path],
+    *,
+    require_transport_metrics: bool = False,
+    use_smoke_matrix: bool = True,
+) -> list[RankSummary]:
     if not paths:
         raise BaselineCheckError("at least one log path is required")
     items = []
@@ -221,26 +449,117 @@ def check_baseline_logs(case_id: str, paths: list[Path]) -> list[RankSummary]:
             )
         )
     case_prefix = case_id.split("-", 1)[0]
+    smoke_case = get_smoke_case(case_id) if use_smoke_matrix else None
     if case_prefix == "tp":
-        errors = _check_tp(case_id, items)
+        errors = _check_tp(
+            case_id,
+            items,
+            smoke_case=smoke_case,
+            require_transport_metrics=require_transport_metrics,
+        )
     elif case_prefix == "pp":
-        errors = _check_pp(case_id, items)
+        errors = _check_pp(
+            case_id,
+            items,
+            smoke_case=smoke_case,
+            require_transport_metrics=require_transport_metrics,
+        )
     elif case_prefix == "hybrid":
-        errors = _check_hybrid(case_id, items)
+        errors = _check_hybrid(
+            case_id,
+            items,
+            smoke_case=smoke_case,
+            require_transport_metrics=require_transport_metrics,
+        )
     else:
-        errors = _check_common(case_id, items)
+        errors = _check_common(
+            case_id,
+            items,
+            smoke_case=smoke_case,
+            require_transport_metrics=require_transport_metrics,
+        )
     if errors:
         raise BaselineCheckError("\n".join(errors))
     return items
 
 
+def _discover_logs_for_case(baseline_dir: Path, case_id: str) -> list[Path]:
+    paths = sorted(baseline_dir.glob(f"{case_id}-rank*.log"))
+    if paths:
+        return paths
+    candidates = [
+        baseline_dir / f"{case_id}.log",
+        baseline_dir / f"{case_id}.stdout",
+    ]
+    return [path for path in candidates if path.exists()]
+
+
+def check_smoke_matrix(
+    baseline_dir: Path,
+    *,
+    include_optional: bool = False,
+    require_transport_metrics: bool = False,
+) -> list[tuple[SmokeCase, list[RankSummary]]]:
+    results: list[tuple[SmokeCase, list[RankSummary]]] = []
+    missing: list[str] = []
+    for smoke_case in iter_smoke_cases(include_optional=include_optional):
+        paths = _discover_logs_for_case(baseline_dir, smoke_case.case_id)
+        if not paths:
+            missing.append(smoke_case.case_id)
+            continue
+        items = check_baseline_logs(
+            smoke_case.case_id,
+            paths,
+            require_transport_metrics=require_transport_metrics or smoke_case.require_transport_metrics,
+            use_smoke_matrix=True,
+        )
+        results.append((smoke_case, items))
+    if missing:
+        raise BaselineCheckError(f"missing smoke matrix case logs: {', '.join(missing)}")
+    return results
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("logs", nargs="+", type=Path, help="Rank log files to check")
-    parser.add_argument("--case-id", required=True, help="Baseline case id, e.g. tp-mm-generate")
+    parser.add_argument("logs", nargs="*", type=Path, help="Rank log files to check")
+    parser.add_argument("--case-id", help="Baseline case id, e.g. tp-mm-generate")
+    parser.add_argument("--baseline-dir", type=Path, help="Check the frozen Step 22 smoke matrix in this directory.")
+    parser.add_argument("--matrix", choices=["step22"], help="Check a named smoke matrix from --baseline-dir.")
+    parser.add_argument("--include-optional", action="store_true", help="Include optional smoke cases.")
+    parser.add_argument("--require-transport-metrics", action="store_true", help="Fail if transport bytes are missing.")
+    parser.add_argument("--no-smoke-matrix", action="store_true", help="Disable built-in expected ids/text rules.")
     args = parser.parse_args(argv)
 
-    items = check_baseline_logs(args.case_id, args.logs)
+    if args.matrix:
+        if args.baseline_dir is None:
+            parser.error("--matrix requires --baseline-dir")
+        results = check_smoke_matrix(
+            args.baseline_dir,
+            include_optional=args.include_optional,
+            require_transport_metrics=args.require_transport_metrics,
+        )
+        print(f"PASS matrix={args.matrix} baseline_dir={args.baseline_dir} cases={len(results)}")
+        for smoke_case, items in results:
+            first = items[0].summary
+            print(
+                "PASS "
+                f"case={smoke_case.case_id} ranks={len(items)} "
+                f"generated_token_ids={first.get('generated_token_ids')!r} "
+                f"generated_text={first.get('generated_text')!r}"
+            )
+        return 0
+
+    if args.case_id is None:
+        parser.error("--case-id is required unless --matrix is used")
+    if not args.logs:
+        parser.error("at least one log path is required unless --matrix is used")
+
+    items = check_baseline_logs(
+        args.case_id,
+        args.logs,
+        require_transport_metrics=args.require_transport_metrics,
+        use_smoke_matrix=not args.no_smoke_matrix,
+    )
     first = items[0].summary
     print(
         "PASS "

@@ -1,1 +1,0 @@
-PASS case=tp-text-generate-bfloat16 ranks=2 generated_token_ids=[104455, 9909, 9286, 16488] generated_text='人工智能（Artificial'

@@ -62,6 +62,7 @@ class MmFrontendSource:
     num_frames: int
     frame_paths: list[str]
     frontend_activation: str
+    video_input_metadata: dict[str, Any] | None = None
     frontend_seed: MmStateLike | None = None
 
 
@@ -140,6 +141,7 @@ def _build_seeded_mm_session(
             "num_frames": frontend_source.num_frames,
             "frame_paths": list(frontend_source.frame_paths),
             "frontend_activation": frontend_source.frontend_activation,
+            "video_input_metadata": dict(frontend_source.video_input_metadata or {}),
         },
     )
 
@@ -163,6 +165,7 @@ def prepare_mm_frontend(
             "num_frames": frontend_batch.num_frames,
             "frame_paths": list(frontend_batch.frame_paths),
             "frontend_activation": "active",
+            "video_input_metadata": dict(frontend_batch.video_input_metadata or {}),
         },
     )
 
@@ -214,6 +217,7 @@ def prepare_mm_frontend_seed(runtime_config: dict[str, Any]) -> dict[str, Any]:
             "runtime": compact_mm_frontend_meta(frontend_seed),
             "num_frames": frontend_batch.num_frames,
             "frame_paths": list(frontend_batch.frame_paths),
+            "video_input_metadata": dict(frontend_batch.video_input_metadata or {}),
         },
     }
 
@@ -304,6 +308,9 @@ def _restore_mm_frontend_seed_payload(
             "frontend_tensors": restored_frontend_tensors,
             "num_frames": int(meta.get("num_frames", payload.get("num_frames", 0))),
             "frame_paths": list(meta.get("frame_paths") or payload.get("frame_paths") or []),
+            "video_input_metadata": dict(
+                meta.get("video_input_metadata") or payload.get("video_input_metadata") or {}
+            ),
         }
 
     frontend_state = payload.get("frontend_state")
@@ -315,6 +322,7 @@ def _restore_mm_frontend_seed_payload(
         "frontend_tensors": clone_mm_frontend_seed(frontend_state),
         "num_frames": int(payload.get("num_frames", 0)),
         "frame_paths": list(payload.get("frame_paths") or []),
+        "video_input_metadata": dict(payload.get("video_input_metadata") or {}),
     }
 
 
@@ -333,12 +341,16 @@ def seed_mm_runtime_config(runtime_config: dict[str, Any], payload: dict[str, An
             runtime_config["_mm_frontend_meta"] = compact_mm_frontend_meta(frontend_tensors)
         runtime_config["_mm_num_frames"] = int(meta.get("num_frames", payload.get("num_frames", 0)))
         runtime_config["_mm_frame_paths"] = list(meta.get("frame_paths") or payload.get("frame_paths") or [])
+        runtime_config["_mm_video_input_metadata"] = dict(
+            meta.get("video_input_metadata") or payload.get("video_input_metadata") or {}
+        )
     else:
         restored = restore_mm_frontend_seed(payload)
         runtime_config["_mm_frontend_seed"] = compact_mm_frontend_tensors(restored["frontend_tensors"])
         runtime_config["_mm_frontend_meta"] = compact_mm_frontend_meta(restored["frontend_tensors"])
         runtime_config["_mm_num_frames"] = restored["num_frames"]
         runtime_config["_mm_frame_paths"] = restored["frame_paths"]
+        runtime_config["_mm_video_input_metadata"] = dict(restored.get("video_input_metadata") or {})
     runtime_config.pop("_mm_frontend_plan", None)
     runtime_config.pop("_mm_frontend_state", None)
     runtime_config["_mm_frontend_state_ready"] = True
@@ -396,6 +408,7 @@ def resolve_mm_frontend(
                     "runtime": runtime_config.get("_mm_frontend_meta"),
                     "num_frames": runtime_config.get("_mm_num_frames", runtime_config.get("num_frames", 0)),
                     "frame_paths": list(runtime_config.get("_mm_frame_paths") or []),
+                    "video_input_metadata": dict(runtime_config.get("_mm_video_input_metadata") or {}),
                 },
             },
             runtime_config=runtime_config,
@@ -407,12 +420,14 @@ def resolve_mm_frontend(
 
     frame_paths = list(runtime_config.get("_mm_frame_paths") or [])
     num_frames = int(runtime_config.get("_mm_num_frames", runtime_config.get("num_frames", len(frame_paths))))
+    video_input_metadata = dict(runtime_config.get("_mm_video_input_metadata") or {})
     runtime_config["_mm_frontend_state_ready"] = True
     return MmFrontendSource(
         frontend_state=frontend_state,
         num_frames=num_frames,
         frame_paths=frame_paths,
         frontend_activation=frontend_activation,
+        video_input_metadata=video_input_metadata,
         frontend_seed=seeded_frontend_seed,
     )
 

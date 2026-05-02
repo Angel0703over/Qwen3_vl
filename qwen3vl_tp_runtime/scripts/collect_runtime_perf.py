@@ -14,6 +14,7 @@ from qwen3vl_tp_runtime.scripts.check_baseline_logs import (
     BaselineCheckError,
     extract_last_json_summary_from_text,
 )
+from qwen3vl_tp_runtime.scripts.smoke_matrix import iter_smoke_cases
 
 
 STARTUP_DONE_RE = re.compile(
@@ -21,6 +22,7 @@ STARTUP_DONE_RE = re.compile(
 )
 TIME_REAL_RE = re.compile(r"^real (?P<seconds>[0-9]+(?:\.[0-9]+)?)$")
 RANK_LOG_RE = re.compile(r"^(?P<case_id>.+)-rank(?P<rank>[0-9]+)\.log$")
+RANK_STDOUT_RE = re.compile(r"^(?P<case_id>.+)-rank(?P<rank>[0-9]+)\.(?:ssh|wrapper)\.stdout$")
 
 
 def _round_seconds(value: float | None) -> float | None:
@@ -105,6 +107,43 @@ def _summarize_event_kinds(events: list[dict[str, Any]]) -> dict[str, float]:
 def _transport_bucket(transport_metrics: dict[str, Any], kind: str) -> dict[str, Any]:
     bucket = (transport_metrics.get("totals_by_kind") or {}).get(kind)
     return bucket if isinstance(bucket, dict) else {}
+
+
+def _as_int(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _stage_kv_cache_metrics(summary: dict[str, Any]) -> dict[str, Any]:
+    prefill = _as_dict(summary.get("prefill"))
+    before = _as_dict(prefill.get("stage_kv_cache"))
+    after = _as_dict(prefill.get("stage_kv_cache_after_compaction"))
+    selected = after or before
+    if not selected:
+        return {
+            "tensor_bytes": None,
+            "active_tensor_bytes": None,
+            "active_tensor_bytes_before": None,
+            "active_tensor_bytes_after": None,
+            "max_seq_len": None,
+            "allocated_layers": None,
+        }
+    return {
+        "tensor_bytes": _as_int(selected.get("tensor_bytes")),
+        "active_tensor_bytes": _as_int(selected.get("active_tensor_bytes")),
+        "active_tensor_bytes_before": _as_int(before.get("active_tensor_bytes")),
+        "active_tensor_bytes_after": _as_int(after.get("active_tensor_bytes")),
+        "max_seq_len": _as_int(selected.get("max_seq_len")),
+        "allocated_layers": _as_int(selected.get("allocated_layers")),
+    }
 
 
 def _summarize_tp_collective_breakdown(transport_metrics: dict[str, Any]) -> list[dict[str, Any]]:
@@ -221,12 +260,29 @@ def _read_with_auxiliary_logs(path: Path) -> str:
 
 def _discover_case_logs(baseline_dir: Path) -> dict[str, list[Path]]:
     cases: dict[str, list[Path]] = defaultdict(list)
+    seen_rank_logs: set[tuple[str, int]] = set()
     for path in sorted(baseline_dir.glob("*-rank*.log")):
         match = RANK_LOG_RE.match(path.name)
         if match:
-            cases[match.group("case_id")].append(path)
+            case_id = match.group("case_id")
+            rank = int(match.group("rank"))
+            seen_rank_logs.add((case_id, rank))
+            cases[case_id].append(path)
+    for path in sorted(baseline_dir.glob("*-rank*.stdout")):
+        match = RANK_STDOUT_RE.match(path.name)
+        if not match:
+            continue
+        case_id = match.group("case_id")
+        rank = int(match.group("rank"))
+        if (case_id, rank) in seen_rank_logs:
+            continue
+        cases[case_id].append(path)
+    for path in sorted(baseline_dir.glob("*.log")):
+        if RANK_LOG_RE.match(path.name):
+            continue
+        cases[path.name.removesuffix(".log")].append(path)
     for path in sorted(baseline_dir.glob("*.stdout")):
-        if path.name.endswith(".wrapper.stdout"):
+        if path.name.endswith(".wrapper.stdout") or path.name.endswith(".ssh.stdout"):
             continue
         cases[path.name.removesuffix(".stdout")].append(path)
     return {case_id: sorted(paths) for case_id, paths in sorted(cases.items())}
@@ -305,6 +361,7 @@ def collect_log_record(case_id: str, path: Path) -> dict[str, Any]:
             "tp_weight_sharded": _get_path(summary, "weight_load.tp_weight_sharded"),
             "stage_weight_scope_ok": _get_path(summary, "weight_load.stage_weight_scope_ok"),
         },
+        "stage_kv_cache": _stage_kv_cache_metrics(summary),
     }
 
 
@@ -345,16 +402,27 @@ def _format_bytes(value: int | None) -> str:
     return f"{value} B"
 
 
+def _format_stage_kv_cache(value: dict[str, Any]) -> str:
+    allocated = value.get("tensor_bytes")
+    active = value.get("active_tensor_bytes")
+    if allocated is None:
+        return "-"
+    if active is not None and active != allocated:
+        return f"{_format_bytes(active)} / {_format_bytes(allocated)}"
+    return _format_bytes(allocated)
+
+
 def records_to_markdown(records: list[dict[str, Any]]) -> str:
     lines = [
-        "| case | rank | total s | prepare s | contract s | materialize s | barrier s | startup bytes | scaffold bytes | handoff bytes | TP coll s | TP coll bytes | cuda peak alloc | cuda peak reserved | loaded weights |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| case | rank | total s | startup bytes | scaffold bytes | handoff bytes | TP coll s | TP coll bytes | CUDA peak | loaded weights | stage KV bytes |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for record in records:
         timing = record["timing"]
         memory = record["memory"]
         payload = record["payload"]
         weight_load = record["weight_load"]
+        stage_kv_cache = record["stage_kv_cache"]
         lines.append(
             "| "
             + " | ".join(
@@ -362,18 +430,14 @@ def records_to_markdown(records: list[dict[str, Any]]) -> str:
                     record["case_id"],
                     "-" if record["rank"] is None else str(record["rank"]),
                     _format_seconds(timing["runtime_total_seconds"]),
-                    _format_seconds(timing["prepare_session_seconds"]),
-                    _format_seconds(timing["startup_contract_seconds"]),
-                    _format_seconds(timing["materialize_stage_seconds"]),
-                    _format_seconds(timing["post_load_barrier_seconds"]),
                     _format_bytes(payload["startup_contract_bytes"]),
                     _format_bytes(payload["scaffold_bytes"]),
                     _format_bytes(payload["stage_handoff_bytes"]),
                     _format_seconds(payload["tp_collective_seconds"]),
                     _format_bytes(payload["tp_collective_bytes"]),
                     _format_bytes(memory["cuda_peak_allocated_bytes"]),
-                    _format_bytes(memory["cuda_peak_reserved_bytes"]),
                     _format_bytes(weight_load["loaded_weight_tensor_bytes"]),
+                    _format_stage_kv_cache(stage_kv_cache),
                 ]
             )
             + " |"
@@ -390,12 +454,20 @@ def main(argv: list[str] | None = None) -> int:
         help="Directory containing baseline stdout/rank logs.",
     )
     parser.add_argument("--case-id", action="append", help="Collect one case id; can be repeated.")
+    parser.add_argument("--matrix", choices=["step22"], help="Collect case ids from a named smoke matrix.")
+    parser.add_argument("--include-optional", action="store_true", help="Include optional matrix cases.")
     parser.add_argument("--output-json", type=Path, help="Write machine-readable records.")
     parser.add_argument("--output-md", type=Path, help="Write markdown table.")
     parser.add_argument("--strict-memory", action="store_true", help="Fail if CUDA peak memory is missing.")
     args = parser.parse_args(argv)
 
-    records = collect_records(args.baseline_dir, args.case_id)
+    if args.matrix and args.case_id:
+        parser.error("--matrix and --case-id cannot be combined")
+    case_ids = args.case_id
+    if args.matrix == "step22":
+        case_ids = [case.case_id for case in iter_smoke_cases(include_optional=args.include_optional)]
+
+    records = collect_records(args.baseline_dir, case_ids)
     if args.strict_memory:
         missing_memory = [
             f"{record['case_id']} rank={record['rank']}"

@@ -54,8 +54,11 @@ from .execution import (
     trace_text_stage_tp,
 )
 from .processing import (
+    VideoInputSpec,
     build_inputs,
+    build_inputs_with_metadata,
     build_text_inputs,
+    build_video_messages,
     inspect_model_weights,
     list_frames,
     load_model,
@@ -120,7 +123,10 @@ from .functional import (
 
 DIRECT_RUNTIME_EXPORTS = [
     "StageState",
+    "VideoInputSpec",
     "build_inputs",
+    "build_inputs_with_metadata",
+    "build_video_messages",
     "build_text_inputs",
     "inspect_model_weights",
     "list_frames",

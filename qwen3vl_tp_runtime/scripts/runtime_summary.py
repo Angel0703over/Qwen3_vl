@@ -403,8 +403,13 @@ def _summarize_generate_phase_stats(phase_stats: dict) -> dict:
         "runtime_input_source",
         "runtime_input_broadcast_skipped",
         "stage_kv_cache",
+        "stage_kv_cache_after_compaction",
+        "video_input",
         "video_window_cache",
         "video_kv_compression_plan",
+        "video_kv_compression_contract",
+        "video_kv_compaction",
+        "video_kv_compaction_active",
     ):
         if key in phase_stats:
             summary[key] = phase_stats[key]

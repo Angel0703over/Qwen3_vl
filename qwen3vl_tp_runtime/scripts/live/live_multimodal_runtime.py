@@ -26,7 +26,7 @@ from qwen3vl_tp_runtime.models.qwen3vl.live import (
     prepare_multimodal_prefill_runtime_inputs,
 )
 from qwen3vl_tp_runtime.models.qwen3vl.processing import (
-    build_inputs,
+    build_inputs_with_metadata,
     list_frames,
     load_model,
     load_processor,
@@ -50,13 +50,39 @@ def load_live_multimodal_case(
     model_path: str,
     frame_dir: str,
     num_frames: int,
+    sample_fps: int | float = 1,
+    video_path: str | None = None,
+    video_url: str | None = None,
+    video_fps: float | None = None,
+    video_nframes: int | None = None,
+    video_start: float | None = None,
+    video_end: float | None = None,
+    video_min_frames: int | None = None,
+    video_max_frames: int | None = None,
 ):
     model = load_model(model_path, attn_implementation="eager")
     processor = load_processor(model_path)
-    frame_paths = list_frames(num_frames, frame_dir)
-    inputs = build_inputs(processor, frame_paths)
+    if video_path is None and video_url is None:
+        frame_paths = list_frames(num_frames, frame_dir)
+        frame_paths_for_builder = frame_paths
+    else:
+        frame_paths = []
+        frame_paths_for_builder = None
+    inputs, video_input_metadata = build_inputs_with_metadata(
+        processor,
+        frame_paths_for_builder,
+        video_path=video_path,
+        video_url=video_url,
+        sample_fps=sample_fps,
+        video_fps=video_fps,
+        video_nframes=video_nframes,
+        video_start=video_start,
+        video_end=video_end,
+        video_min_frames=video_min_frames,
+        video_max_frames=video_max_frames,
+    )
     inputs = inputs.to(next(model.parameters()).device)
-    return model, frame_paths, inputs
+    return model, frame_paths, inputs, video_input_metadata
 
 
 def build_prefill_runtime(
@@ -83,10 +109,19 @@ def build_prefill_runtime(
 def run_prefill(args) -> None:
     started_at = time.perf_counter()
     reset_runtime_metrics()
-    model, frame_paths, inputs = load_live_multimodal_case(
+    model, frame_paths, inputs, video_input_metadata = load_live_multimodal_case(
         model_path=args.model_path,
         frame_dir=args.frame_dir,
         num_frames=args.num_frames,
+        sample_fps=getattr(args, "sample_fps", 1),
+        video_path=getattr(args, "video_path", None),
+        video_url=getattr(args, "video_url", None),
+        video_fps=getattr(args, "video_fps", None),
+        video_nframes=getattr(args, "video_nframes", None),
+        video_start=getattr(args, "video_start", None),
+        video_end=getattr(args, "video_end", None),
+        video_min_frames=getattr(args, "video_min_frames", None),
+        video_max_frames=getattr(args, "video_max_frames", None),
     )
 
     with torch.inference_mode():
@@ -106,7 +141,8 @@ def run_prefill(args) -> None:
 
     summary = {
         "mode": "prefill",
-        "num_frames": len(frame_paths),
+        "num_frames": int(video_input_metadata.get("frame_count") or len(frame_paths)),
+        "video_input": video_input_metadata,
         "compute_dtype": str(compute_dtype),
         "input_shape": list(runtime_inputs.inputs_embeds.shape),
         "output_shape": list(runtime_logits.shape),
@@ -131,10 +167,19 @@ def run_prefill(args) -> None:
 def run_decode(args) -> None:
     started_at = time.perf_counter()
     reset_runtime_metrics()
-    model, frame_paths, inputs = load_live_multimodal_case(
+    model, frame_paths, inputs, video_input_metadata = load_live_multimodal_case(
         model_path=args.model_path,
         frame_dir=args.frame_dir,
         num_frames=args.num_frames,
+        sample_fps=getattr(args, "sample_fps", 1),
+        video_path=getattr(args, "video_path", None),
+        video_url=getattr(args, "video_url", None),
+        video_fps=getattr(args, "video_fps", None),
+        video_nframes=getattr(args, "video_nframes", None),
+        video_start=getattr(args, "video_start", None),
+        video_end=getattr(args, "video_end", None),
+        video_min_frames=getattr(args, "video_min_frames", None),
+        video_max_frames=getattr(args, "video_max_frames", None),
     )
     attention_mask_2d = ensure_attention_mask_2d(inputs)
 
@@ -212,7 +257,8 @@ def run_decode(args) -> None:
 
     summary = {
         "mode": "decode",
-        "num_frames": len(frame_paths),
+        "num_frames": int(video_input_metadata.get("frame_count") or len(frame_paths)),
+        "video_input": video_input_metadata,
         "compute_dtype": str(compute_dtype),
         "decode_token_id": decode_token_id,
         "prefill_visual_tokens": (
@@ -237,10 +283,19 @@ def run_decode(args) -> None:
 def run_generate(args) -> None:
     started_at = time.perf_counter()
     reset_runtime_metrics()
-    model, frame_paths, inputs = load_live_multimodal_case(
+    model, frame_paths, inputs, video_input_metadata = load_live_multimodal_case(
         model_path=args.model_path,
         frame_dir=args.frame_dir,
         num_frames=args.num_frames,
+        sample_fps=getattr(args, "sample_fps", 1),
+        video_path=getattr(args, "video_path", None),
+        video_url=getattr(args, "video_url", None),
+        video_fps=getattr(args, "video_fps", None),
+        video_nframes=getattr(args, "video_nframes", None),
+        video_start=getattr(args, "video_start", None),
+        video_end=getattr(args, "video_end", None),
+        video_min_frames=getattr(args, "video_min_frames", None),
+        video_max_frames=getattr(args, "video_max_frames", None),
     )
     attention_mask_2d = ensure_attention_mask_2d(inputs)
 
@@ -354,7 +409,8 @@ def run_generate(args) -> None:
 
     summary = {
         "mode": "generate",
-        "num_frames": len(frame_paths),
+        "num_frames": int(video_input_metadata.get("frame_count") or len(frame_paths)),
+        "video_input": video_input_metadata,
         "compute_dtype": str(compute_dtype),
         "max_new_tokens": args.max_new_tokens,
         "prefill_visual_tokens": (
@@ -379,6 +435,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model-path", type=str, default=MODEL_PATH)
     parser.add_argument("--frame-dir", type=str, default=FRAME_DIR)
     parser.add_argument("--num-frames", type=int, default=8)
+    parser.add_argument("--sample-fps", type=float, default=1)
+    parser.add_argument("--video-path", type=str, default=None)
+    parser.add_argument("--video-url", type=str, default=None)
+    parser.add_argument("--video-fps", type=float, default=None)
+    parser.add_argument("--video-nframes", type=int, default=None)
+    parser.add_argument("--video-start", type=float, default=None)
+    parser.add_argument("--video-end", type=float, default=None)
+    parser.add_argument("--video-min-frames", type=int, default=None)
+    parser.add_argument("--video-max-frames", type=int, default=None)
     parser.add_argument("--compute-dtype", type=str, default="auto")
     parser.add_argument("--topk", type=int, default=10)
 

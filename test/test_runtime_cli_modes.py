@@ -104,6 +104,89 @@ class RuntimeCliModesTest(unittest.TestCase):
         self.assertEqual(kwargs["video_kv_keep_ratio"], 0.5)
         self.assertIsNone(kwargs["video_kv_keep_tokens_per_window"])
 
+    def test_full_video_input_fields_flow_into_direct_manifest_kwargs(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "--modality",
+                "multimodal",
+                "--mode",
+                "generate",
+                "--backend",
+                "tp",
+                "--tp",
+                "2",
+                "--video-path",
+                "/tmp/sample.mp4",
+                "--video-nframes",
+                "8",
+                "--video-start",
+                "1.0",
+                "--video-end",
+                "3.0",
+            ]
+        )
+
+        kwargs = _build_direct_manifest_kwargs(args)
+
+        self.assertEqual(kwargs["video_path"], "/tmp/sample.mp4")
+        self.assertIsNone(kwargs["video_url"])
+        self.assertEqual(kwargs["video_nframes"], 8)
+        self.assertEqual(kwargs["video_start"], 1.0)
+        self.assertEqual(kwargs["video_end"], 3.0)
+        self.assertEqual(kwargs["frame_dir"], runtime_script.FRAME_DIR)
+
+    def test_full_video_input_rejects_fps_and_nframes_together(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "--modality",
+                "multimodal",
+                "--mode",
+                "generate",
+                "--backend",
+                "tp",
+                "--tp",
+                "2",
+                "--video-path",
+                "/tmp/sample.mp4",
+                "--video-fps",
+                "2",
+                "--video-nframes",
+                "8",
+            ]
+        )
+        stderr = io.StringIO()
+
+        with self.assertRaises(SystemExit):
+            with redirect_stderr(stderr):
+                _validate_args(parser, args)
+
+        self.assertIn("--video-fps 和 --video-nframes", stderr.getvalue())
+
+    def test_infinipot_v_selector_is_valid_opt_in(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "--modality",
+                "multimodal",
+                "--mode",
+                "generate",
+                "--backend",
+                "tp",
+                "--tp",
+                "2",
+                "--video-kv-compression",
+                "infinipot-v",
+            ]
+        )
+
+        kwargs = _build_direct_manifest_kwargs(args)
+
+        self.assertEqual(kwargs["video_kv_compression"], "infinipot-v")
+        self.assertEqual(kwargs["video_kv_keep_ratio"], 0.5)
+        self.assertIsNone(kwargs["video_kv_keep_tokens_per_window"])
+
     def test_video_kv_selector_rejects_ratio_and_token_budget_together(self) -> None:
         parser = build_parser()
         args = parser.parse_args(

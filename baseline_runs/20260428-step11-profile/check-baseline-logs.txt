@@ -1,4 +1,0 @@
-PASS case=pp-text-generate ranks=2 generated_token_ids=[104455, 9909, 9286, 16488] generated_text='人工智能（Artificial'
-PASS case=pp-mm-generate ranks=2 generated_token_ids=[87140, 15946, 3837, 101177] generated_text='视频中，一名'
-PASS case=tp-text-generate ranks=2 generated_token_ids=[104455, 9909, 9286, 16488] generated_text='人工智能（Artificial'
-PASS case=tp-mm-generate ranks=2 generated_token_ids=[87140, 15946, 3837, 101177] generated_text='视频中，一名'

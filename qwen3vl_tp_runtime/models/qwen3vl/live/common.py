@@ -97,13 +97,25 @@ def _build_multimodal_decode_position_ids(
     decode_input_ids: torch.Tensor,
     attention_mask_2d: torch.Tensor,
     rope_deltas: torch.Tensor,
+    logical_position_start: int | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Build single-step multimodal decode position ids from cached rope deltas."""
 
     batch_size, seq_length = decode_input_ids.shape
-    text_position_ids = attention_mask_2d.long().cumsum(-1) - 1
-    text_position_ids = text_position_ids.masked_fill(attention_mask_2d == 0, 0)
-    text_position_ids = text_position_ids[:, -seq_length:].to(device=decode_input_ids.device)
+    if logical_position_start is None:
+        text_position_ids = attention_mask_2d.long().cumsum(-1) - 1
+        text_position_ids = text_position_ids.masked_fill(attention_mask_2d == 0, 0)
+        text_position_ids = text_position_ids[:, -seq_length:].to(device=decode_input_ids.device)
+    else:
+        logical_start = int(logical_position_start)
+        if logical_start < 0:
+            raise ValueError(f"logical_position_start 不能小于 0，当前拿到 {logical_start}")
+        text_position_ids = torch.arange(
+            logical_start,
+            logical_start + seq_length,
+            device=decode_input_ids.device,
+            dtype=torch.long,
+        ).view(1, -1).expand(batch_size, -1)
 
     if rope_deltas.ndim == 1:
         rope_deltas = rope_deltas.unsqueeze(1)

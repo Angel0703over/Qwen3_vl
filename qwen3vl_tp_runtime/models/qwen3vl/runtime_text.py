@@ -237,6 +237,8 @@ def _restore_text_prompt_stage_state(
                 or runtime_config.get("frame_paths")
                 or []
             )
+        if restored.get("video_input_metadata") is None:
+            restored["video_input_metadata"] = dict(runtime_config.get("_mm_video_input_metadata") or {})
         return restored
 
     needs_restore = bool(stage_state.pop("runtime_only_prompt_local_rebuild", False))

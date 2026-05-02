@@ -107,6 +107,15 @@ def _build_runtime_config(
     max_new_tokens: int | None = None,
     num_frames: int | None = None,
     frame_dir: str | None = None,
+    sample_fps: int | float | None = None,
+    video_path: str | None = None,
+    video_url: str | None = None,
+    video_fps: float | None = None,
+    video_nframes: int | None = None,
+    video_start: float | None = None,
+    video_end: float | None = None,
+    video_min_frames: int | None = None,
+    video_max_frames: int | None = None,
     video_kv_compression: str | None = None,
     video_kv_keep_ratio: float | None = None,
     video_kv_keep_tokens_per_window: int | None = None,
@@ -128,6 +137,24 @@ def _build_runtime_config(
         config["num_frames"] = int(num_frames)
     if frame_dir is not None:
         config["frame_dir"] = frame_dir
+    if sample_fps is not None:
+        config["sample_fps"] = float(sample_fps)
+    if video_path is not None:
+        config["video_path"] = str(video_path)
+    if video_url is not None:
+        config["video_url"] = str(video_url)
+    if video_fps is not None:
+        config["video_fps"] = float(video_fps)
+    if video_nframes is not None:
+        config["video_nframes"] = int(video_nframes)
+    if video_start is not None:
+        config["video_start"] = float(video_start)
+    if video_end is not None:
+        config["video_end"] = float(video_end)
+    if video_min_frames is not None:
+        config["video_min_frames"] = int(video_min_frames)
+    if video_max_frames is not None:
+        config["video_max_frames"] = int(video_max_frames)
     if video_kv_compression is not None:
         config["video_kv_compression"] = str(video_kv_compression)
     if video_kv_keep_ratio is not None:
@@ -342,6 +369,7 @@ _MM_STARTUP_ALLOWED_TOP_LEVEL_KEYS = frozenset(
         "deepstack_by_layer",
         "num_frames",
         "frame_paths",
+        "video_input_metadata",
     )
 )
 _MM_STARTUP_ALLOWED_SHARED_KEYS = frozenset(
@@ -465,6 +493,7 @@ def _normalize_mm_startup_contract(payload: dict[str, Any]) -> dict[str, Any]:
         },
         "num_frames": int(payload.get("num_frames", 0)),
         "frame_paths": list(payload.get("frame_paths") or []),
+        "video_input_metadata": dict(payload.get("video_input_metadata") or {}),
     }
 
 
@@ -475,6 +504,7 @@ def _build_mm_startup_transport_payload(
     stage_visuals: dict[int, Any],
     num_frames: int,
     frame_paths: list[str],
+    video_input_metadata: dict[str, Any] | None = None,
     compute_dtype: torch.dtype | None = None,
     include_stage_output: bool = True,
     include_derived_shared: bool = True,
@@ -529,6 +559,7 @@ def _build_mm_startup_transport_payload(
         {
             "num_frames": int(num_frames),
             "frame_paths": list(frame_paths),
+            "video_input_metadata": dict(video_input_metadata or {}),
         },
         tensor_payload,
     )
@@ -548,6 +579,7 @@ def pack_mm_startup_transport(
         stage_visuals=normalized["stage_visuals"],
         num_frames=normalized["num_frames"],
         frame_paths=normalized["frame_paths"],
+        video_input_metadata=normalized["video_input_metadata"],
         compute_dtype=compute_dtype,
         include_stage_output=include_stage_output,
         include_derived_shared=include_derived_shared,
@@ -570,6 +602,7 @@ def restore_mm_startup_transport(
         "stage_visuals": {},
         "num_frames": int(meta.get("num_frames", 0)),
         "frame_paths": list(meta.get("frame_paths") or []),
+        "video_input_metadata": dict(meta.get("video_input_metadata") or {}),
     }
     for name, tensor in tensor_payload.items():
         parts = name.split(".")
@@ -849,6 +882,9 @@ class DirectStageStateBuilder:
                         "num_frames": int(self.runtime_config.get("_mm_num_frames", 0)),
                         "frame_paths": list(self.runtime_config.get("_mm_frame_paths") or []),
                         "frontend_activation": "startup-contract",
+                        "video_input_metadata": dict(
+                            self.runtime_config.get("_mm_video_input_metadata") or {}
+                        ),
                     }
                     self.compute_dtype = _resolve_compute_dtype(
                         first_stage_input,
@@ -890,6 +926,7 @@ class DirectStageStateBuilder:
                         "num_frames": resolved_frontend.num_frames,
                         "frame_paths": list(resolved_frontend.frame_paths),
                         "frontend_activation": resolved_frontend.frontend_activation,
+                        "video_input_metadata": dict(resolved_frontend.video_input_metadata or {}),
                     }
                 self._text_rotary_emb = build_text_rotary_embedding(
                     self._text_model_config,
@@ -1140,6 +1177,7 @@ class DirectStageStateBuilder:
             ),
             "num_frames": int(self.extra["num_frames"]),
             "frame_paths": list(self.extra["frame_paths"]),
+            "video_input_metadata": dict(self.extra.get("video_input_metadata") or {}),
         }
         if selected_stage_visuals:
             payload["stage_visuals"] = _clone_mm_stage_visuals_to_cpu(
@@ -1167,6 +1205,7 @@ class DirectStageStateBuilder:
             stage_visuals=selected_stage_visuals,
             num_frames=int(self.extra["num_frames"]),
             frame_paths=list(self.extra["frame_paths"]),
+            video_input_metadata=dict(self.extra.get("video_input_metadata") or {}),
             compute_dtype=self.compute_dtype,
             include_stage_output=include_stage_output,
             include_derived_shared=include_derived_shared,
@@ -2721,6 +2760,7 @@ class DirectStageStateBuilder:
         else:
             stage_state["num_frames"] = self.extra["num_frames"]
             stage_state["frame_paths"] = self.extra["frame_paths"]
+            stage_state["video_input_metadata"] = dict(self.extra.get("video_input_metadata") or {})
             stage_state["input_ids"] = _runtime_tensor(prefill_runtime_state.input_ids, device=self.stage_state_device)
 
         if is_last_stage:
@@ -2852,6 +2892,7 @@ class DirectStageStateBuilder:
         else:
             stage_state["num_frames"] = self.extra["num_frames"]
             stage_state["frame_paths"] = self.extra["frame_paths"]
+            stage_state["video_input_metadata"] = dict(self.extra.get("video_input_metadata") or {})
             stage_state["position_ids"] = _runtime_tensor(state["position_ids"], device=self.stage_state_device)
 
         if spec.start_idx == 0:
@@ -3131,6 +3172,7 @@ class DirectStageStateBuilder:
         else:
             stage_state["num_frames"] = self.extra["num_frames"]
             stage_state["frame_paths"] = self.extra["frame_paths"]
+            stage_state["video_input_metadata"] = dict(self.extra.get("video_input_metadata") or {})
 
         if spec.start_idx == 0:
             if self.include_text_weights and (stage_static_weights is not None or self.modality != "text"):
@@ -3203,6 +3245,7 @@ class DirectStageStateBuilder:
                 {
                     "num_frames": self.extra["num_frames"],
                     "frame_paths": self.extra["frame_paths"],
+                    "video_input_metadata": dict(self.extra.get("video_input_metadata") or {}),
                     "mm_token_type_ids": _runtime_tensor(
                         getattr(prefill_runtime_state, "mm_token_type_ids", None),
                         device=self.stage_state_device,
@@ -3421,6 +3464,7 @@ def select_mm_startup_contract(
         ),
         "num_frames": int(normalized["num_frames"]),
         "frame_paths": list(normalized["frame_paths"]),
+        "video_input_metadata": dict(normalized.get("video_input_metadata") or {}),
     }
 
     stage_visuals = normalized["stage_visuals"]
@@ -3472,6 +3516,11 @@ def seed_mm_startup_runtime_config(
     runtime_config["_mm_num_frames"] = int(selected_payload["num_frames"] or runtime_config.get("num_frames", 0))
     runtime_config["_mm_frame_paths"] = list(
         selected_payload["frame_paths"] or runtime_config.get("_mm_frame_paths") or []
+    )
+    runtime_config["_mm_video_input_metadata"] = dict(
+        selected_payload.get("video_input_metadata")
+        or runtime_config.get("_mm_video_input_metadata")
+        or {}
     )
     runtime_config["_mm_startup_contract_ready"] = True
     runtime_config["_mm_frontend_state_ready"] = True
@@ -3536,6 +3585,15 @@ def build_direct_pipeline_manifest(
     max_new_tokens: int | None = None,
     num_frames: int | None = None,
     frame_dir: str | None = None,
+    sample_fps: int | float | None = None,
+    video_path: str | None = None,
+    video_url: str | None = None,
+    video_fps: float | None = None,
+    video_nframes: int | None = None,
+    video_start: float | None = None,
+    video_end: float | None = None,
+    video_min_frames: int | None = None,
+    video_max_frames: int | None = None,
     video_kv_compression: str | None = None,
     video_kv_keep_ratio: float | None = None,
     video_kv_keep_tokens_per_window: int | None = None,
@@ -3551,6 +3609,15 @@ def build_direct_pipeline_manifest(
         max_new_tokens=max_new_tokens,
         num_frames=num_frames,
         frame_dir=frame_dir,
+        sample_fps=sample_fps,
+        video_path=video_path,
+        video_url=video_url,
+        video_fps=video_fps,
+        video_nframes=video_nframes,
+        video_start=video_start,
+        video_end=video_end,
+        video_min_frames=video_min_frames,
+        video_max_frames=video_max_frames,
         video_kv_compression=video_kv_compression,
         video_kv_keep_ratio=video_kv_keep_ratio,
         video_kv_keep_tokens_per_window=video_kv_keep_tokens_per_window,
@@ -3574,7 +3641,7 @@ def build_direct_pipeline_manifest(
         bundle_dir=None,
         stages=stages,
         boundaries=[],
-        num_frames=0 if modality == "text" else int(num_frames or 8),
+        num_frames=0 if modality == "text" else int(video_nframes or num_frames or 8),
         save_dtype=save_dtype,
         runtime_config=runtime_config,
     )
@@ -3593,6 +3660,15 @@ def build_direct_hybrid_manifest(
     max_new_tokens: int | None = None,
     num_frames: int | None = None,
     frame_dir: str | None = None,
+    sample_fps: int | float | None = None,
+    video_path: str | None = None,
+    video_url: str | None = None,
+    video_fps: float | None = None,
+    video_nframes: int | None = None,
+    video_start: float | None = None,
+    video_end: float | None = None,
+    video_min_frames: int | None = None,
+    video_max_frames: int | None = None,
     video_kv_compression: str | None = None,
     video_kv_keep_ratio: float | None = None,
     video_kv_keep_tokens_per_window: int | None = None,
@@ -3610,6 +3686,15 @@ def build_direct_hybrid_manifest(
         max_new_tokens=max_new_tokens,
         num_frames=num_frames,
         frame_dir=frame_dir,
+        sample_fps=sample_fps,
+        video_path=video_path,
+        video_url=video_url,
+        video_fps=video_fps,
+        video_nframes=video_nframes,
+        video_start=video_start,
+        video_end=video_end,
+        video_min_frames=video_min_frames,
+        video_max_frames=video_max_frames,
         video_kv_compression=video_kv_compression,
         video_kv_keep_ratio=video_kv_keep_ratio,
         video_kv_keep_tokens_per_window=video_kv_keep_tokens_per_window,
@@ -3641,6 +3726,15 @@ def build_direct_tp_manifest(
     max_new_tokens: int | None = None,
     num_frames: int | None = None,
     frame_dir: str | None = None,
+    sample_fps: int | float | None = None,
+    video_path: str | None = None,
+    video_url: str | None = None,
+    video_fps: float | None = None,
+    video_nframes: int | None = None,
+    video_start: float | None = None,
+    video_end: float | None = None,
+    video_min_frames: int | None = None,
+    video_max_frames: int | None = None,
     video_kv_compression: str | None = None,
     video_kv_keep_ratio: float | None = None,
     video_kv_keep_tokens_per_window: int | None = None,
@@ -3657,6 +3751,15 @@ def build_direct_tp_manifest(
         max_new_tokens=max_new_tokens,
         num_frames=num_frames,
         frame_dir=frame_dir,
+        sample_fps=sample_fps,
+        video_path=video_path,
+        video_url=video_url,
+        video_fps=video_fps,
+        video_nframes=video_nframes,
+        video_start=video_start,
+        video_end=video_end,
+        video_min_frames=video_min_frames,
+        video_max_frames=video_max_frames,
         video_kv_compression=video_kv_compression,
         video_kv_keep_ratio=video_kv_keep_ratio,
         video_kv_keep_tokens_per_window=video_kv_keep_tokens_per_window,

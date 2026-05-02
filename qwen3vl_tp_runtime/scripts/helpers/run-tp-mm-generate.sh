@@ -20,6 +20,10 @@ Environment:
   MASTER_PORT      Default: 29536
   MODEL_PATH       Default: /mnt/ssd/models/Qwen/Qwen3-VL-4B-Instruct
   FRAME_DIR        Default: /mnt/ssd/code/Qwen3_vl/frames
+  VIDEO_PATH       Optional: full local video path; if set, FRAME_DIR is ignored.
+  VIDEO_URL        Optional: full video URL; mutually exclusive with VIDEO_PATH.
+  VIDEO_FPS        Optional: Qwen video fps sampler.
+  VIDEO_NFRAMES    Optional: fixed sampled frame count; mutually exclusive with VIDEO_FPS.
   MM_PROMPT/PROMPT Default: 请用中文简要介绍一下人工智能。
   MAX_NEW_TOKENS   Default: 4
   NUM_FRAMES       Default: 8
@@ -45,6 +49,14 @@ MASTER_PORT="${MASTER_PORT:-29536}"
 NODE_RANK="${NODE_RANK:-}"
 MODEL_PATH="${MODEL_PATH:-/mnt/ssd/models/Qwen/Qwen3-VL-4B-Instruct}"
 FRAME_DIR="${FRAME_DIR:-/mnt/ssd/code/Qwen3_vl/frames}"
+VIDEO_PATH="${VIDEO_PATH:-}"
+VIDEO_URL="${VIDEO_URL:-}"
+VIDEO_FPS="${VIDEO_FPS:-}"
+VIDEO_NFRAMES="${VIDEO_NFRAMES:-}"
+VIDEO_START="${VIDEO_START:-}"
+VIDEO_END="${VIDEO_END:-}"
+VIDEO_MIN_FRAMES="${VIDEO_MIN_FRAMES:-}"
+VIDEO_MAX_FRAMES="${VIDEO_MAX_FRAMES:-}"
 PROMPT="${PROMPT:-${MM_PROMPT:-请用中文简要介绍一下人工智能。}}"
 MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-4}"
 NUM_FRAMES="${NUM_FRAMES:-8}"
@@ -80,6 +92,36 @@ fi
 export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 mkdir -p "${OUT}"
 
+video_args=()
+if [[ -n "${VIDEO_PATH}" && -n "${VIDEO_URL}" ]]; then
+  echo "VIDEO_PATH and VIDEO_URL are mutually exclusive." >&2
+  exit 2
+elif [[ -n "${VIDEO_PATH}" ]]; then
+  video_args+=(--video-path "${VIDEO_PATH}")
+elif [[ -n "${VIDEO_URL}" ]]; then
+  video_args+=(--video-url "${VIDEO_URL}")
+else
+  video_args+=(--frame-dir "${FRAME_DIR}" --num-frames "${NUM_FRAMES}")
+fi
+if [[ -n "${VIDEO_FPS}" ]]; then
+  video_args+=(--video-fps "${VIDEO_FPS}")
+fi
+if [[ -n "${VIDEO_NFRAMES}" ]]; then
+  video_args+=(--video-nframes "${VIDEO_NFRAMES}")
+fi
+if [[ -n "${VIDEO_START}" ]]; then
+  video_args+=(--video-start "${VIDEO_START}")
+fi
+if [[ -n "${VIDEO_END}" ]]; then
+  video_args+=(--video-end "${VIDEO_END}")
+fi
+if [[ -n "${VIDEO_MIN_FRAMES}" ]]; then
+  video_args+=(--video-min-frames "${VIDEO_MIN_FRAMES}")
+fi
+if [[ -n "${VIDEO_MAX_FRAMES}" ]]; then
+  video_args+=(--video-max-frames "${VIDEO_MAX_FRAMES}")
+fi
+
 cmd=(
   "${TORCHRUN}"
   --nnodes "${NNODES}"
@@ -92,8 +134,7 @@ cmd=(
   --modality multimodal
   --mode generate
   --model-path "${MODEL_PATH}"
-  --frame-dir "${FRAME_DIR}"
-  --num-frames "${NUM_FRAMES}"
+  "${video_args[@]}"
   --tp "${TP}"
   --prompt "${PROMPT}"
   --max-new-tokens "${MAX_NEW_TOKENS}"
