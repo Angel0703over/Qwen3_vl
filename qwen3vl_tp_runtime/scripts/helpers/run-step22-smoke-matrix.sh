@@ -31,6 +31,7 @@ MASTER_ADDR="${MASTER_ADDR:-10.126.126.3}"
 MASTER_PORT_BASE="${MASTER_PORT_BASE:-29670}"
 TP_HOSTS="${TP_HOSTS:-local 10.126.126.4}"
 PP_HOSTS="${PP_HOSTS:-${TP_HOSTS}}"
+PP3_HOSTS="${PP3_HOSTS:-${HYBRID_HOSTS:-local 10.126.126.4 10.126.126.5}}"
 HYBRID_HOSTS="${HYBRID_HOSTS:-local 10.126.126.4 10.126.126.5}"
 PP_VIDEO_HOSTS="${PP_VIDEO_HOSTS:-${PP_HOSTS}}"
 TP_VIDEO_HOSTS="${TP_VIDEO_HOSTS:-${TP_HOSTS}}"
@@ -72,6 +73,7 @@ Options:
 Host environment:
   TP_HOSTS                 Space-separated hosts for TP ranks. Default: "${TP_HOSTS}"
   PP_HOSTS                 Space-separated hosts for PP ranks. Default: "${PP_HOSTS}"
+  PP3_HOSTS                Space-separated hosts for PP=3 smoke. Default: "${PP3_HOSTS}"
   HYBRID_HOSTS             Space-separated hosts for HYBRID ranks. Default: "${HYBRID_HOSTS}"
   MASTER_ADDR              torchrun master addr. Default: ${MASTER_ADDR}
   MASTER_PORT_BASE         First port for distributed cases. Default: ${MASTER_PORT_BASE}
@@ -355,7 +357,7 @@ run_distributed_case() {
       "NNODES=${nnodes}"
       "MASTER_ADDR=${MASTER_ADDR}"
       "MASTER_PORT=${master_port}"
-      "LOG_PATH=${OUT}/${case_id}-rank${rank}.remote.log"
+      "LOG_PATH=/dev/null"
       bash
       "${helper}"
       "${extra_args[@]}"
@@ -469,6 +471,7 @@ write_readme() {
     fi
     echo "| tp_hosts | \`${TP_HOSTS}\` |"
     echo "| pp_hosts | \`${PP_HOSTS}\` |"
+    echo "| pp3_hosts | \`${PP3_HOSTS}\` |"
     echo "| hybrid_hosts | \`${HYBRID_HOSTS}\` |"
     echo
     if [[ -f "${OUT}/runtime-perf-table.md" ]]; then
@@ -507,6 +510,16 @@ if [[ "${SKIP_RUN}" != "1" ]]; then
       "${RUNTIME_ROOT}/scripts/helpers/run-pp-mm-generate.sh" \
       "${PP_HOSTS}" \
       "$((MASTER_PORT_BASE + 1))" \
+      --
+  fi
+
+  if should_run_case "pp3-mm-generate"; then
+    run_distributed_case \
+      "pp3-mm-generate" \
+      "${RUNTIME_ROOT}/scripts/helpers/run-pp-mm-generate.sh" \
+      "${PP3_HOSTS}" \
+      "$((MASTER_PORT_BASE + 6))" \
+      "PP=3" \
       --
   fi
 
@@ -563,7 +576,7 @@ if [[ "${SKIP_RUN}" != "1" ]]; then
         "pp-mm-generate-video" \
         "${RUNTIME_ROOT}/scripts/helpers/run-pp-mm-generate.sh" \
         "${PP_VIDEO_HOSTS}" \
-        "$((MASTER_PORT_BASE + 6))" \
+        "$((MASTER_PORT_BASE + 7))" \
         "${full_video_env[@]}" \
         --
     fi
@@ -573,7 +586,7 @@ if [[ "${SKIP_RUN}" != "1" ]]; then
         "tp-mm-generate-video" \
         "${RUNTIME_ROOT}/scripts/helpers/run-tp-mm-generate.sh" \
         "${TP_VIDEO_HOSTS}" \
-        "$((MASTER_PORT_BASE + 7))" \
+        "$((MASTER_PORT_BASE + 8))" \
         "${full_video_env[@]}" \
         --
     fi
@@ -583,7 +596,7 @@ if [[ "${SKIP_RUN}" != "1" ]]; then
         "hybrid-mm-generate-video-pp2tp1" \
         "${RUNTIME_ROOT}/scripts/helpers/run-hybrid-mm-generate.sh" \
         "${HYBRID_VIDEO_HOSTS}" \
-        "$((MASTER_PORT_BASE + 8))" \
+        "$((MASTER_PORT_BASE + 9))" \
         "${full_video_env[@]}" \
         "PP=2" \
         "TP_DEGREES=1 1" \

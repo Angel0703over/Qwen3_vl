@@ -8,6 +8,7 @@ from typing import Any
 import torch
 
 from qwen3vl_tp_runtime.models.qwen3vl.processing import (
+    DEFAULT_VIDEO_PROMPT,
     build_inputs_with_metadata,
     list_frames,
     load_processor,
@@ -68,6 +69,7 @@ def build_mm_frontend_batch(runtime_config: dict[str, Any]) -> MmFrontendBatch:
         frame_paths_for_builder,
         video_path=video_path,
         video_url=video_url,
+        prompt=str(runtime_config.get("prompt") or DEFAULT_VIDEO_PROMPT),
         sample_fps=runtime_config.get("sample_fps", 1),
         video_fps=runtime_config.get("video_fps"),
         video_nframes=runtime_config.get("video_nframes"),

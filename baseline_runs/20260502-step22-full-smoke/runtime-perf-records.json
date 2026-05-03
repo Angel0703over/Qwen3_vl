@@ -1,0 +1,1625 @@
+{
+  "baseline_dir": "/mnt/ssd/code/Qwen3_vl/baseline_runs/20260502-step22-full-smoke",
+  "records": [
+    {
+      "case_id": "hf-text-generate",
+      "path": "/mnt/ssd/code/Qwen3_vl/baseline_runs/20260502-step22-full-smoke/hf-text-generate.log",
+      "rank": null,
+      "backend": "hf",
+      "pipeline_type": null,
+      "mode": "generate",
+      "generated_token_ids": [
+        104455,
+        9909,
+        9286,
+        16488
+      ],
+      "generated_text": "人工智能（Artificial",
+      "timing": {
+        "runtime_total_seconds": 28.685021,
+        "prepare_session_seconds": 0.0,
+        "startup_contract_seconds": 0.0,
+        "startup_contract_transport_seconds": 0.0,
+        "materialize_stage_seconds": 0.0,
+        "post_load_barrier_seconds": 0.0,
+        "scaffold_transport_seconds": 0.0
+      },
+      "memory": {
+        "cpu_max_rss_bytes": 9440858112,
+        "cuda_peak_allocated_bytes": 8889158144,
+        "cuda_peak_reserved_bytes": 8902410240,
+        "cuda_available": true
+      },
+      "payload": {
+        "startup_contract_bytes": 0,
+        "startup_contract_tensor_bytes": 0,
+        "startup_contract_object_bytes": 0,
+        "scaffold_bytes": 0,
+        "scaffold_tensor_bytes": 0,
+        "scaffold_object_bytes": 0,
+        "stage_handoff_bytes": 0,
+        "stage_handoff_seconds": 0.0,
+        "tp_collective_bytes": 0,
+        "tp_collective_seconds": 0.0,
+        "tp_collective_breakdown": [],
+        "tp_collective_substage_seconds": {
+          "event_count": 0,
+          "elapsed_seconds": 0.0,
+          "payload_prepare_seconds": 0.0,
+          "device_to_cpu_seconds": 0.0,
+          "gloo_collective_seconds": 0.0,
+          "cpu_to_device_seconds": 0.0
+        },
+        "transport_pin_memory": {
+          "requested_event_count": 0,
+          "used_event_count": 0,
+          "used_tensor_count": 0
+        },
+        "transport_event_count": 0
+      },
+      "weight_load": {
+        "loaded_weight_tensor_bytes": null,
+        "tp_weight_sharded": null,
+        "stage_weight_scope_ok": null
+      },
+      "stage_kv_cache": {
+        "tensor_bytes": null,
+        "active_tensor_bytes": null,
+        "active_tensor_bytes_before": null,
+        "active_tensor_bytes_after": null,
+        "max_seq_len": null,
+        "allocated_layers": null
+      }
+    },
+    {
+      "case_id": "hf-mm-generate",
+      "path": "/mnt/ssd/code/Qwen3_vl/baseline_runs/20260502-step22-full-smoke/hf-mm-generate.log",
+      "rank": null,
+      "backend": "hf",
+      "pipeline_type": null,
+      "mode": "generate",
+      "generated_token_ids": [
+        104455,
+        9909,
+        9286,
+        16488
+      ],
+      "generated_text": "人工智能（Artificial",
+      "timing": {
+        "runtime_total_seconds": 11.603536,
+        "prepare_session_seconds": 0.0,
+        "startup_contract_seconds": 0.0,
+        "startup_contract_transport_seconds": 0.0,
+        "materialize_stage_seconds": 0.0,
+        "post_load_barrier_seconds": 0.0,
+        "scaffold_transport_seconds": 0.0
+      },
+      "memory": {
+        "cpu_max_rss_bytes": 9438756864,
+        "cuda_peak_allocated_bytes": 9180571136,
+        "cuda_peak_reserved_bytes": 9237954560,
+        "cuda_available": true
+      },
+      "payload": {
+        "startup_contract_bytes": 0,
+        "startup_contract_tensor_bytes": 0,
+        "startup_contract_object_bytes": 0,
+        "scaffold_bytes": 0,
+        "scaffold_tensor_bytes": 0,
+        "scaffold_object_bytes": 0,
+        "stage_handoff_bytes": 0,
+        "stage_handoff_seconds": 0.0,
+        "tp_collective_bytes": 0,
+        "tp_collective_seconds": 0.0,
+        "tp_collective_breakdown": [],
+        "tp_collective_substage_seconds": {
+          "event_count": 0,
+          "elapsed_seconds": 0.0,
+          "payload_prepare_seconds": 0.0,
+          "device_to_cpu_seconds": 0.0,
+          "gloo_collective_seconds": 0.0,
+          "cpu_to_device_seconds": 0.0
+        },
+        "transport_pin_memory": {
+          "requested_event_count": 0,
+          "used_event_count": 0,
+          "used_tensor_count": 0
+        },
+        "transport_event_count": 0
+      },
+      "weight_load": {
+        "loaded_weight_tensor_bytes": null,
+        "tp_weight_sharded": null,
+        "stage_weight_scope_ok": null
+      },
+      "stage_kv_cache": {
+        "tensor_bytes": null,
+        "active_tensor_bytes": null,
+        "active_tensor_bytes_before": null,
+        "active_tensor_bytes_after": null,
+        "max_seq_len": null,
+        "allocated_layers": null
+      }
+    },
+    {
+      "case_id": "pp-mm-generate",
+      "path": "/mnt/ssd/code/Qwen3_vl/baseline_runs/20260502-step22-full-smoke/pp-mm-generate-rank0.log",
+      "rank": 0,
+      "backend": "pp",
+      "pipeline_type": "multimodal_generate",
+      "mode": "generate",
+      "generated_token_ids": [
+        87140,
+        15946,
+        3837,
+        101177
+      ],
+      "generated_text": "视频中，一名",
+      "timing": {
+        "runtime_total_seconds": 30.60347,
+        "prepare_session_seconds": 19.437722,
+        "startup_contract_seconds": 0.306146,
+        "startup_contract_transport_seconds": 0.306146,
+        "materialize_stage_seconds": 0.052051,
+        "post_load_barrier_seconds": 0.005237,
+        "scaffold_transport_seconds": 0.0
+      },
+      "memory": {
+        "cpu_max_rss_bytes": 9831034880,
+        "cuda_peak_allocated_bytes": 5782453248,
+        "cuda_peak_reserved_bytes": 5867831296,
+        "cuda_available": true
+      },
+      "payload": {
+        "startup_contract_bytes": 3221067,
+        "startup_contract_tensor_bytes": 3220304,
+        "startup_contract_object_bytes": 763,
+        "scaffold_bytes": 0,
+        "scaffold_tensor_bytes": 0,
+        "scaffold_object_bytes": 0,
+        "stage_handoff_bytes": 3225600,
+        "stage_handoff_seconds": 0.533226,
+        "tp_collective_bytes": 0,
+        "tp_collective_seconds": 0.0,
+        "tp_collective_breakdown": [],
+        "tp_collective_substage_seconds": {
+          "event_count": 0,
+          "elapsed_seconds": 0.0,
+          "payload_prepare_seconds": 0.0,
+          "device_to_cpu_seconds": 0.0,
+          "gloo_collective_seconds": 0.0,
+          "cpu_to_device_seconds": 0.0
+        },
+        "transport_pin_memory": {
+          "requested_event_count": 0,
+          "used_event_count": 0,
+          "used_tensor_count": 0
+        },
+        "transport_event_count": 6
+      },
+      "weight_load": {
+        "loaded_weight_tensor_bytes": 4411421696,
+        "tp_weight_sharded": false,
+        "stage_weight_scope_ok": true
+      },
+      "stage_kv_cache": {
+        "tensor_bytes": 46522368,
+        "active_tensor_bytes": 46227456,
+        "active_tensor_bytes_before": 46227456,
+        "active_tensor_bytes_after": null,
+        "max_seq_len": 631,
+        "allocated_layers": 18
+      }
+    },
+    {
+      "case_id": "pp-mm-generate",
+      "path": "/mnt/ssd/code/Qwen3_vl/baseline_runs/20260502-step22-full-smoke/pp-mm-generate-rank1.log",
+      "rank": 1,
+      "backend": "pp",
+      "pipeline_type": "multimodal_generate",
+      "mode": "generate",
+      "generated_token_ids": [
+        87140,
+        15946,
+        3837,
+        101177
+      ],
+      "generated_text": "视频中，一名",
+      "timing": {
+        "runtime_total_seconds": 30.80068,
+        "prepare_session_seconds": 0.28333,
+        "startup_contract_seconds": 23.79931,
+        "startup_contract_transport_seconds": 23.79931,
+        "materialize_stage_seconds": 0.042935,
+        "post_load_barrier_seconds": 0.552246,
+        "scaffold_transport_seconds": 0.0
+      },
+      "memory": {
+        "cpu_max_rss_bytes": 5098393600,
+        "cuda_peak_allocated_bytes": 5871413760,
+        "cuda_peak_reserved_bytes": 6006243328,
+        "cuda_available": true
+      },
+      "payload": {
+        "startup_contract_bytes": 3221067,
+        "startup_contract_tensor_bytes": 3220304,
+        "startup_contract_object_bytes": 763,
+        "scaffold_bytes": 0,
+        "scaffold_tensor_bytes": 0,
+        "scaffold_object_bytes": 0,
+        "stage_handoff_bytes": 3225600,
+        "stage_handoff_seconds": 1.400778,
+        "tp_collective_bytes": 0,
+        "tp_collective_seconds": 0.0,
+        "tp_collective_breakdown": [],
+        "tp_collective_substage_seconds": {
+          "event_count": 0,
+          "elapsed_seconds": 0.0,
+          "payload_prepare_seconds": 0.0,
+          "device_to_cpu_seconds": 0.0,
+          "gloo_collective_seconds": 0.0,
+          "cpu_to_device_seconds": 0.0
+        },
+        "transport_pin_memory": {
+          "requested_event_count": 0,
+          "used_event_count": 0,
+          "used_tensor_count": 0
+        },
+        "transport_event_count": 6
+      },
+      "weight_load": {
+        "loaded_weight_tensor_bytes": 4411426816,
+        "tp_weight_sharded": false,
+        "stage_weight_scope_ok": true
+      },
+      "stage_kv_cache": {
+        "tensor_bytes": 46522368,
+        "active_tensor_bytes": 46227456,
+        "active_tensor_bytes_before": 46227456,
+        "active_tensor_bytes_after": null,
+        "max_seq_len": 631,
+        "allocated_layers": 18
+      }
+    },
+    {
+      "case_id": "pp3-mm-generate",
+      "path": "/mnt/ssd/code/Qwen3_vl/baseline_runs/20260502-step22-full-smoke/pp3-mm-generate-rank0.log",
+      "rank": 0,
+      "backend": "pp",
+      "pipeline_type": "multimodal_generate",
+      "mode": "generate",
+      "generated_token_ids": [
+        87140,
+        15946,
+        3837,
+        101177
+      ],
+      "generated_text": "视频中，一名",
+      "timing": {
+        "runtime_total_seconds": 31.570737,
+        "prepare_session_seconds": 19.400007,
+        "startup_contract_seconds": 0.607433,
+        "startup_contract_transport_seconds": 0.607433,
+        "materialize_stage_seconds": 0.034664,
+        "post_load_barrier_seconds": 0.00337,
+        "scaffold_transport_seconds": 0.0
+      },
+      "memory": {
+        "cpu_max_rss_bytes": 9845342208,
+        "cuda_peak_allocated_bytes": 4149931008,
+        "cuda_peak_reserved_bytes": 4192206848,
+        "cuda_available": true
+      },
+      "payload": {
+        "startup_contract_bytes": 6442134,
+        "startup_contract_tensor_bytes": 6440608,
+        "startup_contract_object_bytes": 1526,
+        "scaffold_bytes": 0,
+        "scaffold_tensor_bytes": 0,
+        "scaffold_object_bytes": 0,
+        "stage_handoff_bytes": 3225600,
+        "stage_handoff_seconds": 0.607435,
+        "tp_collective_bytes": 0,
+        "tp_collective_seconds": 0.0,
+        "tp_collective_breakdown": [],
+        "tp_collective_substage_seconds": {
+          "event_count": 0,
+          "elapsed_seconds": 0.0,
+          "payload_prepare_seconds": 0.0,
+          "device_to_cpu_seconds": 0.0,
+          "gloo_collective_seconds": 0.0,
+          "cpu_to_device_seconds": 0.0
+        },
+        "transport_pin_memory": {
+          "requested_event_count": 0,
+          "used_event_count": 0,
+          "used_tensor_count": 0
+        },
+        "transport_event_count": 8
+      },
+      "weight_load": {
+        "loaded_weight_tensor_bytes": 3200251904,
+        "tp_weight_sharded": false,
+        "stage_weight_scope_ok": true
+      },
+      "stage_kv_cache": {
+        "tensor_bytes": 31014912,
+        "active_tensor_bytes": 30818304,
+        "active_tensor_bytes_before": 30818304,
+        "active_tensor_bytes_after": null,
+        "max_seq_len": 631,
+        "allocated_layers": 12
+      }
+    },
+    {
+      "case_id": "pp3-mm-generate",
+      "path": "/mnt/ssd/code/Qwen3_vl/baseline_runs/20260502-step22-full-smoke/pp3-mm-generate-rank1.log",
+      "rank": 1,
+      "backend": "pp",
+      "pipeline_type": "multimodal_generate",
+      "mode": "generate",
+      "generated_token_ids": [
+        87140,
+        15946,
+        3837,
+        101177
+      ],
+      "generated_text": "视频中，一名",
+      "timing": {
+        "runtime_total_seconds": 31.666818,
+        "prepare_session_seconds": 0.283093,
+        "startup_contract_seconds": 23.630831,
+        "startup_contract_transport_seconds": 23.630831,
+        "materialize_stage_seconds": 0.034436,
+        "post_load_barrier_seconds": 1.093207,
+        "scaffold_transport_seconds": 0.0
+      },
+      "memory": {
+        "cpu_max_rss_bytes": 3105910784,
+        "cuda_peak_allocated_bytes": 3355792384,
+        "cuda_peak_reserved_bytes": 3414163456,
+        "cuda_available": true
+      },
+      "payload": {
+        "startup_contract_bytes": 3221067,
+        "startup_contract_tensor_bytes": 3220304,
+        "startup_contract_object_bytes": 763,
+        "scaffold_bytes": 0,
+        "scaffold_tensor_bytes": 0,
+        "scaffold_object_bytes": 0,
+        "stage_handoff_bytes": 6451200,
+        "stage_handoff_seconds": 1.87476,
+        "tp_collective_bytes": 0,
+        "tp_collective_seconds": 0.0,
+        "tp_collective_breakdown": [],
+        "tp_collective_substage_seconds": {
+          "event_count": 0,
+          "elapsed_seconds": 0.0,
+          "payload_prepare_seconds": 0.0,
+          "device_to_cpu_seconds": 0.0,
+          "gloo_collective_seconds": 0.0,
+          "cpu_to_device_seconds": 0.0
+        },
+        "transport_pin_memory": {
+          "requested_event_count": 0,
+          "used_event_count": 0,
+          "used_tensor_count": 0
+        },
+        "transport_event_count": 10
+      },
+      "weight_load": {
+        "loaded_weight_tensor_bytes": 2422339584,
+        "tp_weight_sharded": false,
+        "stage_weight_scope_ok": true
+      },
+      "stage_kv_cache": {
+        "tensor_bytes": 31014912,
+        "active_tensor_bytes": 30818304,
+        "active_tensor_bytes_before": 30818304,
+        "active_tensor_bytes_after": null,
+        "max_seq_len": 631,
+        "allocated_layers": 12
+      }
+    },
+    {
+      "case_id": "pp3-mm-generate",
+      "path": "/mnt/ssd/code/Qwen3_vl/baseline_runs/20260502-step22-full-smoke/pp3-mm-generate-rank2.log",
+      "rank": 2,
+      "backend": "pp",
+      "pipeline_type": "multimodal_generate",
+      "mode": "generate",
+      "generated_token_ids": [
+        87140,
+        15946,
+        3837,
+        101177
+      ],
+      "generated_text": "视频中，一名",
+      "timing": {
+        "runtime_total_seconds": 31.665906,
+        "prepare_session_seconds": 0.390403,
+        "startup_contract_seconds": 23.770806,
+        "startup_contract_transport_seconds": 23.770806,
+        "materialize_stage_seconds": 0.033608,
+        "post_load_barrier_seconds": 0.382807,
+        "scaffold_transport_seconds": 0.0
+      },
+      "memory": {
+        "cpu_max_rss_bytes": 3855556608,
+        "cuda_peak_allocated_bytes": 4245086720,
+        "cuda_peak_reserved_bytes": 4383047680,
+        "cuda_available": true
+      },
+      "payload": {
+        "startup_contract_bytes": 3221067,
+        "startup_contract_tensor_bytes": 3220304,
+        "startup_contract_object_bytes": 763,
+        "scaffold_bytes": 0,
+        "scaffold_tensor_bytes": 0,
+        "scaffold_object_bytes": 0,
+        "stage_handoff_bytes": 3225600,
+        "stage_handoff_seconds": 3.047747,
+        "tp_collective_bytes": 0,
+        "tp_collective_seconds": 0.0,
+        "tp_collective_breakdown": [],
+        "tp_collective_substage_seconds": {
+          "event_count": 0,
+          "elapsed_seconds": 0.0,
+          "payload_prepare_seconds": 0.0,
+          "device_to_cpu_seconds": 0.0,
+          "gloo_collective_seconds": 0.0,
+          "cpu_to_device_seconds": 0.0
+        },
+        "transport_pin_memory": {
+          "requested_event_count": 0,
+          "used_event_count": 0,
+          "used_tensor_count": 0
+        },
+        "transport_event_count": 6
+      },
+      "weight_load": {
+        "loaded_weight_tensor_bytes": 3200257024,
+        "tp_weight_sharded": false,
+        "stage_weight_scope_ok": true
+      },
+      "stage_kv_cache": {
+        "tensor_bytes": 31014912,
+        "active_tensor_bytes": 30818304,
+        "active_tensor_bytes_before": 30818304,
+        "active_tensor_bytes_after": null,
+        "max_seq_len": 631,
+        "allocated_layers": 12
+      }
+    },
+    {
+      "case_id": "tp-mm-generate",
+      "path": "/mnt/ssd/code/Qwen3_vl/baseline_runs/20260502-step22-full-smoke/tp-mm-generate-rank0.log",
+      "rank": 0,
+      "backend": "tp",
+      "pipeline_type": "multimodal_generate",
+      "mode": "generate",
+      "generated_token_ids": [
+        87140,
+        15946,
+        3837,
+        101177
+      ],
+      "generated_text": "视频中，一名",
+      "timing": {
+        "runtime_total_seconds": 52.951992,
+        "prepare_session_seconds": 19.538716,
+        "startup_contract_seconds": 1.107928,
+        "startup_contract_transport_seconds": 0.0,
+        "materialize_stage_seconds": 0.088411,
+        "post_load_barrier_seconds": 0.0,
+        "scaffold_transport_seconds": 0.0
+      },
+      "memory": {
+        "cpu_max_rss_bytes": 8048320512,
+        "cuda_peak_allocated_bytes": 7008558592,
+        "cuda_peak_reserved_bytes": 7090470912,
+        "cuda_available": true
+      },
+      "payload": {
+        "startup_contract_bytes": 12069054,
+        "startup_contract_tensor_bytes": 12068291,
+        "startup_contract_object_bytes": 763,
+        "scaffold_bytes": 0,
+        "scaffold_tensor_bytes": 0,
+        "scaffold_object_bytes": 0,
+        "stage_handoff_bytes": 0,
+        "stage_handoff_seconds": 0.0,
+        "tp_collective_bytes": 232243200,
+        "tp_collective_seconds": 24.284815,
+        "tp_collective_breakdown": [
+          {
+            "phase": "decode",
+            "module": "attention",
+            "reason": "row_parallel_reduce",
+            "operation": "all_reduce",
+            "event_count": 108,
+            "elapsed_seconds": 0.595035,
+            "tensor_bytes": 552960,
+            "payload_prepare_seconds": 0.046062,
+            "device_to_cpu_seconds": 0.046062,
+            "gloo_collective_seconds": 0.501949,
+            "cpu_to_device_seconds": 0.045889
+          },
+          {
+            "phase": "decode",
+            "module": "mlp",
+            "reason": "row_parallel_reduce",
+            "operation": "all_reduce",
+            "event_count": 108,
+            "elapsed_seconds": 0.61359,
+            "tensor_bytes": 552960,
+            "payload_prepare_seconds": 0.18684,
+            "device_to_cpu_seconds": 0.18684,
+            "gloo_collective_seconds": 0.37898,
+            "cpu_to_device_seconds": 0.046712
+          },
+          {
+            "phase": "prefill",
+            "module": "attention",
+            "reason": "row_parallel_reduce",
+            "operation": "all_reduce",
+            "event_count": 36,
+            "elapsed_seconds": 11.485383,
+            "tensor_bytes": 115568640,
+            "payload_prepare_seconds": 0.534976,
+            "device_to_cpu_seconds": 0.534976,
+            "gloo_collective_seconds": 10.829627,
+            "cpu_to_device_seconds": 0.119493
+          },
+          {
+            "phase": "prefill",
+            "module": "mlp",
+            "reason": "row_parallel_reduce",
+            "operation": "all_reduce",
+            "event_count": 36,
+            "elapsed_seconds": 11.590807,
+            "tensor_bytes": 115568640,
+            "payload_prepare_seconds": 1.017991,
+            "device_to_cpu_seconds": 1.017991,
+            "gloo_collective_seconds": 10.448764,
+            "cpu_to_device_seconds": 0.122894
+          }
+        ],
+        "tp_collective_substage_seconds": {
+          "event_count": 288,
+          "elapsed_seconds": 24.284815,
+          "payload_prepare_seconds": 1.785869,
+          "device_to_cpu_seconds": 1.785869,
+          "gloo_collective_seconds": 22.15932,
+          "cpu_to_device_seconds": 0.334988
+        },
+        "transport_pin_memory": {
+          "requested_event_count": 0,
+          "used_event_count": 0,
+          "used_tensor_count": 0
+        },
+        "transport_event_count": 290
+      },
+      "weight_load": {
+        "loaded_weight_tensor_bytes": 5189532672,
+        "tp_weight_sharded": true,
+        "stage_weight_scope_ok": true
+      },
+      "stage_kv_cache": {
+        "tensor_bytes": 46522368,
+        "active_tensor_bytes": 46227456,
+        "active_tensor_bytes_before": 46227456,
+        "active_tensor_bytes_after": null,
+        "max_seq_len": 631,
+        "allocated_layers": 36
+      }
+    },
+    {
+      "case_id": "tp-mm-generate",
+      "path": "/mnt/ssd/code/Qwen3_vl/baseline_runs/20260502-step22-full-smoke/tp-mm-generate-rank1.log",
+      "rank": 1,
+      "backend": "tp",
+      "pipeline_type": "multimodal_generate",
+      "mode": "generate",
+      "generated_token_ids": [
+        87140,
+        15946,
+        3837,
+        101177
+      ],
+      "generated_text": "视频中，一名",
+      "timing": {
+        "runtime_total_seconds": 53.081111,
+        "prepare_session_seconds": 0.287033,
+        "startup_contract_seconds": 21.331381,
+        "startup_contract_transport_seconds": 0.0,
+        "materialize_stage_seconds": 0.085645,
+        "post_load_barrier_seconds": 0.0,
+        "scaffold_transport_seconds": 0.0
+      },
+      "memory": {
+        "cpu_max_rss_bytes": 7241220096,
+        "cuda_peak_allocated_bytes": 7004963328,
+        "cuda_peak_reserved_bytes": 7103053824,
+        "cuda_available": true
+      },
+      "payload": {
+        "startup_contract_bytes": 12069054,
+        "startup_contract_tensor_bytes": 12068291,
+        "startup_contract_object_bytes": 763,
+        "scaffold_bytes": 0,
+        "scaffold_tensor_bytes": 0,
+        "scaffold_object_bytes": 0,
+        "stage_handoff_bytes": 0,
+        "stage_handoff_seconds": 0.0,
+        "tp_collective_bytes": 232243200,
+        "tp_collective_seconds": 23.734591,
+        "tp_collective_breakdown": [
+          {
+            "phase": "decode",
+            "module": "attention",
+            "reason": "row_parallel_reduce",
+            "operation": "all_reduce",
+            "event_count": 108,
+            "elapsed_seconds": 0.462159,
+            "tensor_bytes": 552960,
+            "payload_prepare_seconds": 0.041596,
+            "device_to_cpu_seconds": 0.041596,
+            "gloo_collective_seconds": 0.363442,
+            "cpu_to_device_seconds": 0.055967
+          },
+          {
+            "phase": "decode",
+            "module": "mlp",
+            "reason": "row_parallel_reduce",
+            "operation": "all_reduce",
+            "event_count": 108,
+            "elapsed_seconds": 0.604822,
+            "tensor_bytes": 552960,
+            "payload_prepare_seconds": 0.175116,
+            "device_to_cpu_seconds": 0.175116,
+            "gloo_collective_seconds": 0.37314,
+            "cpu_to_device_seconds": 0.055478
+          },
+          {
+            "phase": "prefill",
+            "module": "attention",
+            "reason": "row_parallel_reduce",
+            "operation": "all_reduce",
+            "event_count": 36,
+            "elapsed_seconds": 11.077787,
+            "tensor_bytes": 115568640,
+            "payload_prepare_seconds": 0.454331,
+            "device_to_cpu_seconds": 0.454331,
+            "gloo_collective_seconds": 10.503362,
+            "cpu_to_device_seconds": 0.118749
+          },
+          {
+            "phase": "prefill",
+            "module": "mlp",
+            "reason": "row_parallel_reduce",
+            "operation": "all_reduce",
+            "event_count": 36,
+            "elapsed_seconds": 11.589823,
+            "tensor_bytes": 115568640,
+            "payload_prepare_seconds": 1.06543,
+            "device_to_cpu_seconds": 1.06543,
+            "gloo_collective_seconds": 10.401678,
+            "cpu_to_device_seconds": 0.121403
+          }
+        ],
+        "tp_collective_substage_seconds": {
+          "event_count": 288,
+          "elapsed_seconds": 23.734591,
+          "payload_prepare_seconds": 1.736473,
+          "device_to_cpu_seconds": 1.736473,
+          "gloo_collective_seconds": 21.641622,
+          "cpu_to_device_seconds": 0.351597
+        },
+        "transport_pin_memory": {
+          "requested_event_count": 0,
+          "used_event_count": 0,
+          "used_tensor_count": 0
+        },
+        "transport_event_count": 290
+      },
+      "weight_load": {
+        "loaded_weight_tensor_bytes": 5189532672,
+        "tp_weight_sharded": true,
+        "stage_weight_scope_ok": true
+      },
+      "stage_kv_cache": {
+        "tensor_bytes": 46522368,
+        "active_tensor_bytes": 46227456,
+        "active_tensor_bytes_before": 46227456,
+        "active_tensor_bytes_after": null,
+        "max_seq_len": 631,
+        "allocated_layers": 36
+      }
+    },
+    {
+      "case_id": "hybrid-mm-generate",
+      "path": "/mnt/ssd/code/Qwen3_vl/baseline_runs/20260502-step22-full-smoke/hybrid-mm-generate-rank0.log",
+      "rank": 0,
+      "backend": "hybrid",
+      "pipeline_type": "multimodal_generate",
+      "mode": "generate",
+      "generated_token_ids": [
+        87140,
+        15946,
+        3837,
+        101177
+      ],
+      "generated_text": "视频中，一名",
+      "timing": {
+        "runtime_total_seconds": 45.034957,
+        "prepare_session_seconds": 19.412818,
+        "startup_contract_seconds": 0.302879,
+        "startup_contract_transport_seconds": 0.302879,
+        "materialize_stage_seconds": 0.140888,
+        "post_load_barrier_seconds": 0.002615,
+        "scaffold_transport_seconds": 0.0
+      },
+      "memory": {
+        "cpu_max_rss_bytes": 9766158336,
+        "cuda_peak_allocated_bytes": 4000027136,
+        "cuda_peak_reserved_bytes": 4030726144,
+        "cuda_available": true
+      },
+      "payload": {
+        "startup_contract_bytes": 3221067,
+        "startup_contract_tensor_bytes": 3220304,
+        "startup_contract_object_bytes": 763,
+        "scaffold_bytes": 12069117,
+        "scaffold_tensor_bytes": 12068291,
+        "scaffold_object_bytes": 826,
+        "stage_handoff_bytes": 3225600,
+        "stage_handoff_seconds": 0.292629,
+        "tp_collective_bytes": 119347200,
+        "tp_collective_seconds": 13.259371,
+        "tp_collective_breakdown": [
+          {
+            "phase": "decode",
+            "module": "attention",
+            "reason": "row_parallel_reduce",
+            "operation": "all_reduce",
+            "event_count": 54,
+            "elapsed_seconds": 0.313026,
+            "tensor_bytes": 276480,
+            "payload_prepare_seconds": 0.057304,
+            "device_to_cpu_seconds": 0.057304,
+            "gloo_collective_seconds": 0.244359,
+            "cpu_to_device_seconds": 0.010646
+          },
+          {
+            "phase": "decode",
+            "module": "mlp",
+            "reason": "row_parallel_reduce",
+            "operation": "all_reduce",
+            "event_count": 54,
+            "elapsed_seconds": 0.560472,
+            "tensor_bytes": 276480,
+            "payload_prepare_seconds": 0.280075,
+            "device_to_cpu_seconds": 0.280075,
+            "gloo_collective_seconds": 0.269289,
+            "cpu_to_device_seconds": 0.010546
+          },
+          {
+            "phase": "decode",
+            "module": "runtime_input",
+            "reason": "stage_input_broadcast",
+            "operation": "broadcast",
+            "event_count": 3,
+            "elapsed_seconds": 0.105648,
+            "tensor_bytes": 15360,
+            "payload_prepare_seconds": 0.001006,
+            "device_to_cpu_seconds": 0.001,
+            "gloo_collective_seconds": 0.102357,
+            "cpu_to_device_seconds": 0.002229
+          },
+          {
+            "phase": "prefill",
+            "module": "attention",
+            "reason": "row_parallel_reduce",
+            "operation": "all_reduce",
+            "event_count": 18,
+            "elapsed_seconds": 6.196452,
+            "tensor_bytes": 57784320,
+            "payload_prepare_seconds": 0.602967,
+            "device_to_cpu_seconds": 0.602967,
+            "gloo_collective_seconds": 5.533431,
+            "cpu_to_device_seconds": 0.059336
+          },
+          {
+            "phase": "prefill",
+            "module": "mlp",
+            "reason": "row_parallel_reduce",
+            "operation": "all_reduce",
+            "event_count": 18,
+            "elapsed_seconds": 5.86478,
+            "tensor_bytes": 57784320,
+            "payload_prepare_seconds": 0.512266,
+            "device_to_cpu_seconds": 0.512266,
+            "gloo_collective_seconds": 5.290484,
+            "cpu_to_device_seconds": 0.061431
+          },
+          {
+            "phase": "prefill",
+            "module": "runtime_input",
+            "reason": "stage_input_broadcast",
+            "operation": "broadcast",
+            "event_count": 1,
+            "elapsed_seconds": 0.218993,
+            "tensor_bytes": 3210240,
+            "payload_prepare_seconds": 0.00109,
+            "device_to_cpu_seconds": 0.001088,
+            "gloo_collective_seconds": 0.216433,
+            "cpu_to_device_seconds": 0.001458
+          }
+        ],
+        "tp_collective_substage_seconds": {
+          "event_count": 148,
+          "elapsed_seconds": 13.259371,
+          "payload_prepare_seconds": 1.454708,
+          "device_to_cpu_seconds": 1.4547,
+          "gloo_collective_seconds": 11.656353,
+          "cpu_to_device_seconds": 0.145646
+        },
+        "transport_pin_memory": {
+          "requested_event_count": 0,
+          "used_event_count": 0,
+          "used_tensor_count": 0
+        },
+        "transport_event_count": 156
+      },
+      "weight_load": {
+        "loaded_weight_tensor_bytes": 2594763776,
+        "tp_weight_sharded": true,
+        "stage_weight_scope_ok": true
+      },
+      "stage_kv_cache": {
+        "tensor_bytes": 23261184,
+        "active_tensor_bytes": 23113728,
+        "active_tensor_bytes_before": 23113728,
+        "active_tensor_bytes_after": null,
+        "max_seq_len": 631,
+        "allocated_layers": 18
+      }
+    },
+    {
+      "case_id": "hybrid-mm-generate",
+      "path": "/mnt/ssd/code/Qwen3_vl/baseline_runs/20260502-step22-full-smoke/hybrid-mm-generate-rank1.log",
+      "rank": 1,
+      "backend": "hybrid",
+      "pipeline_type": "multimodal_generate",
+      "mode": "generate",
+      "generated_token_ids": [
+        87140,
+        15946,
+        3837,
+        101177
+      ],
+      "generated_text": "视频中，一名",
+      "timing": {
+        "runtime_total_seconds": 45.242377,
+        "prepare_session_seconds": 0.0,
+        "startup_contract_seconds": 0.0,
+        "startup_contract_transport_seconds": 0.0,
+        "materialize_stage_seconds": 0.125461,
+        "post_load_barrier_seconds": 0.003218,
+        "scaffold_transport_seconds": 0.0
+      },
+      "memory": {
+        "cpu_max_rss_bytes": 4270514176,
+        "cuda_peak_allocated_bytes": 3464018432,
+        "cuda_peak_reserved_bytes": 3519021056,
+        "cuda_available": true
+      },
+      "payload": {
+        "startup_contract_bytes": 0,
+        "startup_contract_tensor_bytes": 0,
+        "startup_contract_object_bytes": 0,
+        "scaffold_bytes": 12069117,
+        "scaffold_tensor_bytes": 12068291,
+        "scaffold_object_bytes": 826,
+        "stage_handoff_bytes": 0,
+        "stage_handoff_seconds": 0.653523,
+        "tp_collective_bytes": 119347200,
+        "tp_collective_seconds": 12.981256,
+        "tp_collective_breakdown": [
+          {
+            "phase": "decode",
+            "module": "attention",
+            "reason": "row_parallel_reduce",
+            "operation": "all_reduce",
+            "event_count": 54,
+            "elapsed_seconds": 0.339471,
+            "tensor_bytes": 276480,
+            "payload_prepare_seconds": 0.051892,
+            "device_to_cpu_seconds": 0.051892,
+            "gloo_collective_seconds": 0.275493,
+            "cpu_to_device_seconds": 0.011415
+          },
+          {
+            "phase": "decode",
+            "module": "mlp",
+            "reason": "row_parallel_reduce",
+            "operation": "all_reduce",
+            "event_count": 54,
+            "elapsed_seconds": 0.55859,
+            "tensor_bytes": 276480,
+            "payload_prepare_seconds": 0.261222,
+            "device_to_cpu_seconds": 0.261222,
+            "gloo_collective_seconds": 0.286391,
+            "cpu_to_device_seconds": 0.010421
+          },
+          {
+            "phase": "decode",
+            "module": "runtime_input",
+            "reason": "stage_input_broadcast",
+            "operation": "broadcast",
+            "event_count": 3,
+            "elapsed_seconds": 0.011847,
+            "tensor_bytes": 15360,
+            "payload_prepare_seconds": 0.000186,
+            "device_to_cpu_seconds": 0.0,
+            "gloo_collective_seconds": 0.011024,
+            "cpu_to_device_seconds": 0.0006
+          },
+          {
+            "phase": "prefill",
+            "module": "attention",
+            "reason": "row_parallel_reduce",
+            "operation": "all_reduce",
+            "event_count": 18,
+            "elapsed_seconds": 5.917925,
+            "tensor_bytes": 57784320,
+            "payload_prepare_seconds": 0.659042,
+            "device_to_cpu_seconds": 0.659042,
+            "gloo_collective_seconds": 5.199572,
+            "cpu_to_device_seconds": 0.058689
+          },
+          {
+            "phase": "prefill",
+            "module": "mlp",
+            "reason": "row_parallel_reduce",
+            "operation": "all_reduce",
+            "event_count": 18,
+            "elapsed_seconds": 5.845369,
+            "tensor_bytes": 57784320,
+            "payload_prepare_seconds": 0.57523,
+            "device_to_cpu_seconds": 0.57523,
+            "gloo_collective_seconds": 5.209474,
+            "cpu_to_device_seconds": 0.060061
+          },
+          {
+            "phase": "prefill",
+            "module": "runtime_input",
+            "reason": "stage_input_broadcast",
+            "operation": "broadcast",
+            "event_count": 1,
+            "elapsed_seconds": 0.308054,
+            "tensor_bytes": 3210240,
+            "payload_prepare_seconds": 5.7e-05,
+            "device_to_cpu_seconds": 0.0,
+            "gloo_collective_seconds": 0.306663,
+            "cpu_to_device_seconds": 0.001316
+          }
+        ],
+        "tp_collective_substage_seconds": {
+          "event_count": 148,
+          "elapsed_seconds": 12.981256,
+          "payload_prepare_seconds": 1.547629,
+          "device_to_cpu_seconds": 1.547386,
+          "gloo_collective_seconds": 11.288617,
+          "cpu_to_device_seconds": 0.142502
+        },
+        "transport_pin_memory": {
+          "requested_event_count": 0,
+          "used_event_count": 0,
+          "used_tensor_count": 0
+        },
+        "transport_event_count": 154
+      },
+      "weight_load": {
+        "loaded_weight_tensor_bytes": 2594763776,
+        "tp_weight_sharded": true,
+        "stage_weight_scope_ok": true
+      },
+      "stage_kv_cache": {
+        "tensor_bytes": 23261184,
+        "active_tensor_bytes": 23113728,
+        "active_tensor_bytes_before": 23113728,
+        "active_tensor_bytes_after": null,
+        "max_seq_len": 631,
+        "allocated_layers": 18
+      }
+    },
+    {
+      "case_id": "hybrid-mm-generate",
+      "path": "/mnt/ssd/code/Qwen3_vl/baseline_runs/20260502-step22-full-smoke/hybrid-mm-generate-rank2.log",
+      "rank": 2,
+      "backend": "hybrid",
+      "pipeline_type": "multimodal_generate",
+      "mode": "generate",
+      "generated_token_ids": [
+        87140,
+        15946,
+        3837,
+        101177
+      ],
+      "generated_text": "视频中，一名",
+      "timing": {
+        "runtime_total_seconds": 45.275438,
+        "prepare_session_seconds": 0.393116,
+        "startup_contract_seconds": 23.670891,
+        "startup_contract_transport_seconds": 23.670891,
+        "materialize_stage_seconds": 0.04269,
+        "post_load_barrier_seconds": 1.258141,
+        "scaffold_transport_seconds": 0.0
+      },
+      "memory": {
+        "cpu_max_rss_bytes": 5073850368,
+        "cuda_peak_allocated_bytes": 5872435712,
+        "cuda_peak_reserved_bytes": 6006243328,
+        "cuda_available": true
+      },
+      "payload": {
+        "startup_contract_bytes": 3221067,
+        "startup_contract_tensor_bytes": 3220304,
+        "startup_contract_object_bytes": 763,
+        "scaffold_bytes": 0,
+        "scaffold_tensor_bytes": 0,
+        "scaffold_object_bytes": 0,
+        "stage_handoff_bytes": 3225600,
+        "stage_handoff_seconds": 14.714222,
+        "tp_collective_bytes": 0,
+        "tp_collective_seconds": 0.0,
+        "tp_collective_breakdown": [],
+        "tp_collective_substage_seconds": {
+          "event_count": 0,
+          "elapsed_seconds": 0.0,
+          "payload_prepare_seconds": 0.0,
+          "device_to_cpu_seconds": 0.0,
+          "gloo_collective_seconds": 0.0,
+          "cpu_to_device_seconds": 0.0
+        },
+        "transport_pin_memory": {
+          "requested_event_count": 0,
+          "used_event_count": 0,
+          "used_tensor_count": 0
+        },
+        "transport_event_count": 10
+      },
+      "weight_load": {
+        "loaded_weight_tensor_bytes": 4411426816,
+        "tp_weight_sharded": false,
+        "stage_weight_scope_ok": true
+      },
+      "stage_kv_cache": {
+        "tensor_bytes": 46522368,
+        "active_tensor_bytes": 46227456,
+        "active_tensor_bytes_before": 46227456,
+        "active_tensor_bytes_after": null,
+        "max_seq_len": 631,
+        "allocated_layers": 18
+      }
+    },
+    {
+      "case_id": "tp-mm-generate-long",
+      "path": "/mnt/ssd/code/Qwen3_vl/baseline_runs/20260502-step22-full-smoke/tp-mm-generate-long-rank0.log",
+      "rank": 0,
+      "backend": "tp",
+      "pipeline_type": "multimodal_generate",
+      "mode": "generate",
+      "generated_token_ids": [
+        87140,
+        15946,
+        3837,
+        101177,
+        105611,
+        99194,
+        38035,
+        113727,
+        33108,
+        104362,
+        38035,
+        113233,
+        9370,
+        104253,
+        104224,
+        46944
+      ],
+      "generated_text": "视频中，一名穿着深色衬衫和浅色裤子的男子站在一个",
+      "timing": {
+        "runtime_total_seconds": 62.296317,
+        "prepare_session_seconds": 19.322686,
+        "startup_contract_seconds": 1.088353,
+        "startup_contract_transport_seconds": 0.0,
+        "materialize_stage_seconds": 0.088725,
+        "post_load_barrier_seconds": 0.0,
+        "scaffold_transport_seconds": 0.0
+      },
+      "memory": {
+        "cpu_max_rss_bytes": 8050089984,
+        "cuda_peak_allocated_bytes": 7009443328,
+        "cuda_peak_reserved_bytes": 7090470912,
+        "cuda_available": true
+      },
+      "payload": {
+        "startup_contract_bytes": 12069054,
+        "startup_contract_tensor_bytes": 12068291,
+        "startup_contract_object_bytes": 763,
+        "scaffold_bytes": 0,
+        "scaffold_tensor_bytes": 0,
+        "scaffold_object_bytes": 0,
+        "stage_handoff_bytes": 0,
+        "stage_handoff_seconds": 0.0,
+        "tp_collective_bytes": 236666880,
+        "tp_collective_seconds": 28.981465,
+        "tp_collective_breakdown": [
+          {
+            "phase": "decode",
+            "module": "attention",
+            "reason": "row_parallel_reduce",
+            "operation": "all_reduce",
+            "event_count": 540,
+            "elapsed_seconds": 2.630677,
+            "tensor_bytes": 2764800,
+            "payload_prepare_seconds": 0.214615,
+            "device_to_cpu_seconds": 0.214615,
+            "gloo_collective_seconds": 2.156267,
+            "cpu_to_device_seconds": 0.253943
+          },
+          {
+            "phase": "decode",
+            "module": "mlp",
+            "reason": "row_parallel_reduce",
+            "operation": "all_reduce",
+            "event_count": 540,
+            "elapsed_seconds": 3.102492,
+            "tensor_bytes": 2764800,
+            "payload_prepare_seconds": 0.874565,
+            "device_to_cpu_seconds": 0.874565,
+            "gloo_collective_seconds": 1.970556,
+            "cpu_to_device_seconds": 0.25192
+          },
+          {
+            "phase": "prefill",
+            "module": "attention",
+            "reason": "row_parallel_reduce",
+            "operation": "all_reduce",
+            "event_count": 36,
+            "elapsed_seconds": 11.615027,
+            "tensor_bytes": 115568640,
+            "payload_prepare_seconds": 0.550019,
+            "device_to_cpu_seconds": 0.550019,
+            "gloo_collective_seconds": 10.944827,
+            "cpu_to_device_seconds": 0.118807
+          },
+          {
+            "phase": "prefill",
+            "module": "mlp",
+            "reason": "row_parallel_reduce",
+            "operation": "all_reduce",
+            "event_count": 36,
+            "elapsed_seconds": 11.633269,
+            "tensor_bytes": 115568640,
+            "payload_prepare_seconds": 1.018118,
+            "device_to_cpu_seconds": 1.018118,
+            "gloo_collective_seconds": 10.491978,
+            "cpu_to_device_seconds": 0.121884
+          }
+        ],
+        "tp_collective_substage_seconds": {
+          "event_count": 1152,
+          "elapsed_seconds": 28.981465,
+          "payload_prepare_seconds": 2.657317,
+          "device_to_cpu_seconds": 2.657317,
+          "gloo_collective_seconds": 25.563628,
+          "cpu_to_device_seconds": 0.746554
+        },
+        "transport_pin_memory": {
+          "requested_event_count": 0,
+          "used_event_count": 0,
+          "used_tensor_count": 0
+        },
+        "transport_event_count": 1154
+      },
+      "weight_load": {
+        "loaded_weight_tensor_bytes": 5189532672,
+        "tp_weight_sharded": true,
+        "stage_weight_scope_ok": true
+      },
+      "stage_kv_cache": {
+        "tensor_bytes": 47407104,
+        "active_tensor_bytes": 46227456,
+        "active_tensor_bytes_before": 46227456,
+        "active_tensor_bytes_after": null,
+        "max_seq_len": 643,
+        "allocated_layers": 36
+      }
+    },
+    {
+      "case_id": "tp-mm-generate-long",
+      "path": "/mnt/ssd/code/Qwen3_vl/baseline_runs/20260502-step22-full-smoke/tp-mm-generate-long-rank1.log",
+      "rank": 1,
+      "backend": "tp",
+      "pipeline_type": "multimodal_generate",
+      "mode": "generate",
+      "generated_token_ids": [
+        87140,
+        15946,
+        3837,
+        101177,
+        105611,
+        99194,
+        38035,
+        113727,
+        33108,
+        104362,
+        38035,
+        113233,
+        9370,
+        104253,
+        104224,
+        46944
+      ],
+      "generated_text": "视频中，一名穿着深色衬衫和浅色裤子的男子站在一个",
+      "timing": {
+        "runtime_total_seconds": 62.356664,
+        "prepare_session_seconds": 0.291603,
+        "startup_contract_seconds": 21.273946,
+        "startup_contract_transport_seconds": 0.0,
+        "materialize_stage_seconds": 0.08571,
+        "post_load_barrier_seconds": 0.0,
+        "scaffold_transport_seconds": 0.0
+      },
+      "memory": {
+        "cpu_max_rss_bytes": 7240572928,
+        "cuda_peak_allocated_bytes": 7005848064,
+        "cuda_peak_reserved_bytes": 7103053824,
+        "cuda_available": true
+      },
+      "payload": {
+        "startup_contract_bytes": 12069054,
+        "startup_contract_tensor_bytes": 12068291,
+        "startup_contract_object_bytes": 763,
+        "scaffold_bytes": 0,
+        "scaffold_tensor_bytes": 0,
+        "scaffold_object_bytes": 0,
+        "stage_handoff_bytes": 0,
+        "stage_handoff_seconds": 0.0,
+        "tp_collective_bytes": 236666880,
+        "tp_collective_seconds": 28.3334,
+        "tp_collective_breakdown": [
+          {
+            "phase": "decode",
+            "module": "attention",
+            "reason": "row_parallel_reduce",
+            "operation": "all_reduce",
+            "event_count": 540,
+            "elapsed_seconds": 2.460569,
+            "tensor_bytes": 2764800,
+            "payload_prepare_seconds": 0.243269,
+            "device_to_cpu_seconds": 0.243269,
+            "gloo_collective_seconds": 1.940864,
+            "cpu_to_device_seconds": 0.270616
+          },
+          {
+            "phase": "decode",
+            "module": "mlp",
+            "reason": "row_parallel_reduce",
+            "operation": "all_reduce",
+            "event_count": 540,
+            "elapsed_seconds": 3.115957,
+            "tensor_bytes": 2764800,
+            "payload_prepare_seconds": 0.910639,
+            "device_to_cpu_seconds": 0.910639,
+            "gloo_collective_seconds": 1.927507,
+            "cpu_to_device_seconds": 0.272653
+          },
+          {
+            "phase": "prefill",
+            "module": "attention",
+            "reason": "row_parallel_reduce",
+            "operation": "all_reduce",
+            "event_count": 36,
+            "elapsed_seconds": 11.142881,
+            "tensor_bytes": 115568640,
+            "payload_prepare_seconds": 0.485983,
+            "device_to_cpu_seconds": 0.485983,
+            "gloo_collective_seconds": 10.533539,
+            "cpu_to_device_seconds": 0.121968
+          },
+          {
+            "phase": "prefill",
+            "module": "mlp",
+            "reason": "row_parallel_reduce",
+            "operation": "all_reduce",
+            "event_count": 36,
+            "elapsed_seconds": 11.613993,
+            "tensor_bytes": 115568640,
+            "payload_prepare_seconds": 1.076761,
+            "device_to_cpu_seconds": 1.076761,
+            "gloo_collective_seconds": 10.415256,
+            "cpu_to_device_seconds": 0.120792
+          }
+        ],
+        "tp_collective_substage_seconds": {
+          "event_count": 1152,
+          "elapsed_seconds": 28.3334,
+          "payload_prepare_seconds": 2.716652,
+          "device_to_cpu_seconds": 2.716652,
+          "gloo_collective_seconds": 24.817166,
+          "cpu_to_device_seconds": 0.786029
+        },
+        "transport_pin_memory": {
+          "requested_event_count": 0,
+          "used_event_count": 0,
+          "used_tensor_count": 0
+        },
+        "transport_event_count": 1154
+      },
+      "weight_load": {
+        "loaded_weight_tensor_bytes": 5189532672,
+        "tp_weight_sharded": true,
+        "stage_weight_scope_ok": true
+      },
+      "stage_kv_cache": {
+        "tensor_bytes": 47407104,
+        "active_tensor_bytes": 46227456,
+        "active_tensor_bytes_before": 46227456,
+        "active_tensor_bytes_after": null,
+        "max_seq_len": 643,
+        "allocated_layers": 36
+      }
+    },
+    {
+      "case_id": "tp-mm-generate-frame-regression",
+      "path": "/mnt/ssd/code/Qwen3_vl/baseline_runs/20260502-step22-full-smoke/tp-mm-generate-frame-regression-rank0.log",
+      "rank": 0,
+      "backend": "tp",
+      "pipeline_type": "multimodal_generate",
+      "mode": "generate",
+      "generated_token_ids": [
+        87140,
+        15946,
+        3837,
+        101177
+      ],
+      "generated_text": "视频中，一名",
+      "timing": {
+        "runtime_total_seconds": 53.054849,
+        "prepare_session_seconds": 19.381213,
+        "startup_contract_seconds": 1.117247,
+        "startup_contract_transport_seconds": 0.0,
+        "materialize_stage_seconds": 0.087328,
+        "post_load_barrier_seconds": 0.0,
+        "scaffold_transport_seconds": 0.0
+      },
+      "memory": {
+        "cpu_max_rss_bytes": 8060510208,
+        "cuda_peak_allocated_bytes": 7008558592,
+        "cuda_peak_reserved_bytes": 7090470912,
+        "cuda_available": true
+      },
+      "payload": {
+        "startup_contract_bytes": 12069054,
+        "startup_contract_tensor_bytes": 12068291,
+        "startup_contract_object_bytes": 763,
+        "scaffold_bytes": 0,
+        "scaffold_tensor_bytes": 0,
+        "scaffold_object_bytes": 0,
+        "stage_handoff_bytes": 0,
+        "stage_handoff_seconds": 0.0,
+        "tp_collective_bytes": 232243200,
+        "tp_collective_seconds": 24.584393,
+        "tp_collective_breakdown": [
+          {
+            "phase": "decode",
+            "module": "attention",
+            "reason": "row_parallel_reduce",
+            "operation": "all_reduce",
+            "event_count": 108,
+            "elapsed_seconds": 0.627758,
+            "tensor_bytes": 552960,
+            "payload_prepare_seconds": 0.046704,
+            "device_to_cpu_seconds": 0.046704,
+            "gloo_collective_seconds": 0.502213,
+            "cpu_to_device_seconds": 0.077546
+          },
+          {
+            "phase": "decode",
+            "module": "mlp",
+            "reason": "row_parallel_reduce",
+            "operation": "all_reduce",
+            "event_count": 108,
+            "elapsed_seconds": 0.629599,
+            "tensor_bytes": 552960,
+            "payload_prepare_seconds": 0.192756,
+            "device_to_cpu_seconds": 0.192756,
+            "gloo_collective_seconds": 0.359716,
+            "cpu_to_device_seconds": 0.075941
+          },
+          {
+            "phase": "prefill",
+            "module": "attention",
+            "reason": "row_parallel_reduce",
+            "operation": "all_reduce",
+            "event_count": 36,
+            "elapsed_seconds": 11.71922,
+            "tensor_bytes": 115568640,
+            "payload_prepare_seconds": 0.515369,
+            "device_to_cpu_seconds": 0.515369,
+            "gloo_collective_seconds": 11.089708,
+            "cpu_to_device_seconds": 0.112879
+          },
+          {
+            "phase": "prefill",
+            "module": "mlp",
+            "reason": "row_parallel_reduce",
+            "operation": "all_reduce",
+            "event_count": 36,
+            "elapsed_seconds": 11.607816,
+            "tensor_bytes": 115568640,
+            "payload_prepare_seconds": 1.02244,
+            "device_to_cpu_seconds": 1.02244,
+            "gloo_collective_seconds": 10.47942,
+            "cpu_to_device_seconds": 0.104779
+          }
+        ],
+        "tp_collective_substage_seconds": {
+          "event_count": 288,
+          "elapsed_seconds": 24.584393,
+          "payload_prepare_seconds": 1.777269,
+          "device_to_cpu_seconds": 1.777269,
+          "gloo_collective_seconds": 22.431057,
+          "cpu_to_device_seconds": 0.371145
+        },
+        "transport_pin_memory": {
+          "requested_event_count": 0,
+          "used_event_count": 0,
+          "used_tensor_count": 0
+        },
+        "transport_event_count": 290
+      },
+      "weight_load": {
+        "loaded_weight_tensor_bytes": 5189532672,
+        "tp_weight_sharded": true,
+        "stage_weight_scope_ok": true
+      },
+      "stage_kv_cache": {
+        "tensor_bytes": 46522368,
+        "active_tensor_bytes": 46227456,
+        "active_tensor_bytes_before": 46227456,
+        "active_tensor_bytes_after": null,
+        "max_seq_len": 631,
+        "allocated_layers": 36
+      }
+    },
+    {
+      "case_id": "tp-mm-generate-frame-regression",
+      "path": "/mnt/ssd/code/Qwen3_vl/baseline_runs/20260502-step22-full-smoke/tp-mm-generate-frame-regression-rank1.log",
+      "rank": 1,
+      "backend": "tp",
+      "pipeline_type": "multimodal_generate",
+      "mode": "generate",
+      "generated_token_ids": [
+        87140,
+        15946,
+        3837,
+        101177
+      ],
+      "generated_text": "视频中，一名",
+      "timing": {
+        "runtime_total_seconds": 53.22696,
+        "prepare_session_seconds": 0.29104,
+        "startup_contract_seconds": 21.276719,
+        "startup_contract_transport_seconds": 0.0,
+        "materialize_stage_seconds": 0.084899,
+        "post_load_barrier_seconds": 0.0,
+        "scaffold_transport_seconds": 0.0
+      },
+      "memory": {
+        "cpu_max_rss_bytes": 7245250560,
+        "cuda_peak_allocated_bytes": 7004963328,
+        "cuda_peak_reserved_bytes": 7103053824,
+        "cuda_available": true
+      },
+      "payload": {
+        "startup_contract_bytes": 12069054,
+        "startup_contract_tensor_bytes": 12068291,
+        "startup_contract_object_bytes": 763,
+        "scaffold_bytes": 0,
+        "scaffold_tensor_bytes": 0,
+        "scaffold_object_bytes": 0,
+        "stage_handoff_bytes": 0,
+        "stage_handoff_seconds": 0.0,
+        "tp_collective_bytes": 232243200,
+        "tp_collective_seconds": 23.827416,
+        "tp_collective_breakdown": [
+          {
+            "phase": "decode",
+            "module": "attention",
+            "reason": "row_parallel_reduce",
+            "operation": "all_reduce",
+            "event_count": 108,
+            "elapsed_seconds": 0.498742,
+            "tensor_bytes": 552960,
+            "payload_prepare_seconds": 0.041174,
+            "device_to_cpu_seconds": 0.041174,
+            "gloo_collective_seconds": 0.402159,
+            "cpu_to_device_seconds": 0.054239
+          },
+          {
+            "phase": "decode",
+            "module": "mlp",
+            "reason": "row_parallel_reduce",
+            "operation": "all_reduce",
+            "event_count": 108,
+            "elapsed_seconds": 0.618999,
+            "tensor_bytes": 552960,
+            "payload_prepare_seconds": 0.173474,
+            "device_to_cpu_seconds": 0.173474,
+            "gloo_collective_seconds": 0.390388,
+            "cpu_to_device_seconds": 0.054082
+          },
+          {
+            "phase": "prefill",
+            "module": "attention",
+            "reason": "row_parallel_reduce",
+            "operation": "all_reduce",
+            "event_count": 36,
+            "elapsed_seconds": 11.078915,
+            "tensor_bytes": 115568640,
+            "payload_prepare_seconds": 0.50637,
+            "device_to_cpu_seconds": 0.50637,
+            "gloo_collective_seconds": 10.458026,
+            "cpu_to_device_seconds": 0.113316
+          },
+          {
+            "phase": "prefill",
+            "module": "mlp",
+            "reason": "row_parallel_reduce",
+            "operation": "all_reduce",
+            "event_count": 36,
+            "elapsed_seconds": 11.63076,
+            "tensor_bytes": 115568640,
+            "payload_prepare_seconds": 1.085465,
+            "device_to_cpu_seconds": 1.085465,
+            "gloo_collective_seconds": 10.422252,
+            "cpu_to_device_seconds": 0.121963
+          }
+        ],
+        "tp_collective_substage_seconds": {
+          "event_count": 288,
+          "elapsed_seconds": 23.827416,
+          "payload_prepare_seconds": 1.806483,
+          "device_to_cpu_seconds": 1.806483,
+          "gloo_collective_seconds": 21.672825,
+          "cpu_to_device_seconds": 0.3436
+        },
+        "transport_pin_memory": {
+          "requested_event_count": 0,
+          "used_event_count": 0,
+          "used_tensor_count": 0
+        },
+        "transport_event_count": 290
+      },
+      "weight_load": {
+        "loaded_weight_tensor_bytes": 5189532672,
+        "tp_weight_sharded": true,
+        "stage_weight_scope_ok": true
+      },
+      "stage_kv_cache": {
+        "tensor_bytes": 46522368,
+        "active_tensor_bytes": 46227456,
+        "active_tensor_bytes_before": 46227456,
+        "active_tensor_bytes_after": null,
+        "max_seq_len": 631,
+        "allocated_layers": 36
+      }
+    }
+  ]
+}

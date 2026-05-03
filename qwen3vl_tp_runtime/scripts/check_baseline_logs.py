@@ -188,6 +188,7 @@ def _check_expected_smoke_case(
         errors.extend(_check_transport_metrics(case_id, items, require_transport_metrics=require_transport_metrics))
         return errors
 
+    expected_video_source_seen = False
     for item in items:
         if item.summary.get("generated_token_ids") != smoke_case.expected_ids:
             _fail(
@@ -202,12 +203,14 @@ def _check_expected_smoke_case(
         if smoke_case.backend is not None and item.summary.get("backend") != smoke_case.backend:
             _fail(errors, item.label, "backend", smoke_case.backend, item.summary.get("backend"))
         video_input = _get_video_input(item.summary)
-        if smoke_case.expected_video_source is not None and (
-            video_input or smoke_case.require_transport_metrics or require_transport_metrics
-        ):
+        if smoke_case.expected_video_source is not None and video_input:
             actual_source = video_input.get("source")
             if actual_source != smoke_case.expected_video_source:
                 _fail(errors, item.label, "video_input.source", smoke_case.expected_video_source, actual_source)
+            else:
+                expected_video_source_seen = True
+    if smoke_case.expected_video_source is not None and not expected_video_source_seen:
+        errors.append(f"{case_id}: no rank reported video_input.source={smoke_case.expected_video_source!r}")
     errors.extend(
         _check_transport_metrics(
             case_id,
@@ -457,7 +460,7 @@ def check_baseline_logs(
             smoke_case=smoke_case,
             require_transport_metrics=require_transport_metrics,
         )
-    elif case_prefix == "pp":
+    elif case_prefix == "pp" or case_prefix.startswith("pp"):
         errors = _check_pp(
             case_id,
             items,

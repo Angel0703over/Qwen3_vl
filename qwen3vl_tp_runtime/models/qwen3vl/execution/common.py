@@ -1,4 +1,4 @@
-"""Shared helpers for Qwen3-VL replay execution kernels."""
+"""Shared helpers for Qwen3-VL runtime execution kernels."""
 
 from __future__ import annotations
 
@@ -15,9 +15,6 @@ def compose_layer_state(layer_state: dict, stage_state: dict) -> dict:
     runtime_state["sin"] = stage_state["sin"]
     return runtime_state
 
-
-def compose_layer_bundle(layer_bundle: dict, runtime_bundle: dict) -> dict:
-    return compose_layer_state(layer_bundle, runtime_bundle)
 
 def _resolve_tp_math_dtype(hidden_states: torch.Tensor, math_mode: str) -> tuple[torch.dtype, torch.dtype]:
     orig_dtype = hidden_states.dtype

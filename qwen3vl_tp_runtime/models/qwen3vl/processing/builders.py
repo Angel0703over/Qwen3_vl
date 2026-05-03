@@ -17,6 +17,7 @@ from qwen3vl_tp_runtime.hexgen_core.config import FRAME_DIR
 
 
 VIDEO_INPUT_METADATA_SCHEMA = "qwen3vl_video_input_v1"
+DEFAULT_VIDEO_PROMPT = "请用中文简要描述这个视频的主要内容。"
 
 
 @dataclass(slots=True)
@@ -89,7 +90,7 @@ def _set_if_present(payload: dict[str, Any], key: str, value: Any) -> None:
 def build_video_messages(
     spec: VideoInputSpec,
     *,
-    prompt: str = "请用中文简要描述这个视频的主要内容。",
+    prompt: str = DEFAULT_VIDEO_PROMPT,
 ):
     spec.validate()
     if spec.frame_paths is not None:
@@ -429,7 +430,7 @@ def build_inputs_with_metadata(
     *,
     video_path: str | None = None,
     video_url: str | None = None,
-    prompt: str = "请用中文简要描述这个视频的主要内容。",
+    prompt: str = DEFAULT_VIDEO_PROMPT,
     sample_fps: int = 1,
     video_fps: float | None = None,
     video_nframes: int | None = None,
@@ -498,7 +499,7 @@ def build_inputs(
     *,
     video_path: str | None = None,
     video_url: str | None = None,
-    prompt: str = "请用中文简要描述这个视频的主要内容。",
+    prompt: str = DEFAULT_VIDEO_PROMPT,
     sample_fps: int = 1,
     video_fps: float | None = None,
     video_nframes: int | None = None,
@@ -558,6 +559,7 @@ def build_text_inputs(
 
 
 __all__ = [
+    "DEFAULT_VIDEO_PROMPT",
     "VIDEO_INPUT_METADATA_SCHEMA",
     "VideoInputSpec",
     "build_video_messages",

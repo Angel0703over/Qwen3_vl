@@ -3,13 +3,7 @@
 import torch
 import torch.distributed as dist
 
-from ..distributed import (
-    broadcast_cpu,
-    broadcast_object_cpu,
-    broadcast_tensor_payload_cpu,
-    startup_log,
-    startup_timer,
-)
+from .. import distributed as distributed_backend
 from ..generate_buffers import (
     build_decode_attention_mask_buffer,
     decode_attention_mask_view,
@@ -26,33 +20,13 @@ from ..stage import (
     run_stage,
     run_stage_tp,
 )
-from ...models.qwen3vl.execution import (
-    StageKVCache,
-    attach_video_window_cache_index,
-    build_compact_decode_attention_mask_2d,
-    build_video_kv_compression_contract,
-    build_video_kv_compression_plan,
-    build_stage_kv_cache,
-    compact_stage_kv_cache_for_video_plan,
-    forward_text_embeddings,
-    trace_text_decode_logits_tp_with_runtime_cache,
-)
-from ...models.qwen3vl.capture.common import load_bundle, move_bundle
+from ...models.qwen3vl import execution as qwen_execution
+from ...models.qwen3vl import runtime_builder as qwen_runtime_builder
+from ...models.qwen3vl import weights as qwen_weights
+from ...models.qwen3vl.capture import common as qwen_capture_common
 from ...models.qwen3vl.functional import dtype_from_name, resolve_comm_dtype
-from ...models.qwen3vl.runtime_builder import (
-    DirectStageStateBuilder,
-    build_direct_stage_state,
-    materialize_text_stage_state,
-    restore_mm_startup_transport,
-    seed_mm_startup_runtime_config,
-)
 from ...models.qwen3vl.runtime_mm_stage import build_mm_decode_state_from_weights
 from ...models.qwen3vl.runtime_text_stage import summarize_text_weight_load
-from ...models.qwen3vl.weights import (
-    build_text_rotary_embedding,
-    build_text_runtime_aux_tensors,
-    load_text_model_config_spec,
-)
 
 
 def tensor_diff_stats(lhs: torch.Tensor, rhs: torch.Tensor) -> tuple[float, float]:
@@ -112,8 +86,8 @@ def _seed_tp_mm_input_owner_startup_contract(
     startup_meta = None
     startup_tensors = None
     if rank == 0:
-        with startup_timer("tp-direct-loader", "prepare multimodal input-owner startup contract"):
-            with DirectStageStateBuilder(
+        with distributed_backend.startup_timer("tp-direct-loader", "prepare multimodal input-owner startup contract"):
+            with qwen_runtime_builder.DirectStageStateBuilder(
                 stage_specs=manifest.stages,
                 runtime_config=dict(runtime_config),
                 include_text_weights=False,
@@ -123,26 +97,26 @@ def _seed_tp_mm_input_owner_startup_contract(
                     local_stage_indices=local_stage_indices,
                 )
     else:
-        startup_log(
+        distributed_backend.startup_log(
             "tp-direct-loader",
             f"rank={rank} waiting multimodal input-owner startup contract from src=0",
         )
 
-    startup_meta = broadcast_object_cpu(
+    startup_meta = distributed_backend.broadcast_object_cpu(
         startup_meta,
         src=0,
         label=f"tp_multimodal_startup_contract_meta stage_idx={int(stage_idx)}",
     )
-    startup_tensors = broadcast_tensor_payload_cpu(
+    startup_tensors = distributed_backend.broadcast_tensor_payload_cpu(
         startup_tensors,
         src=0,
         label=f"tp_multimodal_startup_contract_tensors stage_idx={int(stage_idx)}",
     )
-    startup_contract = restore_mm_startup_transport(
+    startup_contract = qwen_runtime_builder.restore_mm_startup_transport(
         startup_meta,
         startup_tensors,
     )
-    seed_mm_startup_runtime_config(
+    qwen_runtime_builder.seed_mm_startup_runtime_config(
         runtime_config,
         startup_contract,
         local_stage_indices=local_stage_indices,
@@ -167,13 +141,13 @@ def load_stage_state_for_tp_rank(
             rank=rank,
             stage_idx=stage_meta.stage_idx,
         )
-        startup_log(
+        distributed_backend.startup_log(
             "tp-direct-loader",
             f"rank={rank} building shared direct scaffold stage_idx={stage_meta.stage_idx} "
             f"range={stage_meta.start_idx}:{stage_meta.end_idx}",
         )
         mm_activate_frontend = False if runtime_modality == "multimodal" else None
-        scaffold = build_direct_stage_state(
+        scaffold = qwen_runtime_builder.build_direct_stage_state(
             stage_idx=stage_meta.stage_idx,
             start_idx=stage_meta.start_idx,
             end_idx=stage_meta.end_idx,
@@ -183,12 +157,12 @@ def load_stage_state_for_tp_rank(
         )
         compute_dtype_name = scaffold["save_dtype"] if compute_dtype_arg == "auto" else compute_dtype_arg
         compute_dtype = dtype_from_name(compute_dtype_name)
-        with startup_timer(
+        with distributed_backend.startup_timer(
             "tp-direct-loader",
             f"materialize local direct shard rank={rank} stage_idx={stage_meta.stage_idx} "
             f"tp_local_rank={rank}/{world_size}",
         ):
-            stage_state = materialize_text_stage_state(
+            stage_state = qwen_runtime_builder.materialize_text_stage_state(
                 stage_state_scaffold=scaffold,
                 runtime_config=manifest.runtime_config,
                 compute_dtype=compute_dtype,
@@ -203,11 +177,11 @@ def load_stage_state_for_tp_rank(
         )
         if replay_bundle_path is None:
             raise RuntimeError("backend=tp replay manifest 缺少单 stage bundle path。")
-        stage_state = load_bundle(replay_bundle_path)
+        stage_state = qwen_capture_common.load_bundle(replay_bundle_path)
         compute_dtype_name = stage_state["save_dtype"] if compute_dtype_arg == "auto" else compute_dtype_arg
         compute_dtype = dtype_from_name(compute_dtype_name)
 
-    return move_bundle(stage_state, device, compute_dtype), compute_dtype
+    return qwen_capture_common.move_bundle(stage_state, device, compute_dtype), compute_dtype
 
 
 def load_tp_manifest(manifest_path: str) -> TensorParallelManifest:
@@ -380,7 +354,7 @@ def _build_runtime_only_generate_phase_state(
         runtime_state["deepstack_by_layer"] = {}
         runtime_state["deepstack_layer_indices"] = []
     else:
-        runtime_aux = build_text_runtime_aux_tensors(
+        runtime_aux = qwen_weights.build_text_runtime_aux_tensors(
             attention_mask_2d=attention_mask_2d,
             batch_size=int(stage_state["batch_size"]),
             seq_len=query_len,
@@ -425,7 +399,7 @@ def _try_build_local_runtime_stage_input(
     if phase_kind == "prefill":
         input_ids = runtime_state.get("input_ids")
         if runtime_state.get("embed_tokens_weight") is not None and torch.is_tensor(input_ids):
-            return forward_text_embeddings(input_ids, runtime_state), "local_embeddings"
+            return qwen_execution.forward_text_embeddings(input_ids, runtime_state), "local_embeddings"
         if torch.is_tensor(reference_input):
             return reference_input, "local_stage_input"
         return None, None
@@ -444,7 +418,7 @@ def _try_build_local_runtime_stage_input(
                     dtype=infer_runtime_token_dtype(runtime_state),
                 )
             runtime_state["decode_input_ids_runtime"] = decode_input_ids
-            return forward_text_embeddings(decode_input_ids, runtime_state), "local_embeddings"
+            return qwen_execution.forward_text_embeddings(decode_input_ids, runtime_state), "local_embeddings"
         if torch.is_tensor(reference_input):
             return reference_input, "local_stage_input"
         return None, None
@@ -470,7 +444,7 @@ def _run_generate_phase_tp(
     tp_attn_math_mode: str,
     tp_mlp_math_mode: str,
     return_tensor: bool,
-    stage_kv_cache: StageKVCache | None = None,
+    stage_kv_cache: qwen_execution.StageKVCache | None = None,
 ) -> tuple[dict, dict[int, tuple[torch.Tensor | None, torch.Tensor | None]] | None]:
     reference_input = runtime_state.get("stage_input")
     if reference_input is None:
@@ -499,14 +473,14 @@ def _run_generate_phase_tp(
                         device=infer_runtime_tensor_device(runtime_state),
                         dtype=infer_runtime_token_dtype(runtime_state),
                     )
-                leader_input = forward_text_embeddings(decode_input_ids, runtime_state)
+                leader_input = qwen_execution.forward_text_embeddings(decode_input_ids, runtime_state)
                 runtime_state["decode_input_ids_runtime"] = decode_input_ids
             else:
                 raise ValueError(f"不支持的 phase_kind={phase_kind!r}")
         else:
             leader_input = None
 
-        stage_input = broadcast_cpu(
+        stage_input = distributed_backend.broadcast_cpu(
             reference_tensor=(
                 reference_input
                 if reference_input is not None
@@ -529,7 +503,7 @@ def _run_generate_phase_tp(
 
     if phase_kind == "prefill":
         trace_state = strip_runtime_layer_cache(runtime_state)
-        trace = trace_text_decode_logits_tp_with_runtime_cache(
+        trace = qwen_execution.trace_text_decode_logits_tp_with_runtime_cache(
             stage_input,
             trace_state,
             rank,
@@ -543,7 +517,7 @@ def _run_generate_phase_tp(
             stage_kv_cache=stage_kv_cache,
         )
     elif phase_kind == "decode":
-        trace = trace_text_decode_logits_tp_with_runtime_cache(
+        trace = qwen_execution.trace_text_decode_logits_tp_with_runtime_cache(
             stage_input,
             runtime_state,
             rank,
@@ -608,7 +582,7 @@ def _run_generate_phase_tp(
     if phase_kind == "prefill" and runtime_state.get("video_window_cache") is not None:
         video_window_cache = runtime_state["video_window_cache"]
         stats["video_window_cache"] = video_window_cache
-        video_kv_compression_plan = build_video_kv_compression_plan(
+        video_kv_compression_plan = qwen_execution.build_video_kv_compression_plan(
             video_window_cache=video_window_cache,
             stage_kv_cache_summary=stage_kv_cache_summary,
             stage_kv_cache=stage_kv_cache,
@@ -619,7 +593,7 @@ def _run_generate_phase_tp(
         )
         if video_kv_compression_plan is not None:
             stats["video_kv_compression_plan"] = video_kv_compression_plan
-            video_kv_compression_contract = build_video_kv_compression_contract(
+            video_kv_compression_contract = qwen_execution.build_video_kv_compression_contract(
                 compression_plan=video_kv_compression_plan,
                 prefill_seq_len=int(runtime_state["prefill_seq_len"]),
                 decoded_token_count=0,
@@ -628,7 +602,7 @@ def _run_generate_phase_tp(
             if video_kv_compression_contract is not None:
                 stats["video_kv_compression_contract"] = video_kv_compression_contract
             if stage_kv_cache is not None:
-                video_kv_compaction = compact_stage_kv_cache_for_video_plan(
+                video_kv_compaction = qwen_execution.compact_stage_kv_cache_for_video_plan(
                     stage_kv_cache=stage_kv_cache,
                     compression_plan=video_kv_compression_plan,
                     prefill_seq_len=int(runtime_state["prefill_seq_len"]),
@@ -697,7 +671,7 @@ class StageRunner:
         comm_dtype: torch.dtype,
     ) -> dict:
         reference_input = get_stage_input(stage_state)
-        stage_input = broadcast_cpu(
+        stage_input = distributed_backend.broadcast_cpu(
             reference_tensor=reference_input,
             tensor=reference_input if rank == 0 else None,
             src=0,
@@ -770,20 +744,20 @@ class StageRunner:
         runtime_only_generate = is_runtime_only_generate_state(stage_state)
         runtime_only_context = None
         if runtime_only_generate:
-            config_spec = load_text_model_config_spec(self.manifest.runtime_config["model_path"])
+            config_spec = qwen_weights.load_text_model_config_spec(self.manifest.runtime_config["model_path"])
             runtime_only_context = {
                 "config_spec": config_spec,
-                "rotary_emb": build_text_rotary_embedding(config_spec, device=self.device),
+                "rotary_emb": qwen_weights.build_text_rotary_embedding(config_spec, device=self.device),
             }
         stage_kv_cache = (
-            build_stage_kv_cache(
+            qwen_execution.build_stage_kv_cache(
                 prefill_seq_len=int(stage_state["prefill_seq_len"]),
                 max_new_tokens=int(stage_state["max_new_tokens"]),
             )
             if runtime_only_generate
             else None
         )
-        attach_video_window_cache_index(
+        qwen_execution.attach_video_window_cache_index(
             stage_state,
             owner_rank=rank,
             stage_idx=int(stage_state.get("stage_idx", self.manifest.stages[0].stage_idx)),
@@ -872,13 +846,13 @@ class StageRunner:
                 logical_position_start = None
                 video_kv_decode_contract = None
                 if compact_video_kv_active:
-                    current_attention_mask_2d = build_compact_decode_attention_mask_2d(
+                    current_attention_mask_2d = qwen_execution.build_compact_decode_attention_mask_2d(
                         stage_state["prefill_attention_mask_2d"],
                         compression_plan=video_kv_compression_plan,
                         decoded_token_count=int(step_payload),
                         query_len=1,
                     )
-                    video_kv_decode_contract = build_video_kv_compression_contract(
+                    video_kv_decode_contract = qwen_execution.build_video_kv_compression_contract(
                         compression_plan=video_kv_compression_plan,
                         prefill_seq_len=int(stage_state["prefill_seq_len"]),
                         decoded_token_count=int(step_payload),

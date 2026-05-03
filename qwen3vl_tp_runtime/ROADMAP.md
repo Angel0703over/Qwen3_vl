@@ -1,282 +1,127 @@
 # qwen3vl_tp_runtime Roadmap
 
-这份文档只保留当前状态、下一阶段规划和固定规则。详细数字看 `BASELINE.md`，新对话接手看 `SESSION_HANDOFF.md`，每轮原始日志看 `baseline_runs/*/README.md`。
+这份文档只放当前状态和下一步规划。详细数字看 `BASELINE.md`，新对话接手看 `SESSION_HANDOFF.md`，原始日志看 `baseline_runs/*/README.md`。
 
-## 当前结论
+## 当前状态
 
-KV cache 管理先冻结到 20C-4。20D 历史窗口检索回取暂不推进。
-
-主路径状态：
+KV cache 管理先冻结到 20C-4，20D 历史窗口检索回取暂不推进。
 
 | 方向 | 状态 |
 | --- | --- |
-| direct runtime | `PP / TP / HYBRID` 已稳定 |
+| direct runtime | `PP / TP / HYBRID` 都从 `model_path` 构建 `StageState` |
 | 后端边界 | `PP` 和 `TP` 是基础后端，`HYBRID` 是组合层 |
 | TP 权重 | decoder/MLP projection 已 rank-local materialize |
-| multimodal startup | 不传 root/full/replay payload，不传 dense derived tensors |
+| multimodal startup | 只传必要 runtime tensors/metadata，不传 root/full/replay payload |
 | runtime input | pure TP 避免 dense `stage_input` broadcast；HYBRID schema 已固化 |
 | comm dtype | 默认 `bfloat16` |
-| payload 减量 | Step 15 已结束，owner/rebuild 规则冻结 |
-| buffer/pinned | Step 16 已结束，`--transport-pin-memory` 保持 opt-in |
-| KV cache | Step 20A/20B/20C 已完成到 `infinipot-v` opt-in compaction |
-| 完整视频输入 | Step 21 `--video-path` 已通过 HF/PP/TP/HYBRID smoke，frame-dir 回归不变 |
+| KV cache | `StageKVCache -> VideoWindowCacheIndex -> opt-in video KV compaction` 已跑通；实现已独立到 `models/qwen3vl/kv_cache/` |
+| 完整视频输入 | `--video-path` 已通过 HF/PP/TP/HYBRID smoke |
+| smoke 自动化 | Step 22 required matrix 已通过，含 PP=3 和 3-rank HYBRID |
+| API 清理 | Step 23 已完成第一轮：主路径命名、prompt 贯通、legacy lazy export |
 
-关键效果：
+当前固定输出：
 
-| 阶段 | 修改前 | 修改后 | 效果 |
-| --- | --- | --- | --- |
-| TP 后端 | TP 借用 HYBRID 路径 | 独立 `TensorParallelRunner` | 后端边界清楚 |
-| startup contract | 带 reference `stage_output` 和 dense derived tensors | 只传必要 input/metadata | startup payload 下降 |
-| HYBRID `tp_degree=1` | stage1 记录伪 TP collective | single-rank bypass | rank2 TP collective 归零 |
-| TP comm dtype | 默认 `float32` | 默认 `bfloat16` | TP collective bytes 约减半 |
-| pure TP runtime input | 广播 dense `stage_input` | 本地 embedding / local stage input | broadcast events 归零 |
-| Step 20A KV cache | decode 用 `torch.cat([past,current])` | `StageKVCache` append/view | correctness 不变 |
-| Step 20B video window | 无 window -> KV location 索引 | `VideoWindowCacheIndex` | 为窗口压缩/检索打基础 |
-| Step 20C compaction | 完整 visual KV | opt-in `uniform/swa/infinipot-v` compact 本地 KV | active KV bytes 约减半 |
+| case | ids/text |
+| --- | --- |
+| text generate | `[104455, 9909, 9286, 16488]` / `人工智能（Artificial` |
+| frame-dir multimodal with CLI prompt | `[104455, 9909, 9286, 16488]` / `人工智能（Artificial` |
+| full-video default video prompt | `[87140, 108869, 100369, 102122]` / `视频展示了两个场景` |
 
-## 冻结 Baseline
+## 已冻结 Baseline
 
-| 阶段 | baseline | 结论 |
+| 阶段 | baseline | 用途 |
 | --- | --- | --- |
-| correctness | `baseline_runs/20260428/` | 固定 text/mm generated ids/text |
+| correctness | `baseline_runs/20260428/` | 早期固定输出 |
 | current perf | `baseline_runs/20260430-bfloat16-default/` | 当前性能快照 |
 | Step 15 | `baseline_runs/20260430-step15-derived-rebuild/` | payload derived tensor 本地重建 |
-| Step 16 | `baseline_runs/20260501-step16-pinned-ab/` | pinned memory opt-in，默认关闭 |
-| Step 20A | `baseline_runs/20260501-step20a-kv-cache-smoke/` | `StageKVCache` smoke 通过 |
-| Step 20A long | `baseline_runs/20260501-step20a-kv-cache-long-decode/` | `MAX_NEW_TOKENS=16` 输出不变 |
-| Step 20B | `baseline_runs/20260501-step20b-video-window-cache/` | 每 rank `4` windows / `576` video tokens |
-| Step 20C-3 | `baseline_runs/20260502-step20c3-compaction/` | `uniform` active KV bytes 约减半 |
-| Step 20C-4 | `baseline_runs/20260502-step20c4-infinipot-selector/` | `infinipot-v` 本地 K/V scoring，输出不变 |
-| Step 21 | `baseline_runs/20260502-step21-video-input/` | 完整视频 `--video-path` 跑通，frame-dir 旧路径不变 |
-| Step 22 | `baseline_runs/20260502-step22-2node-smoke/` | 2-node smoke matrix 子集通过，checker/perf table 产物完整 |
+| Step 16 | `baseline_runs/20260501-step16-pinned-ab/` | buffer reuse / pinned A/B |
+| Step 20A | `baseline_runs/20260501-step20a-kv-cache-smoke/` | `StageKVCache` smoke |
+| Step 20B | `baseline_runs/20260501-step20b-video-window-cache/` | video window metadata |
+| Step 20C-3 | `baseline_runs/20260502-step20c3-compaction/` | `uniform` physical compaction |
+| Step 20C-4 | `baseline_runs/20260502-step20c4-infinipot-selector/` | `infinipot-v` selector |
+| Step 21 | `baseline_runs/20260502-step21-video-input/` | 完整视频输入 |
+| Step 22 | `baseline_runs/20260502-step22-full-smoke/` | required smoke matrix |
+| Step 23C | `baseline_runs/20260502-step23c-prompt-smoke/` | prompt 贯通后的当前输出 |
+| Step 24H | `baseline_runs/20260503-step24h-verify/` | 代码整理冻结验证，`pp-mm` / `tp-mm` / `hybrid-mm` 子集 |
 
-固定 multimodal 输出：
+## 关键效果
 
-- ids：`[87140, 15946, 3837, 101177]`
-- text：`视频中，一名`
+| 修改 | before | after |
+| --- | ---: | ---: |
+| startup contract 移除 `stage_output` | `7,563,328` bytes | `4,353,088` bytes |
+| startup contract 移除 dense derived tensor | `4,353,088` bytes | `3,245,806` bytes |
+| HYBRID stage1 `tp_degree=1` collective | `648.46 MiB` | `0 B` |
+| pure TP comm dtype | `449.12 MiB` collective | `221.48 MiB` collective |
+| pure TP runtime input broadcast | `4` events / rank | `0` events |
+| Step 20C opt-in compaction | full active visual KV | active KV bytes 约减半 |
+| Step 23C prompt | distributed mm 用默认视频 prompt | 使用 CLI `--prompt`，与 HF-mm 对齐 |
 
-## 下一阶段规划
+## 下一步
 
-当前不继续做 KV retrieval。接下来优先把 runtime 做得更可用、更稳、更容易汇报。
+### 24. 代码整理
 
-| 优先级 | 阶段 | 目标 | 验收 |
-| ---: | --- | --- | --- |
-| 1 | 22. Runtime smoke 和 baseline 自动化收口 | 固化一键跑 PP/TP/HYBRID/text/mm 的最小矩阵 | 新 baseline 目录完整；checker 自动验证 generated ids/text 和关键 bytes |
-| 2 | 23. 代码/API 清理 | 清理主路径命名、prompt 贯通、过时 helper 和文档引用 | 主路径只暴露 `StageState / model_input / StageKVCache` 等清晰对象；测试通过 |
-| 3 | 24. 汇报材料整理 | 把架构、before/after、性能表、KV cache 路线整理成可讲版本 | README/BASELINE/图表可直接用于汇报 |
-| 4 | 25. 后续性能候选 | 只做规划，不马上改语义 | 明确 TP collective、PP handoff overlap、stage partition 的优先级 |
+目标：在继续加性能功能前，把主路径代码和 debug/replay 边界再收窄一轮。
 
-## 21. 完整视频输入路径
+整理标准：借鉴优秀论文项目仓库，做到所见即所得：
 
-目标：现在多模态 smoke 主要依赖准备好的 frame 目录；下一步补齐“完整视频文件 -> 抽帧 -> processor -> runtime input”的主路径。
+- README 里看到的命令可以直接跑。
+- 命令旁边写清楚会生成哪些文件、期望输出是什么。
+- 文档中的模块名、函数名、CLI 参数名和代码里完全一致。
+- 结果表只放当前可信 baseline，历史结果标清楚“历史 baseline”。
+- 代码入口、核心模块、debug/replay 路径一眼能分清。
 
-当前状态：21A 已接入并已用真实 Jetson baseline 冻结。完整日志在 `baseline_runs/20260502-step21-video-input/`。
+产出：
 
-已完成：
+- 主路径命名复查：`StageState`、`model_input`、`runtime_inputs` 的边界保持清楚。
+- 函数名 / 类名复查：主路径命名简单直接，和 vLLM-style 术语尽量对齐。
+- 文件归属复查：执行逻辑、runtime builder、schema、transport、debug/replay helper 放在对应模块。
+- 大文件 import 收口：优先整理 `hybrid_parallel.py` / `pipeline_parallel.py` / `tensor_parallel.py` 这类 backend 文件，避免顶部几十个函数级 import 淹没主逻辑。
+- 类化边界评估：只把有稳定状态和清晰职责的逻辑类化，例如 runner/context/transport/session；不要为了减少 import 行数强行包类。
+- 模块 facade 评估：对纯函数工具优先用模块别名或小 facade 收口，例如 `distributed as dist`、`tensor_parallel as tp_backend`，让调用点更能显示来源。
+- 合并重复 helper：只合并行为一致、边界清楚、测试能覆盖的重复逻辑。
+- 删除冗余代码：移除未引用的临时 helper、过期 alias、重复 wrapper；保留必要 legacy compat。
+- debug/replay/capture 代码隔离：旧 `bundle` 命名只留在这些路径或 legacy compat。
+- helper script 参数对齐：README / helper / smoke matrix 使用同一套参数名。
+- README 重排成论文项目式结构：Overview、Quickstart、Reproduce、Results、Architecture、Code Map、Debug。
 
-- `VideoInputSpec` / `build_video_messages` / `build_inputs_with_metadata`。
-- CLI 增加 `--video-path`、`--video-url` 和 Qwen 采样参数。
-- 本地 `video_path` 先用 `ffmpeg` 抽帧，再进 Qwen processor；避免当前 `torchvision/av` reader 在 Jetson 环境里卡住。
-- `hf` / `live` / `PP` / `TP` / `HYBRID` direct runtime 都能从 runtime config 选择 frame-dir 或完整视频。
-- helper scripts 支持 `VIDEO_PATH` / `VIDEO_URL` 环境变量。
-- startup contract 只携带 `video_input_metadata`，不传原始视频、frame bytes、root/full/replay payload。
+验收：
 
-结论：可以做成 vLLM-style 的输入体验，但不照搬 vLLM serving 层。
+- `rg "bundle|runtime_input|model_input|manifest-path|allow-debug-paths"` 的结果有明确归类。
+- `rg` 能说明被保留的 legacy/debug 名称为什么保留。
+- backend 大文件的 import 区域明显变短，依赖来源更清楚。
+- 新增类必须有明确状态和职责，不能只是函数容器。
+- 删除/合并的函数有调用点审计，不能留下 dead import 或破坏外部 compat。
+- README 中每条主命令都有对应脚本/参数/产物说明。
+- Code Map 中列出的文件真实存在，并且职责和文件内容一致。
+- 本地单测和 `run-runtime-core-regression.sh --skip-baseline-checks` 通过。
+- 不改变 generated ids/text、payload schema 和 baseline 语义。
 
-| 层次 | vLLM 做法 | 我们这里的规划 |
+实现顺序：
+
+| 阶段 | 内容 | 验收 |
 | --- | --- | --- |
-| 用户输入 | offline 支持 `multi_modal_data["video"]`；online 支持 OpenAI-style `video_url` | CLI/runtime 支持 `--video-path` / `--video-url`，继续保留 `--frame-dir` |
-| media IO | 统一把 URL/文件/bytes 变成 frames + metadata | 本地视频用轻量 `ffmpeg` adapter，URL 可继续交给 Qwen 官方 `qwen_vl_utils` |
-| processor | model-specific processor 处理视频 tensor | 继续用 Qwen3-VL `processor + process_vision_info` |
-| 分布式边界 | serving engine 内部处理调度和缓存 | 不引入 serving；仍由 stage0/input-owner 读取视频、跑 frontend、发 startup contract |
-| payload | 不把原始视频当作模型主输入传播 | 不跨 rank 传视频文件/frames/root payload，只传 compact runtime tensors/metadata |
+| 24A audit | 已完成初版：见 `CODE_CLEANUP_AUDIT.md`，统计大文件行数、import 数、公开函数数；列出 `bundle/runtime_input/model_input/debug` 命名归类 | 有 `文件 / 问题 / 是否主路径 / 建议动作 / 风险` 表 |
+| 24B backend import 收口 | 已完成：`hybrid_parallel.py` 91 -> 61，`pipeline_parallel.py` 90 -> 58，`tensor_parallel.py` 68 -> 57；统一使用 `*_backend` / `qwen_*` facade | import 区明显变短；调用来源更清楚；单测过 |
+| 24C 类化边界评估 | 已完成：见 `CODE_CLEANUP_AUDIT.md`；本轮不新增类，只保留现有 runner / transport / builder / cache 边界 | 有 `候选类 / 当前函数 / 状态字段 / 收益 / 风险 / 是否本轮做` 表；纯函数 helper 不强行包类 |
+| 24D 主路径命名清理 | 已完成：见 `CODE_CLEANUP_AUDIT.md`；direct builder 不再显式传 legacy `bundle_path=None` / `bundle_dir=None`，`StageState/model_input/runtime_inputs` 边界已冻结 | execution 主路径无 `bundle`；legacy/debug/replay/capture/weight-loader 保留项有解释 |
+| 24E 文件归属整理 | 已完成：见 `CODE_CLEANUP_AUDIT.md`；README `Code Map` 已对齐 backend、distributed、transport、execution、runtime_builder、debug/capture/replay/live/scripts 真实职责 | Code Map 和实际文件职责一致；本轮不搬文件、不改 import 路径 |
+| 24F 合并/删除冗余 | 已完成：见 `CODE_CLEANUP_AUDIT.md`；只删除 HYBRID 明确未使用的 `get_stage_output/run_stage_tp` import，legacy compat 和 replay helper 保留并归类 | 无 backend dead import；compat 不破坏；相关测试通过 |
+| 24G README 所见即所得 | 已完成：README 重排为 `Overview / Quickstart / Reproduce / Results / Architecture / Code Map / Debug`；主命令补齐 inputs、outputs、expected、troubleshoot | 每条主命令有输入、输出文件、expected output、失败排查入口 |
+| 24H 验证冻结 | 已完成：本地回归通过；真实 Jetson `pp-mm/tp-mm/hybrid-mm` 子集冻结到 `baseline_runs/20260503-step24h-verify/` | `git diff --check`、本地回归、checker/perf table 通过 |
+| 24I KV cache 包拆分 | 已完成：`StageKVCache`、video window metadata、video KV compression 从 `execution/` 拆到 `models/qwen3vl/kv_cache/` | 代码归属更清楚；backend/execution re-export 不变；不改运行语义 |
+| 24J 全仓冗余扫描 | 已完成第一轮：删除生成缓存和少量 dead import；re-export / compat shim / debug replay API 明确保留 | `CODE_CLEANUP_AUDIT.md` 有删除项和保留项归类；不改运行语义 |
+| 24K KV 子模块兼容层删除 | 已完成：删除 `execution/kv_cache.py`、`execution/video_window_cache.py`、`execution/video_kv_compression.py`；只保留 `execution.__init__` 顶层 re-export | 项目内无旧子模块调用点；KV 实现只在 `models/qwen3vl/kv_cache/` |
 
-建议顺序：
+### 25. 后续性能候选
 
-1. 输入 schema（已完成第一版）：
-   - `frame_dir + num_frames`：保留当前 smoke 路径。
-   - `video_path`：本地完整视频文件。
-   - `video_url`：CLI/schema 已保留；真实网络路径后续再单独验证。
-   - 采样参数：`video_fps`、`video_nframes`、`video_start`、`video_end`、`video_min_frames`、`video_max_frames`。
-2. 处理边界（已完成第一版）：
-   - 新增轻量 `VideoInputSpec` / `build_video_messages` helper。
-   - `frame_dir` 转成 `{"type": "video", "video": ["file://frame0.jpg", ...]}`。
-   - `video_path` 先抽成临时帧列表，再转成 `{"type": "video", "video": ["file://frame0.jpg", ...]}`。
-   - 统一走 `process_vision_info(... return_video_metadata=True, return_video_kwargs=True)`。
-3. runtime/CLI（已完成第一版）：
-   - `scripts/runtime.py` 增加 `--video-path` 和采样参数。
-   - helper scripts 支持 `VIDEO_PATH` 环境变量；有 `VIDEO_PATH` 时不要求 `FRAME_DIR`。
-   - `video_path` 和 `video_url` 互斥；frame-dir 作为默认 fallback。
-4. 分布式约束（已完成第一版）：
-   - 只有 stage0 / input-owner 读取视频、抽帧、跑 Qwen3-VL frontend。
-   - non-input-owner 只 consume startup contract，不读视频、不抽帧、不跑 frontend。
-   - startup/runtime payload 只允许现有 compact tensors/metadata，不传原始视频、frame bytes、root payload。
-5. metadata 观测（已完成第一版）：
-   - rank log 记录 `video_input.source`、`video_path` basename、`video_backend`、`fps`、`frame_count`、`frames_indices`、`total_num_frames`、`video_grid_thw`。
-   - 记录 processor 是否设置 `do_sample_frames=False`，避免重复采样。
-6. 验证结果（已完成）：
-   - `hf-mm-generate` 完整视频对照通过：`[87140, 108869, 100369, 102122]` / `视频展示了两个场景`。
-   - `pp-mm-generate`、`tp-mm-generate`、`hybrid-mm-generate-pp2tp1` 完整视频输出一致。
-   - frame-dir 回归通过：`[87140, 15946, 3837, 101177]` / `视频中，一名`。
-   - non-owner rank 保持 `consume-only`，startup/runtime payload 不传原始视频、frame bytes、root/full/replay payload。
+暂不推进。当前优先级继续放在代码脚手架整理，性能候选先保留为后续备忘。
 
-遗留点：
-
-- `live-mm-generate` 完整视频 trace 15 分钟未产出 JSON，暂不作为冻结 baseline。
-- 当前 distributed multimodal direct builder 还没有贯通 CLI `--prompt`，使用 builder 默认视频 prompt；后续在 23 代码/API 清理里修掉。
-- 当前 HYBRID 完整视频只跑了 2-node `--pp 2 --tp-degrees 1 1` 路径；3-rank `2 1` 需要第三个 CUDA 可用节点。
-
-验收：
-
-- frame-dir 旧路径 generated ids/text 不变。
-- 完整视频路径能生成 rank log。
-- non-input-owner 不读视频、不抽帧、不跑 frontend。
-- startup/runtime payload 不引入 root/full/replay payload。
-- `video_window_cache` 仍能从 `mm_token_type_ids == 2` 识别 video token range。
-- 如果完整视频和 frame-dir 使用同一批采样帧，generated ids/text 应一致；如果采样策略不同，必须记录 frame indices 和输出差异。
-
-## 22. Runtime Smoke 和 Baseline 自动化收口
-
-目标：把当前常用 smoke 固化成一键矩阵，减少手动跑漏。
-
-当前状态：22A/22B/22C/22D/22E 第一版已完成。真实 baseline 已冻结在 `baseline_runs/20260502-step22-2node-smoke/`。
-
-已固定矩阵定义：
-
-- 代码：`qwen3vl_tp_runtime/scripts/smoke_matrix.py`
-- checker：`qwen3vl_tp_runtime/scripts/check_baseline_logs.py`
-
-固定矩阵：
-
-| case | 目的 |
+| 候选 | 当前判断 |
 | --- | --- |
-| `hf-text-generate` | 原生 transformers text 对照 |
-| `hf-mm-generate` | 原生 transformers frame-dir multimodal 对照 |
-| `pp-mm-generate` | PP correctness |
-| `tp-mm-generate` | TP correctness + collective |
-| `hybrid-mm-generate` | HYBRID correctness + stage/TP 组合 |
-| `tp-mm-generate-long` | 长 decode guard |
-| `tp-mm-generate-frame-regression` | 完整视频接入后确认 frame-dir 旧路径不变 |
-| optional full-video smoke | `hf/pp/tp/hybrid` 完整视频 `--video-path` |
-
-checker 已检查：
-
-- `generated_token_ids` / `generated_text` 是否等于固定输出。
-- rank 数量是否符合矩阵定义。
-- `runtime_metrics.transport` 里的 startup/scaffold/handoff/TP collective bytes 是否存在且非负。
-- startup/runtime payload keys 不含 root/full/replay/stage_output 等禁用 payload。
-- multimodal non-owner 是否 `consume-only`。
-- TP rank 的 `tp_weight_sharded` / shard rank / shard world size。
-- full-video 和 frame-dir 的 `video_input.source` 是否正确。
-
-perf table 已统一输出：
-
-- 脚本：`qwen3vl_tp_runtime/scripts/collect_runtime_perf.py`
-- 输出文件：`runtime-perf-records.json` / `runtime-perf-table.md`
-- Markdown 字段：`total s`、`startup bytes`、`scaffold bytes`、`handoff bytes`、`TP coll s/bytes`、`CUDA peak`、`loaded weights`、`stage KV bytes`
-- `stage KV bytes` 有 active bytes 时显示为 `active / allocated`，否则显示 allocated bytes。
-
-一键 helper：
-
-- 脚本：`qwen3vl_tp_runtime/scripts/helpers/run-step22-smoke-matrix.sh`
-- 负责创建 baseline 目录、跑 fixed smoke matrix、调用 checker、生成 perf records/table、写 README。
-- 分布式 case 通过 `TP_HOSTS` / `PP_HOSTS` / `HYBRID_HOSTS` 指定 rank host；`local` 表示当前机器，其他 host 通过 ssh 启动。
-- required matrix 里的 `hybrid-mm-generate` 需要 3 个 rank；只有两台 Jetson 时要补第三个 CUDA host，或先单独跑可用 case。
-
-22E 结果：
-
-- 已跑 2-node Jetson 子集：`hf-text-generate`、`hf-mm-generate`、`pp-mm-generate`、`tp-mm-generate`、`tp-mm-generate-long`、`tp-mm-generate-frame-regression`。
-- `check-smoke-matrix.txt` 全部 PASS。
-- `runtime-perf-records.json` / `runtime-perf-table.md` 已生成。
-- 暂缺 3-rank `hybrid-mm-generate`：这轮 Codex tool shell 看不到 jetson1 CUDA device nodes，只用 jetson2/jetson3 跑了 2-node 子集；物理 jetson1 普通终端 CUDA 可用，可后续通过普通登录/SSH 作为第三 rank 补跑完整矩阵。
-
-用法：
-
-```bash
-# 单个 case
-PYTHONPATH=. python qwen3vl_tp_runtime/scripts/check_baseline_logs.py \
-  --case-id tp-mm-generate-frame-regression \
-  baseline_runs/20260502-step21-video-input/tp-mm-generate-frame-regression-rank0.log \
-  baseline_runs/20260502-step21-video-input/tp-mm-generate-frame-regression-rank1.log
-
-# 完整 Step 22 矩阵目录，跑新 baseline 时使用
-PYTHONPATH=. python qwen3vl_tp_runtime/scripts/check_baseline_logs.py \
-  --matrix step22 \
-  --baseline-dir baseline_runs/<new-step22-dir> \
-  --require-transport-metrics
-
-# 包含完整视频 optional cases
-PYTHONPATH=. python qwen3vl_tp_runtime/scripts/check_baseline_logs.py \
-  --matrix step22 \
-  --baseline-dir baseline_runs/<new-step22-dir> \
-  --include-optional \
-  --require-transport-metrics
-
-# 生成 perf records/table
-PYTHONPATH=. python qwen3vl_tp_runtime/scripts/collect_runtime_perf.py \
-  --baseline-dir baseline_runs/<new-step22-dir> \
-  --matrix step22 \
-  --output-json baseline_runs/<new-step22-dir>/runtime-perf-records.json \
-  --output-md baseline_runs/<new-step22-dir>/runtime-perf-table.md
-
-# 一键跑 Step 22 required matrix
-TP_HOSTS="local 10.126.126.4" \
-PP_HOSTS="local 10.126.126.4" \
-HYBRID_HOSTS="local 10.126.126.4 10.126.126.5" \
-bash qwen3vl_tp_runtime/scripts/helpers/run-step22-smoke-matrix.sh
-
-# 包含 full-video optional cases
-VIDEO_PATH=/mnt/ssd/code/Qwen3_vl/test/demo.mp4 \
-bash qwen3vl_tp_runtime/scripts/helpers/run-step22-smoke-matrix.sh --include-optional
-```
-
-验收：
-
-- 每个 case 有 stdout/stderr 或 rank log。
-- checker 验证 generated ids/text。
-- perf table 自动汇总 total seconds、transport bytes、TP collective、CUDA peak、loaded weights、stage KV cache bytes。
-- baseline 目录命名统一，旧目录不再堆积。
-
-下一步：
-
-- 通过普通登录/SSH 使用 jetson1 作为第三 CUDA rank 后，补跑完整 Step 22 matrix，尤其是 required `hybrid-mm-generate`。
-- 进入 Step 23：代码/API 清理，优先检查主路径命名、prompt 贯通和 helper 参数一致性。
-
-## 23. 代码/API 清理
-
-目标：在继续加功能前，把主路径 API 收窄，降低后续维护成本。
-
-候选清理：
-
-- 检查 `runtime_input` / `model_input` 命名残留。
-- 检查 `bundle` 是否只存在于 replay/debug/capture。
-- 检查 `StageState` 是否仍是主路径唯一运行对象。
-- 检查 video KV compression 是否只在 opt-in 下 mutate KV。
-- 检查 helper script 参数是否和 README 一致。
-- 删除不再引用的 debug/replay helper 或迁到 debug 目录。
-
-验收：
-
-- `rg "bundle|runtime_input|manifest-path|allow-debug-paths"` 的结果符合预期。
-- 本地单测和最小 smoke wrapper 通过。
-- 不改变 generated ids/text 和 baseline payload 语义。
-
-## 24. 汇报材料整理
-
-目标：把项目讲清楚，而不是只堆日志。
-
-建议输出：
-
-- 一张架构图：`PP / TP / HYBRID`、stage、rank、input-owner、startup contract、handoff。
-- 一张 before/after 表：payload、TP collective、KV active bytes。
-- 一张 KV cache 路线图：`StageKVCache -> VideoWindowCacheIndex -> opt-in compression`。
-- 一个 demo 流程：完整视频或 frame-dir 输入，跑到 generated text。
-
-验收：
-
-- `README.md` 能说明项目是什么、怎么跑、当前效果。
-- `BASELINE.md` 能支撑汇报数字。
-- `ROADMAP.md` 能说明下一步为什么这么排。
+| TP collective | Gloo 是主要耗时；继续观察 RowParallel attention/MLP 是否有重复 collective |
+| PP handoff overlap | 可评估，但需要保持 correctness guard |
+| stage partition 搜索 | 等代码整理完成后再排优先级 |
+| `live-mm-generate` 完整视频卡顿 | 独立定位，不阻塞主 runtime |
 
 ## 暂不推进
 
@@ -286,22 +131,32 @@ bash qwen3vl_tp_runtime/scripts/helpers/run-step22-smoke-matrix.sh --include-opt
 | 默认启用 video KV compression | 还缺更长视频和更多问题质量评估 |
 | vLLM-style serving engine | 当前目标不是 serving 系统 |
 | BlockPool / prefix cache / scheduler | 暂不引入 serving 复杂度 |
-| 远端 dense KV 回取 | 风险高，容易破坏当前 correctness guard |
-| PP handoff overlap / stage partition 搜索 | 等完整视频输入和 smoke 自动化稳定后再评估 |
+| 远端 dense KV 回取 | 风险高，容易破坏 correctness guard |
 
 ## 固定规则
 
 - 主路径对象叫 `StageState`。
-- `bundle` 只保留给 replay/debug/capture。
+- `bundle` 只保留给 replay/debug/capture/legacy compat。
+- 内部 helper 可以用 `model_input`；wire protocol 继续保留 `runtime_inputs`。
 - `hexgen_core/modules/` 只放 `pipeline_parallel.py`、`tensor_parallel.py`、`hybrid_parallel.py`。
+- `models/qwen3vl/kv_cache/` 只放 KV buffer、video window index、video KV compression/compaction。
 - HYBRID 可以调用 PP/TP helper；TP 不能反向依赖 HYBRID。
 - payload/transport 改动必须记录 before/after keys、tensor count、bytes。
-- 性能改动必须保留 before/after runtime records。
-- 改 runtime 主路径后，至少验证 `generated_token_ids`、`generated_text`、CUDA peak、transport bytes、weight shard scope。
+- runtime 主路径改动至少验证 generated ids/text、transport bytes、CUDA peak、weight shard scope。
 
-## 常用同步
+## 常用命令
 
 ```bash
+# 本地最小回归
+bash qwen3vl_tp_runtime/scripts/helpers/run-runtime-core-regression.sh
+
+# Step 22 checker
+PYTHONPATH=. python qwen3vl_tp_runtime/scripts/check_baseline_logs.py \
+  --matrix step22 \
+  --baseline-dir baseline_runs/<new-step22-dir> \
+  --require-transport-metrics
+
+# 同步 Jetson
 bash sync-to-jetson2.sh --host 10.126.126.3 --git-changed
 bash sync-to-jetson2.sh --host 10.126.126.4 --git-changed
 ```

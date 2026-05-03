@@ -378,6 +378,7 @@ def _build_direct_manifest_kwargs(args: argparse.Namespace) -> dict:
         elif args.mode == "generate":
             kwargs["max_new_tokens"] = args.max_new_tokens
     else:
+        kwargs["prompt"] = args.prompt
         kwargs["num_frames"] = args.num_frames
         kwargs["frame_dir"] = args.frame_dir
         kwargs["sample_fps"] = args.sample_fps

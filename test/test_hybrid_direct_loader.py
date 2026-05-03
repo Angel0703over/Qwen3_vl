@@ -22,7 +22,6 @@ from qwen3vl_tp_runtime.models.qwen3vl.runtime_mm_stage import (
 from qwen3vl_tp_runtime.models.qwen3vl.runtime_builder import (
     pack_mm_startup_transport,
     pack_text_scaffold_transport,
-    restore_mm_startup_transport,
     select_mm_startup_contract,
 )
 
@@ -236,17 +235,17 @@ class HybridDirectLoaderTest(unittest.TestCase):
         local_startup_meta, local_startup_tensors = pack_mm_startup_transport(local_startup_contract)
 
         with patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.prepare_text_prompt_meta",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.qwen_runtime_builder.prepare_text_prompt_meta",
         ) as prepare_meta_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.DirectStageStateBuilder",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.qwen_runtime_builder.DirectStageStateBuilder",
         ) as builder_cls, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.build_direct_stage_state",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.qwen_runtime_builder.build_direct_stage_state",
             return_value=direct_bundle,
         ) as build_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.recv_object_cpu",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.distributed_backend.recv_object_cpu",
             return_value=local_startup_meta,
         ) as recv_meta_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.recv_tensor_payload_cpu",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.distributed_backend.recv_tensor_payload_cpu",
             return_value=local_startup_tensors,
         ) as recv_mock, patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.dist.barrier",
@@ -327,17 +326,17 @@ class HybridDirectLoaderTest(unittest.TestCase):
         )
 
         with patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.prepare_text_prompt_meta",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.qwen_runtime_builder.prepare_text_prompt_meta",
         ) as prepare_meta_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.DirectStageStateBuilder",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.qwen_runtime_builder.DirectStageStateBuilder",
             return_value=builder_instance,
         ) as builder_cls, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.build_direct_stage_state",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.qwen_runtime_builder.build_direct_stage_state",
             return_value=direct_bundle,
         ) as build_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.send_object_cpu",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.distributed_backend.send_object_cpu",
         ) as send_meta_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.send_tensor_payload_cpu",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.distributed_backend.send_tensor_payload_cpu",
         ) as send_tensor_mock, patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.dist.barrier",
         ) as barrier_mock:
@@ -415,23 +414,23 @@ class HybridDirectLoaderTest(unittest.TestCase):
         )
 
         with patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.prepare_text_prompt_meta",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.qwen_runtime_builder.prepare_text_prompt_meta",
         ) as prepare_meta_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.DirectStageStateBuilder",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.qwen_runtime_builder.DirectStageStateBuilder",
         ) as builder_cls, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.build_direct_stage_state",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.qwen_runtime_builder.build_direct_stage_state",
         ) as build_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.broadcast_object_cpu",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.distributed_backend.broadcast_object_cpu",
             return_value=bundle_meta,
         ) as bcast_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.broadcast_tensor_payload_cpu",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.distributed_backend.broadcast_tensor_payload_cpu",
             return_value=bundle_tensors,
         ) as tensor_bcast_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.recv_object_cpu",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.distributed_backend.recv_object_cpu",
         ) as recv_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.send_object_cpu",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.distributed_backend.send_object_cpu",
         ) as send_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.materialize_text_stage_state",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.qwen_runtime_builder.materialize_text_stage_state",
             return_value=local_bundle,
         ) as materialize_mock, patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.dist.barrier",
@@ -525,16 +524,16 @@ class HybridDirectLoaderTest(unittest.TestCase):
             return payload
 
         with patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.build_direct_stage_state",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.qwen_runtime_builder.build_direct_stage_state",
             return_value=leader_scaffold,
         ) as build_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.broadcast_object_cpu",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.distributed_backend.broadcast_object_cpu",
             side_effect=_echo_object,
         ) as bcast_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.broadcast_tensor_payload_cpu",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.distributed_backend.broadcast_tensor_payload_cpu",
             side_effect=_echo_tensors,
         ) as tensor_bcast_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.materialize_text_stage_state",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.qwen_runtime_builder.materialize_text_stage_state",
             return_value=local_bundle,
         ) as materialize_mock, patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.dist.barrier",
@@ -630,15 +629,15 @@ class HybridDirectLoaderTest(unittest.TestCase):
             return payload
 
         with patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.build_direct_stage_state",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.qwen_runtime_builder.build_direct_stage_state",
         ) as build_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.broadcast_object_cpu",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.distributed_backend.broadcast_object_cpu",
             side_effect=_echo_object,
         ) as bcast_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.broadcast_tensor_payload_cpu",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.distributed_backend.broadcast_tensor_payload_cpu",
             side_effect=_echo_tensors,
         ) as tensor_bcast_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.materialize_text_stage_state",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.qwen_runtime_builder.materialize_text_stage_state",
             return_value=local_bundle,
         ) as materialize_mock, patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.dist.barrier",
@@ -809,16 +808,16 @@ class HybridDirectLoaderTest(unittest.TestCase):
             return payload
 
         with patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.build_direct_stage_state",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.qwen_runtime_builder.build_direct_stage_state",
             return_value=scaffold,
         ) as build_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.broadcast_object_cpu",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.distributed_backend.broadcast_object_cpu",
             side_effect=_echo_object,
         ) as bcast_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.broadcast_tensor_payload_cpu",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.distributed_backend.broadcast_tensor_payload_cpu",
             side_effect=_echo_tensors,
         ) as tensor_bcast_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.materialize_text_stage_state",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.qwen_runtime_builder.materialize_text_stage_state",
             return_value=local_bundle,
         ) as materialize_mock, patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.dist.barrier",
@@ -889,10 +888,10 @@ class HybridDirectLoaderTest(unittest.TestCase):
         }
 
         with patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.build_direct_stage_state",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.qwen_runtime_builder.build_direct_stage_state",
             return_value=direct_bundle,
         ) as build_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.broadcast_object_cpu",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.distributed_backend.broadcast_object_cpu",
         ) as bcast_mock, patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.dist.barrier",
         ) as barrier_mock:
@@ -957,15 +956,15 @@ class HybridDirectLoaderTest(unittest.TestCase):
         )
 
         with patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.build_direct_stage_state",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.qwen_runtime_builder.build_direct_stage_state",
         ) as build_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.broadcast_object_cpu",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.distributed_backend.broadcast_object_cpu",
             return_value=scaffold_meta,
         ) as bcast_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.broadcast_tensor_payload_cpu",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.distributed_backend.broadcast_tensor_payload_cpu",
             return_value=scaffold_tensors,
         ) as tensor_bcast_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.materialize_text_stage_state",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.qwen_runtime_builder.materialize_text_stage_state",
             return_value=local_bundle,
         ) as materialize_mock, patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.dist.barrier",
@@ -1043,16 +1042,16 @@ class HybridDirectLoaderTest(unittest.TestCase):
             return payload
 
         with patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.build_direct_stage_state",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.qwen_runtime_builder.build_direct_stage_state",
             return_value=scaffold,
         ) as build_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.broadcast_object_cpu",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.distributed_backend.broadcast_object_cpu",
             side_effect=_echo_object,
         ) as bcast_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.broadcast_tensor_payload_cpu",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.distributed_backend.broadcast_tensor_payload_cpu",
             side_effect=_echo_tensors,
         ) as tensor_bcast_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.materialize_text_stage_state",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.qwen_runtime_builder.materialize_text_stage_state",
             return_value=local_bundle,
         ) as materialize_mock, patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.dist.barrier",
@@ -1129,13 +1128,13 @@ class HybridDirectLoaderTest(unittest.TestCase):
         }
 
         with patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.broadcast_object_cpu",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.distributed_backend.broadcast_object_cpu",
             return_value=scaffold_meta,
         ), patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.broadcast_tensor_payload_cpu",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.distributed_backend.broadcast_tensor_payload_cpu",
             return_value=scaffold_tensors,
         ), patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.materialize_text_stage_state",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.qwen_runtime_builder.materialize_text_stage_state",
             return_value=full_weight_bundle,
         ), patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.dist.barrier",
@@ -1261,12 +1260,12 @@ class HybridDirectLoaderTest(unittest.TestCase):
         }
 
         with patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.prepare_text_prompt_meta",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.qwen_runtime_builder.prepare_text_prompt_meta",
         ) as prepare_meta_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.broadcast_tensor_payload_cpu",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.distributed_backend.broadcast_tensor_payload_cpu",
             return_value=prompt_metadata,
         ) as bcast_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.build_direct_stage_state",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.qwen_runtime_builder.build_direct_stage_state",
             return_value=direct_bundle,
         ) as build_mock, patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.dist.barrier",
@@ -1322,12 +1321,12 @@ class HybridDirectLoaderTest(unittest.TestCase):
         }
 
         with patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.prepare_text_prompt_meta",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.qwen_runtime_builder.prepare_text_prompt_meta",
         ) as prepare_meta_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.broadcast_tensor_payload_cpu",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.distributed_backend.broadcast_tensor_payload_cpu",
             return_value={"input_ids": torch.tensor([[7, 8, 9]], dtype=torch.int64)},
         ) as bcast_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.build_direct_stage_state",
+            "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.qwen_runtime_builder.build_direct_stage_state",
             return_value=direct_bundle,
         ) as build_mock, patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.hybrid_parallel.dist.barrier",

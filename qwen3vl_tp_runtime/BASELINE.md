@@ -18,15 +18,18 @@
 | Step 20C-3 compaction | `baseline_runs/20260502-step20c3-compaction/` | `uniform` opt-in physical compaction |
 | Step 20C-4 InfiniPot-V selector | `baseline_runs/20260502-step20c4-infinipot-selector/` | `infinipot-v` opt-in local K/V scoring |
 | Step 21 full video input | `baseline_runs/20260502-step21-video-input/` | `--video-path` 完整视频输入 |
-| Step 22 smoke automation | `baseline_runs/20260502-step22-2node-smoke/` | 2-node smoke matrix 子集，checker/perf table 产物完整 |
+| Step 22 smoke automation | `baseline_runs/20260502-step22-full-smoke/` | required smoke matrix 完整 baseline，含 PP=3 和 3-rank HYBRID |
+| Step 23C prompt smoke | `baseline_runs/20260502-step23c-prompt-smoke/` | frame-dir multimodal 贯通 CLI `--prompt` 后的当前输出 |
+| Step 24H code cleanup verify | `baseline_runs/20260503-step24h-verify/` | Step 24 代码整理冻结验证，`pp-mm` / `tp-mm` / `hybrid-mm` 真实 Jetson 子集 |
 
 ## 固定输出
 
 | case | generated_token_ids | generated_text |
 | --- | --- | --- |
 | text generate | `[104455, 9909, 9286, 16488]` | `人工智能（Artificial` |
-| multimodal generate | `[87140, 15946, 3837, 101177]` | `视频中，一名` |
-| tp-mm long decode 16 tokens | `[87140, 15946, 3837, 101177, 105611, 99194, 38035, 113727, 33108, 104362, 38035, 113233, 9370, 104253, 104224, 46944]` | `视频中，一名穿着深色衬衫和浅色裤子的男子站在一个` |
+| frame-dir multimodal generate with CLI prompt | `[104455, 9909, 9286, 16488]` | `人工智能（Artificial` |
+| frame-dir tp-mm long decode 16 tokens with CLI prompt | `[104455, 9909, 9286, 16488, 21392, 3837, 102500, 15469, 7552, 20412, 104564, 99891, 104111, 103799, 3837, 106166]` | `人工智能（Artificial Intelligence，简称AI）是计算机科学的一个分支，旨在` |
+| full-video default video prompt | `[87140, 108869, 100369, 102122]` | `视频展示了两个场景` |
 
 ## 当前性能快照
 
@@ -66,6 +69,7 @@
 | Step 20B video window cache | 无 window 索引 | 记录 `window -> KV location` metadata | 输出不变 |
 | Step 20C-3 `uniform` compaction | selector 只做统计 | opt-in 物理 compact 本地 KV | active KV bytes 约减半 |
 | Step 20C-4 `infinipot-v` selector | range-based token selection | 本地 K/V value-norm + TaR scoring | active KV bytes 约减半 |
+| Step 23C prompt propagation | distributed frame-dir multimodal 忽略 CLI `--prompt`，使用默认视频 prompt | HF/PP/TP/HYBRID 都使用 CLI prompt | frame-dir multimodal 输出与 HF-mm 对齐 |
 
 ## Step 20 KV 管理 Baseline
 
@@ -120,22 +124,57 @@ Payload 结论：
 
 ## Step 22 Smoke Matrix Baseline
 
-来自 `baseline_runs/20260502-step22-2node-smoke/`。这轮由 Codex tool shell 作为 controller 启动；该 shell 看不到 jetson1 的 CUDA device nodes，所以先冻结 jetson2/jetson3 的 2-node 子集。物理 jetson1 普通终端 CUDA 可用，3-rank `hybrid-mm-generate` 后续可通过普通登录/SSH 把 jetson1 作为第三 rank 补跑。
+来自 `baseline_runs/20260502-step22-full-smoke/`。这轮由 Codex tool shell 作为 controller 启动，jetson1/jetson2/jetson3 CUDA 均可用；required matrix 已完整通过，包含 PP=3 `pp3-mm-generate` 和 3-rank `hybrid-mm-generate`。注意：这是 Step 23C prompt 修正前的历史 baseline。
 
 | case | ranks | total s | generated | key metrics |
 | --- | ---: | ---: | --- | --- |
-| `hf-text-generate` | 1 | `8.76` | `[104455, 9909, 9286, 16488]` / `人工智能（Artificial` | CUDA peak `8.28 GiB` |
-| `hf-mm-generate` | 1 | `10.92` | same text output | CUDA peak `8.55 GiB` |
-| `pp-mm-generate` | 2 | `30.25-30.29` | `[87140, 15946, 3837, 101177]` / `视频中，一名` | startup `3.07 MiB`，handoff `3.08 MiB`，stage KV `44.09 / 44.37 MiB` |
-| `tp-mm-generate` | 2 | `52.95-52.99` | same multimodal output | startup `11.51 MiB`，TP collective `23.83-24.42s / 221.48 MiB` |
-| `tp-mm-generate-long` | 2 | `62.03-62.05` | long decode fixed output | TP collective `27.89-28.58s / 225.70 MiB`，stage KV `44.09 / 45.21 MiB` |
-| `tp-mm-generate-frame-regression` | 2 | `52.96-52.97` | same multimodal output | frame-dir 旧路径回归通过 |
+| `hf-text-generate` | 1 | `28.69` | `[104455, 9909, 9286, 16488]` / `人工智能（Artificial` | CUDA peak `8.28 GiB` |
+| `hf-mm-generate` | 1 | `11.60` | same text output | CUDA peak `8.55 GiB` |
+| `pp-mm-generate` | 2 | `30.60-30.80` | `[87140, 15946, 3837, 101177]` / `视频中，一名` | startup `3.07 MiB`，handoff `3.08 MiB`，stage KV `44.09 / 44.37 MiB` |
+| `pp3-mm-generate` | 3 | `31.57-31.67` | same multimodal output | startup `3.07-6.14 MiB`，handoff `3.08-6.15 MiB`，stage KV `29.39 / 29.58 MiB` |
+| `tp-mm-generate` | 2 | `52.95-53.08` | same multimodal output | startup `11.51 MiB`，TP collective `23.73-24.28s / 221.48 MiB` |
+| `hybrid-mm-generate` | 3 | `45.03-45.28` | same multimodal output | stage0 TP collective `12.98-13.26s / 113.82 MiB`，stage1 `0 B` |
+| `tp-mm-generate-long` | 2 | `62.30-62.36` | long decode fixed output | TP collective `28.33-28.98s / 225.70 MiB`，stage KV `44.09 / 45.21 MiB` |
+| `tp-mm-generate-frame-regression` | 2 | `53.05-53.23` | same multimodal output | frame-dir 旧路径回归通过 |
 
 产物：
 
 - `check-smoke-matrix.txt`：全部 PASS。
 - `runtime-perf-records.json` / `runtime-perf-table.md`：已生成统一 perf 表。
 - `collect-runtime-perf.txt`：perf collector 命令日志。
+
+## Step 23C Prompt Baseline
+
+来自 `baseline_runs/20260502-step23c-prompt-smoke/`。这轮修正了 frame-dir multimodal direct builder：distributed `PP / TP / HYBRID` 现在和 HF-mm 一样使用 CLI `--prompt`，因此 frame-dir multimodal 输出从默认视频 prompt 的 `视频中，一名` 切换为当前 CLI prompt 的 `人工智能（Artificial`。
+
+| case | ranks | total s | generated | key metrics |
+| --- | ---: | ---: | --- | --- |
+| `hf-mm-generate` | 1 | `11.03` | `[104455, 9909, 9286, 16488]` / `人工智能（Artificial` | CUDA peak `8.55 GiB` |
+| `pp-mm-generate` | 2 | `30.26-30.45` | same | startup `3.06 MiB`，handoff `3.06 MiB`，stage KV `43.88 / 44.16 MiB` |
+| `pp3-mm-generate` | 3 | `31.09-31.23` | same | startup `3.06-6.11 MiB`，handoff `3.06-6.12 MiB` |
+| `tp-mm-generate` | 2 | `53.03-53.15` | same | startup `11.50 MiB`，TP collective `23.81-24.35s / 220.43 MiB` |
+| `hybrid-mm-generate` | 3 | `44.39-44.61` | same | stage0 TP collective `12.85-13.18s / 113.28 MiB`，stage1 `0 B` |
+| `tp-mm-generate-long` | 2 | `61.70-61.78` | long CLI-prompt output | TP collective `27.65-28.36s / 224.65 MiB` |
+
+产物：
+
+- `check-prompt-smoke.txt`：全部 PASS。
+- `runtime-perf-records.json` / `runtime-perf-table.md`：已生成统一 perf 表。
+
+## Step 24H Code Cleanup Verify
+
+来自 `baseline_runs/20260503-step24h-verify/`。这轮用于冻结 Step 24 代码整理后的主路径验证：本地回归通过后，真实 Jetson 跑 `pp-mm-generate`、`tp-mm-generate`、`hybrid-mm-generate` 子集，确认 generated ids/text 和关键 transport/perf 字段仍可被 checker/perf collector 解析。
+
+| case | ranks | total s | generated | key metrics |
+| --- | ---: | ---: | --- | --- |
+| `pp-mm-generate` | 2 | `30.41-30.51` | `[104455, 9909, 9286, 16488]` / `人工智能（Artificial` | startup `3.06 MiB`，handoff `3.06 MiB`，stage KV `43.88 / 44.16 MiB` |
+| `tp-mm-generate` | 2 | `53.06-53.18` | same | startup `11.50 MiB`，TP collective `23.77-24.36s / 220.43 MiB` |
+| `hybrid-mm-generate` | 3 | `44.73-44.90` | same | stage0 TP collective `12.93-13.23s / 113.28 MiB`，stage1 `0 B` |
+
+产物：
+
+- `check-smoke-matrix.txt`：三个 selected cases 全部 PASS。
+- `runtime-perf-records.json` / `runtime-perf-table.md`：已生成统一 perf 表。
 
 ## Payload 规则
 
@@ -189,6 +228,7 @@ Step 22 一键生成 baseline 目录：
 ```bash
 TP_HOSTS="local 10.126.126.4" \
 PP_HOSTS="local 10.126.126.4" \
+PP3_HOSTS="local 10.126.126.4 10.126.126.5" \
 HYBRID_HOSTS="local 10.126.126.4 10.126.126.5" \
 bash qwen3vl_tp_runtime/scripts/helpers/run-step22-smoke-matrix.sh
 ```

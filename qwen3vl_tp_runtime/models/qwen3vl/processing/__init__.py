@@ -1,6 +1,7 @@
 """Input processing helpers grouped by responsibility."""
 
 from qwen3vl_tp_runtime.models.qwen3vl.processing.builders import (
+    DEFAULT_VIDEO_PROMPT,
     VIDEO_INPUT_METADATA_SCHEMA,
     VideoInputSpec,
     build_inputs,
@@ -21,6 +22,7 @@ from qwen3vl_tp_runtime.models.qwen3vl.processing.loaders import (
 )
 
 __all__ = [
+    "DEFAULT_VIDEO_PROMPT",
     "VIDEO_INPUT_METADATA_SCHEMA",
     "VideoInputSpec",
     "list_frames",

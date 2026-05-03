@@ -15,6 +15,7 @@ from qwen3vl_tp_runtime.models.qwen3vl.runtime_mm import (
     prepare_mm_session,
     restore_mm_frontend_seed,
 )
+from qwen3vl_tp_runtime.models.qwen3vl.processing import DEFAULT_VIDEO_PROMPT
 from qwen3vl_tp_runtime.models.qwen3vl.runtime_mm_stage import (
     MmRuntimeState,
     MmVisualState,
@@ -301,14 +302,10 @@ class RuntimeMmTest(unittest.TestCase):
         self.assertTrue(torch.equal(session.runtime_inputs.input_ids, fake_frontend_plan.input_ids))
         self.assertTrue(torch.equal(session.runtime_inputs.position_ids, fake_frontend_plan.position_ids))
         self.assertTrue(torch.equal(session.runtime_inputs.rope_deltas, fake_frontend_plan.rope_deltas))
-        self.assertEqual(
-            session.extra,
-            {
-                "num_frames": 2,
-                "frame_paths": ["/tmp/f0.png", "/tmp/f1.png"],
-                "frontend_activation": "active",
-            },
-        )
+        self.assertEqual(session.extra["num_frames"], 2)
+        self.assertEqual(session.extra["frame_paths"], ["/tmp/f0.png", "/tmp/f1.png"])
+        self.assertEqual(session.extra["frontend_activation"], "active")
+        self.assertEqual(session.extra.get("video_input_metadata", {}), {})
 
     def test_prepare_mm_session_active_path_runs_frontend_before_decoder_load(self) -> None:
         fake_model = type("FakeModel", (), {"device": torch.device("cpu")})()
@@ -532,6 +529,7 @@ class RuntimeMmTest(unittest.TestCase):
                     "model_path": "/tmp/fake-model",
                     "num_frames": 2,
                     "frame_dir": "/tmp/frames",
+                    "prompt": "custom video prompt",
                 }
             )
 
@@ -542,6 +540,7 @@ class RuntimeMmTest(unittest.TestCase):
             ["/tmp/f0.png", "/tmp/f1.png"],
             video_path=None,
             video_url=None,
+            prompt="custom video prompt",
             sample_fps=1,
             video_fps=None,
             video_nframes=None,
@@ -589,6 +588,7 @@ class RuntimeMmTest(unittest.TestCase):
             None,
             video_path="/tmp/sample.mp4",
             video_url=None,
+            prompt=DEFAULT_VIDEO_PROMPT,
             sample_fps=1,
             video_fps=None,
             video_nframes=6,

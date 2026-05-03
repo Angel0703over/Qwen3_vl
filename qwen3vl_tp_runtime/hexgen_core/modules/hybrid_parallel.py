@@ -3,17 +3,7 @@
 import torch
 import torch.distributed as dist
 
-from ..distributed import (
-    broadcast_cpu,
-    broadcast_tensor_payload_cpu,
-    broadcast_object_cpu,
-    recv_tensor_payload_cpu,
-    recv_object_cpu,
-    send_tensor_payload_cpu,
-    send_object_cpu,
-    startup_log,
-    startup_timer,
-)
+from .. import distributed as distributed_backend
 from ..generate_buffers import (
     build_decode_attention_mask_buffer,
     decode_attention_mask_view,
@@ -25,30 +15,8 @@ from ..gen_hetero_groups import (
     build_pp_rank_groups,
     parse_tp_degrees,
 )
-from .pipeline_parallel import (
-    prepare_multimodal_decode_pipeline,
-    prepare_multimodal_generate_pipeline,
-    prepare_multimodal_prefill_pipeline,
-    prepare_text_decode_pipeline,
-    prepare_text_generate_pipeline,
-    prepare_text_prefill_pipeline,
-    prepare_text_pipeline,
-)
-# HYBRID composes the pure TP backend. These helpers are a local backend-level
-# reuse surface, but they intentionally stay out of package-level __all__.
-from .tensor_parallel import (
-    broadcast_token_id,
-    build_generate_cache_map,
-    build_generate_phase_state,
-    build_runtime_only_stage_input_template,
-    infer_runtime_tensor_device,
-    infer_runtime_tensor_dtype,
-    infer_runtime_token_dtype,
-    is_runtime_only_generate_state,
-    strip_runtime_layer_cache,
-    token_tensor_to_list,
-    run_stage_state_tp,
-)
+from . import pipeline_parallel as pp_backend
+from . import tensor_parallel as tp_backend
 from ...debug.tp_debug import TpDebugConfig
 from ..schema import (
     HYBRID_RUNTIME_INPUT_PROTOCOL,
@@ -62,48 +30,17 @@ from ..stage import (
     apply_stage_handoff_payload,
     build_stage_handoff_payload,
     get_stage_input,
-    get_stage_output,
-    run_stage_tp,
 )
 from ..transport import StageCommunicator
-from ...models.qwen3vl.execution import (
-    StageKVCache,
-    attach_video_window_cache_index,
-    build_compact_decode_attention_mask_2d,
-    build_video_kv_compression_contract,
-    build_video_kv_compression_plan,
-    build_stage_kv_cache,
-    compact_stage_kv_cache_for_video_plan,
-    forward_text_embeddings,
-    trace_text_decode_logits_tp_with_runtime_cache,
-    trace_text_decode_stage_tp_with_runtime_cache,
-)
+from ...models.qwen3vl import capture as qwen_capture
+from ...models.qwen3vl import execution as qwen_execution
+from ...models.qwen3vl import runtime_builder as qwen_runtime_builder
+from ...models.qwen3vl import weights as qwen_weights
 from ...models.qwen3vl.functional import dtype_from_name, resolve_comm_dtype
 from ...models.qwen3vl.runtime_mm_stage import build_mm_decode_state_from_weights
-from ...models.qwen3vl.runtime_builder import (
-    DirectStageStateBuilder,
-    build_direct_stage_state,
-    compact_mm_shared_for_transport,
-    materialize_text_stage_state,
-    pack_model_input_transport,
-    pack_text_scaffold_transport,
-    prepare_text_prompt_meta,
-    restore_model_input_transport,
-    restore_text_scaffold_transport,
-    restore_mm_startup_transport,
-    seed_mm_startup_runtime_config,
-)
 from ...models.qwen3vl.runtime_text_stage import (
     assert_text_tp_shard_shapes,
     summarize_text_weight_load,
-)
-from ...models.qwen3vl.capture import load_bundle, move_bundle
-from ...models.qwen3vl.weights import (
-    build_text_rotary_embedding,
-    build_text_runtime_aux_tensors,
-    load_model_weight_index,
-    load_text_model_config_spec,
-    load_tensors_from_index,
 )
 
 
@@ -244,7 +181,7 @@ def _build_model_input_broadcast_payload(
     stage_input = stage_payload.get("stage_input")
     if not torch.is_tensor(stage_input):
         raise RuntimeError("HYBRID multimodal runtime input 缺少 stage_input。")
-    payload["shared"] = compact_mm_shared_for_transport(
+    payload["shared"] = qwen_runtime_builder.compact_mm_shared_for_transport(
         dict(shared),
         include_derived=False,
     )
@@ -394,11 +331,11 @@ def _first_floating_tensor_dtype(value) -> torch.dtype | None:
 
 
 def _infer_model_compute_dtype(model_path: str) -> torch.dtype:
-    weight_index = load_model_weight_index(model_path)
+    weight_index = qwen_weights.load_model_weight_index(model_path)
     for tensor_name in _COMPUTE_DTYPE_REF_NAMES:
         if not weight_index.has_tensor(tensor_name):
             continue
-        tensors = load_tensors_from_index(
+        tensors = qwen_weights.load_tensors_from_index(
             weight_index,
             [tensor_name],
             device=torch.device("cpu"),
@@ -490,20 +427,20 @@ def _broadcast_stage_state_transport(
     if stage_state is not None:
         # Historical helper name is text_scaffold, but the transport itself is a
         # generic dict+tensor codec that also works for multimodal StageState.
-        state_meta, state_tensors = pack_text_scaffold_transport(stage_state)
-    state_meta = broadcast_object_cpu(
+        state_meta, state_tensors = qwen_runtime_builder.pack_text_scaffold_transport(stage_state)
+    state_meta = distributed_backend.broadcast_object_cpu(
         state_meta,
         src=src,
         group=group,
         label=meta_label,
     )
-    state_tensors = broadcast_tensor_payload_cpu(
+    state_tensors = distributed_backend.broadcast_tensor_payload_cpu(
         state_tensors,
         src=src,
         group=group,
         label=tensor_label,
     )
-    restored = restore_text_scaffold_transport(
+    restored = qwen_runtime_builder.restore_text_scaffold_transport(
         state_meta,
         state_tensors,
     )
@@ -581,14 +518,14 @@ def _seed_text_prompt_meta(manifest: TextHybridManifest, *, rank: int) -> None:
 
     prompt_metadata = None
     if rank == 0:
-        with startup_timer("hybrid-direct-loader", "prepare runtime-only text prompt metadata"):
-            prompt_metadata = prepare_text_prompt_meta(runtime_config)
+        with distributed_backend.startup_timer("hybrid-direct-loader", "prepare runtime-only text prompt metadata"):
+            prompt_metadata = qwen_runtime_builder.prepare_text_prompt_meta(runtime_config)
 
-    startup_log(
+    distributed_backend.startup_log(
         "hybrid-direct-loader",
         f"rank={rank} waiting runtime-only text prompt metadata broadcast from src=0",
     )
-    prompt_metadata = broadcast_tensor_payload_cpu(
+    prompt_metadata = distributed_backend.broadcast_tensor_payload_cpu(
         prompt_metadata,
         src=0,
         label="runtime_only_text_prompt_metadata",
@@ -629,8 +566,8 @@ def _seed_mm_startup_contract(
     label = f"multimodal_startup_contract stage_idx={int(local_stage_idx)}"
     startup_contract = None
     if rank == 0:
-        with startup_timer("hybrid-direct-loader", "prepare multimodal startup payloads"):
-            with DirectStageStateBuilder(
+        with distributed_backend.startup_timer("hybrid-direct-loader", "prepare multimodal startup payloads"):
+            with qwen_runtime_builder.DirectStageStateBuilder(
                 stage_specs=manifest.stages,
                 runtime_config=dict(runtime_config),
                 include_text_weights=False,
@@ -639,7 +576,7 @@ def _seed_mm_startup_contract(
                 startup_meta, startup_tensors = builder.export_mm_startup_transport(
                     local_stage_indices=[int(local_stage_idx)],
                 )
-                startup_contract = restore_mm_startup_transport(
+                startup_contract = qwen_runtime_builder.restore_mm_startup_transport(
                     startup_meta,
                     startup_tensors,
                 )
@@ -657,35 +594,35 @@ def _seed_mm_startup_contract(
                     dst_meta, dst_tensors = builder.export_mm_startup_transport(
                         local_stage_indices=[stage_idx],
                     )
-                    send_object_cpu(
+                    distributed_backend.send_object_cpu(
                         dst_meta,
                         dst=leader_rank,
                         label=f"multimodal_startup_contract_meta stage_idx={stage_idx}",
                     )
-                    send_tensor_payload_cpu(
+                    distributed_backend.send_tensor_payload_cpu(
                         dst_tensors,
                         dst=leader_rank,
                         label=f"multimodal_startup_contract_tensors stage_idx={stage_idx}",
                     )
     else:
-        startup_log(
+        distributed_backend.startup_log(
             "hybrid-direct-loader",
             f"rank={rank} waiting {label} from src=0",
         )
-        startup_meta = recv_object_cpu(
+        startup_meta = distributed_backend.recv_object_cpu(
             src=0,
             label=f"multimodal_startup_contract_meta stage_idx={int(local_stage_idx)}",
         )
-        startup_tensors = recv_tensor_payload_cpu(
+        startup_tensors = distributed_backend.recv_tensor_payload_cpu(
             src=0,
             label=f"multimodal_startup_contract_tensors stage_idx={int(local_stage_idx)}",
         )
-        startup_contract = restore_mm_startup_transport(
+        startup_contract = qwen_runtime_builder.restore_mm_startup_transport(
             startup_meta,
             startup_tensors,
         )
 
-    seed_mm_startup_runtime_config(
+    qwen_runtime_builder.seed_mm_startup_runtime_config(
         runtime_config,
         startup_contract,
         local_stage_indices=[int(local_stage_idx)],
@@ -719,12 +656,12 @@ def load_stage_state_for_hybrid_rank(
                 "tp_degree=1 的 direct stage 只能有 local_rank=0，"
                 f"当前拿到 local_rank={rank_stage.local_rank}"
             )
-        startup_log(
+        distributed_backend.startup_log(
             "hybrid-direct-loader",
             f"rank={rank} stage_idx={rank_stage.stage_idx} leader building local direct stage "
             f"range={stage_meta.start_idx}:{stage_meta.end_idx} without stage-group broadcast",
         )
-        stage_state = build_direct_stage_state(
+        stage_state = qwen_runtime_builder.build_direct_stage_state(
             stage_idx=stage_meta.stage_idx,
             start_idx=stage_meta.start_idx,
             end_idx=stage_meta.end_idx,
@@ -735,18 +672,18 @@ def load_stage_state_for_hybrid_rank(
         )
         compute_dtype_name = stage_state["save_dtype"] if compute_dtype_arg == "auto" else compute_dtype_arg
         compute_dtype = dtype_from_name(compute_dtype_name)
-        startup_log("hybrid-direct-loader", f"rank={rank} entering post-load barrier")
-        with startup_timer(
+        distributed_backend.startup_log("hybrid-direct-loader", f"rank={rank} entering post-load barrier")
+        with distributed_backend.startup_timer(
             "hybrid-direct-loader",
             f"post-load barrier rank={rank} stage_idx={rank_stage.stage_idx}",
         ):
             dist.barrier()
-        startup_log(
+        distributed_backend.startup_log(
             "hybrid-direct-loader",
             f"rank={rank} stage_idx={rank_stage.stage_idx} moving local direct StageState "
             f"to device={device} compute_dtype={compute_dtype}",
         )
-        return move_bundle(stage_state, device, compute_dtype), compute_dtype
+        return qwen_capture.move_bundle(stage_state, device, compute_dtype), compute_dtype
 
     if use_rank_local_sharded_state:
         use_model_input = _use_model_input_broadcast(manifest)
@@ -758,7 +695,7 @@ def load_stage_state_for_hybrid_rank(
             else ("text scaffold" if runtime_modality == "text" else "stage scaffold")
         )
         if rank_stage.local_rank == 0:
-            startup_log(
+            distributed_backend.startup_log(
                 "hybrid-direct-loader",
                 f"rank={rank} stage_idx={rank_stage.stage_idx} leader building shared {scaffold_kind} "
                 f"range={stage_meta.start_idx}:{stage_meta.end_idx}",
@@ -771,7 +708,7 @@ def load_stage_state_for_hybrid_rank(
                     runtime_modality=runtime_modality,
                 )
             else:
-                leader_scaffold = build_direct_stage_state(
+                leader_scaffold = qwen_runtime_builder.build_direct_stage_state(
                     stage_idx=stage_meta.stage_idx,
                     start_idx=stage_meta.start_idx,
                     end_idx=stage_meta.end_idx,
@@ -787,7 +724,7 @@ def load_stage_state_for_hybrid_rank(
             leader_scaffold = None
             leader_model_input = None
 
-        startup_log(
+        distributed_backend.startup_log(
             "hybrid-direct-loader",
             f"rank={rank} stage_idx={rank_stage.stage_idx} waiting {scaffold_kind} broadcast from leader="
             f"{rank_stage.leader_rank}",
@@ -796,23 +733,23 @@ def load_stage_state_for_hybrid_rank(
         transport_tensors = None
         if use_model_input:
             if leader_model_input is not None:
-                transport_meta, transport_tensors = pack_model_input_transport(leader_model_input)
+                transport_meta, transport_tensors = qwen_runtime_builder.pack_model_input_transport(leader_model_input)
         elif leader_scaffold is not None:
-            transport_meta, transport_tensors = pack_text_scaffold_transport(leader_scaffold)
-        transport_meta = broadcast_object_cpu(
+            transport_meta, transport_tensors = qwen_runtime_builder.pack_text_scaffold_transport(leader_scaffold)
+        transport_meta = distributed_backend.broadcast_object_cpu(
             transport_meta,
             src=rank_stage.leader_rank,
             group=rank_stage.stage_group,
             label=f"{transport_label_prefix}_meta stage_idx={rank_stage.stage_idx}",
         )
-        transport_tensors = broadcast_tensor_payload_cpu(
+        transport_tensors = distributed_backend.broadcast_tensor_payload_cpu(
             transport_tensors,
             src=rank_stage.leader_rank,
             group=rank_stage.stage_group,
             label=f"{transport_label_prefix}_tensors stage_idx={rank_stage.stage_idx}",
         )
         if use_model_input:
-            model_input = restore_model_input_transport(
+            model_input = qwen_runtime_builder.restore_model_input_transport(
                 transport_meta,
                 transport_tensors,
             )
@@ -833,7 +770,7 @@ def load_stage_state_for_hybrid_rank(
                 compute_dtype=compute_dtype,
             )
         else:
-            scaffold = restore_text_scaffold_transport(
+            scaffold = qwen_runtime_builder.restore_text_scaffold_transport(
                 transport_meta,
                 transport_tensors,
             )
@@ -848,18 +785,18 @@ def load_stage_state_for_hybrid_rank(
                 stage_meta=stage_meta,
                 compute_dtype=compute_dtype,
             )
-        startup_log(
+        distributed_backend.startup_log(
             "hybrid-direct-loader",
             f"rank={rank} stage_idx={rank_stage.stage_idx} materializing local direct shard "
             f"tp_local_rank={rank_stage.local_rank}/{rank_stage.tp_degree} "
             f"compute_dtype={compute_dtype}",
         )
-        with startup_timer(
+        with distributed_backend.startup_timer(
             "hybrid-direct-loader",
             f"materialize local direct shard rank={rank} stage_idx={rank_stage.stage_idx} "
             f"tp_local_rank={rank_stage.local_rank}/{rank_stage.tp_degree}",
         ):
-            stage_state = materialize_text_stage_state(
+            stage_state = qwen_runtime_builder.materialize_text_stage_state(
                 stage_state_scaffold=scaffold,
                 runtime_config=manifest.runtime_config,
                 compute_dtype=compute_dtype,
@@ -868,26 +805,26 @@ def load_stage_state_for_hybrid_rank(
             )
         _validate_rank_local_sharded_state(stage_state, rank_stage)
         _record_tp_stage_weight_load_consistency(stage_state, rank_stage)
-        startup_log("hybrid-direct-loader", f"rank={rank} entering post-load barrier")
-        with startup_timer(
+        distributed_backend.startup_log("hybrid-direct-loader", f"rank={rank} entering post-load barrier")
+        with distributed_backend.startup_timer(
             "hybrid-direct-loader",
             f"post-load barrier rank={rank} stage_idx={rank_stage.stage_idx}",
         ):
             dist.barrier()
-        startup_log(
+        distributed_backend.startup_log(
             "hybrid-direct-loader",
             f"rank={rank} stage_idx={rank_stage.stage_idx} moving materialized local StageState "
             f"to device={device} compute_dtype={compute_dtype}",
         )
-        return move_bundle(stage_state, device, compute_dtype), compute_dtype
+        return qwen_capture.move_bundle(stage_state, device, compute_dtype), compute_dtype
     elif all_direct:
         if rank_stage.local_rank == 0:
-            startup_log(
+            distributed_backend.startup_log(
                 "hybrid-direct-loader",
                 f"rank={rank} stage_idx={rank_stage.stage_idx} leader building local direct stage "
                 f"range={stage_meta.start_idx}:{stage_meta.end_idx}",
             )
-            leader_state = build_direct_stage_state(
+            leader_state = qwen_runtime_builder.build_direct_stage_state(
                 stage_idx=stage_meta.stage_idx,
                 start_idx=stage_meta.start_idx,
                 end_idx=stage_meta.end_idx,
@@ -899,7 +836,7 @@ def load_stage_state_for_hybrid_rank(
         else:
             leader_state = None
 
-        startup_log(
+        distributed_backend.startup_log(
             "hybrid-direct-loader",
             f"rank={rank} stage_idx={rank_stage.stage_idx} waiting stage-group broadcast from leader={rank_stage.leader_rank}",
         )
@@ -910,8 +847,8 @@ def load_stage_state_for_hybrid_rank(
             meta_label=f"stage_state_meta stage_idx={rank_stage.stage_idx}",
             tensor_label=f"stage_state_tensors stage_idx={rank_stage.stage_idx}",
         )
-        startup_log("hybrid-direct-loader", f"rank={rank} entering post-load barrier")
-        with startup_timer(
+        distributed_backend.startup_log("hybrid-direct-loader", f"rank={rank} entering post-load barrier")
+        with distributed_backend.startup_timer(
             "hybrid-direct-loader",
             f"post-load barrier rank={rank} stage_idx={rank_stage.stage_idx}",
         ):
@@ -925,11 +862,11 @@ def load_stage_state_for_hybrid_rank(
         if replay_bundle_path is None:
             raise RuntimeError(f"replay manifest 缺少 stage_idx={rank_stage.stage_idx} 的 bundle path。")
         if rank_stage.local_rank == 0:
-            startup_log(
+            distributed_backend.startup_log(
                 "hybrid-direct-loader",
                 f"rank={rank} stage_idx={rank_stage.stage_idx} leader loading bundle file {replay_bundle_path}",
             )
-        replay_state = load_bundle(replay_bundle_path) if rank_stage.local_rank == 0 else None
+        replay_state = qwen_capture.load_bundle(replay_bundle_path) if rank_stage.local_rank == 0 else None
         stage_state = _broadcast_stage_state_transport(
             replay_state,
             src=rank_stage.leader_rank,
@@ -940,11 +877,11 @@ def load_stage_state_for_hybrid_rank(
 
     compute_dtype_name = stage_state["save_dtype"] if compute_dtype_arg == "auto" else compute_dtype_arg
     compute_dtype = dtype_from_name(compute_dtype_name)
-    startup_log(
+    distributed_backend.startup_log(
         "hybrid-direct-loader",
         f"rank={rank} stage_idx={rank_stage.stage_idx} moving StageState to device={device} compute_dtype={compute_dtype}",
     )
-    return move_bundle(stage_state, device, compute_dtype), compute_dtype
+    return qwen_capture.move_bundle(stage_state, device, compute_dtype), compute_dtype
 
 
 def prepare_text_hybrid(
@@ -956,7 +893,7 @@ def prepare_text_hybrid(
     num_frames: int = 8,
     save_dtype: str = "auto",
 ) -> TextHybridManifest:
-    pipeline_manifest = prepare_text_pipeline(
+    pipeline_manifest = pp_backend.prepare_text_pipeline(
         stage_ranges=stage_ranges,
         bundle_dir=bundle_dir,
         manifest_path=manifest_path,
@@ -985,7 +922,7 @@ def prepare_text_prefill_hybrid(
     save_dtype: str = "auto",
     model_path: str | None = None,
 ) -> TextHybridManifest:
-    pipeline_manifest = prepare_text_prefill_pipeline(
+    pipeline_manifest = pp_backend.prepare_text_prefill_pipeline(
         stage_ranges=stage_ranges,
         bundle_dir=bundle_dir,
         manifest_path=manifest_path,
@@ -1020,7 +957,7 @@ def prepare_multimodal_prefill_hybrid(
     model_path: str | None = None,
     frame_dir: str | None = None,
 ) -> TextHybridManifest:
-    pipeline_manifest = prepare_multimodal_prefill_pipeline(
+    pipeline_manifest = pp_backend.prepare_multimodal_prefill_pipeline(
         stage_ranges=stage_ranges,
         bundle_dir=bundle_dir,
         manifest_path=manifest_path,
@@ -1057,7 +994,7 @@ def prepare_multimodal_decode_hybrid(
     model_path: str | None = None,
     frame_dir: str | None = None,
 ) -> TextHybridManifest:
-    pipeline_manifest = prepare_multimodal_decode_pipeline(
+    pipeline_manifest = pp_backend.prepare_multimodal_decode_pipeline(
         stage_ranges=stage_ranges,
         bundle_dir=bundle_dir,
         manifest_path=manifest_path,
@@ -1095,7 +1032,7 @@ def prepare_multimodal_generate_hybrid(
     model_path: str | None = None,
     frame_dir: str | None = None,
 ) -> TextHybridManifest:
-    pipeline_manifest = prepare_multimodal_generate_pipeline(
+    pipeline_manifest = pp_backend.prepare_multimodal_generate_pipeline(
         stage_ranges=stage_ranges,
         bundle_dir=bundle_dir,
         manifest_path=manifest_path,
@@ -1132,7 +1069,7 @@ def prepare_text_decode_hybrid(
     save_dtype: str = "auto",
     model_path: str | None = None,
 ) -> TextHybridManifest:
-    pipeline_manifest = prepare_text_decode_pipeline(
+    pipeline_manifest = pp_backend.prepare_text_decode_pipeline(
         stage_ranges=stage_ranges,
         bundle_dir=bundle_dir,
         manifest_path=manifest_path,
@@ -1168,7 +1105,7 @@ def prepare_text_generate_hybrid(
     save_dtype: str = "auto",
     model_path: str | None = None,
 ) -> TextHybridManifest:
-    pipeline_manifest = prepare_text_generate_pipeline(
+    pipeline_manifest = pp_backend.prepare_text_generate_pipeline(
         stage_ranges=stage_ranges,
         bundle_dir=bundle_dir,
         manifest_path=manifest_path,
@@ -1403,8 +1340,8 @@ def _build_runtime_only_text_generate_phase_state(
         decode_input_ids = (
             torch.zeros(
                 (int(stage_state["batch_size"]), 1),
-                device=infer_runtime_tensor_device(stage_state),
-                dtype=infer_runtime_token_dtype(stage_state),
+                device=tp_backend.infer_runtime_tensor_device(stage_state),
+                dtype=tp_backend.infer_runtime_token_dtype(stage_state),
             )
             if decode_input_ids_buffer is None
             else decode_input_ids_buffer.zero_()
@@ -1412,8 +1349,8 @@ def _build_runtime_only_text_generate_phase_state(
         dummy_embed_tokens_weight = (
             torch.zeros(
                 (1, int(config_spec.hidden_size)),
-                device=infer_runtime_tensor_device(stage_state),
-                dtype=infer_runtime_tensor_dtype(stage_state),
+                device=tp_backend.infer_runtime_tensor_device(stage_state),
+                dtype=tp_backend.infer_runtime_tensor_dtype(stage_state),
             )
             if mm_dummy_embed_tokens_weight is None
             else mm_dummy_embed_tokens_weight
@@ -1425,8 +1362,8 @@ def _build_runtime_only_text_generate_phase_state(
             rope_deltas=stage_state["rope_deltas"],
             embed_tokens_weight=dummy_embed_tokens_weight,
             config_spec=config_spec,
-            device=infer_runtime_tensor_device(stage_state),
-            compute_dtype=infer_runtime_tensor_dtype(stage_state),
+            device=tp_backend.infer_runtime_tensor_device(stage_state),
+            compute_dtype=tp_backend.infer_runtime_tensor_dtype(stage_state),
             rotary_emb=rotary_emb,
             logical_position_start=logical_position_start,
         )
@@ -1438,14 +1375,14 @@ def _build_runtime_only_text_generate_phase_state(
         runtime_state["deepstack_by_layer"] = {}
         runtime_state["deepstack_layer_indices"] = []
     else:
-        runtime_aux = build_text_runtime_aux_tensors(
+        runtime_aux = qwen_weights.build_text_runtime_aux_tensors(
             attention_mask_2d=attention_mask_2d,
             batch_size=int(stage_state["batch_size"]),
             seq_len=query_len,
             past_length=int(attention_mask_2d.shape[-1]) - query_len,
             config_spec=config_spec,
-            device=infer_runtime_tensor_device(stage_state),
-            compute_dtype=infer_runtime_tensor_dtype(stage_state),
+            device=tp_backend.infer_runtime_tensor_device(stage_state),
+            compute_dtype=tp_backend.infer_runtime_tensor_dtype(stage_state),
             rotary_emb=rotary_emb,
         )
         runtime_state["attention_mask"] = runtime_aux["attention_mask"]
@@ -1458,8 +1395,8 @@ def _build_runtime_only_text_generate_phase_state(
         runtime_state["decode_input_ids"] = (
             torch.zeros(
                 (int(stage_state["batch_size"]), 1),
-                device=infer_runtime_tensor_device(stage_state),
-                dtype=infer_runtime_token_dtype(stage_state),
+                device=tp_backend.infer_runtime_tensor_device(stage_state),
+                dtype=tp_backend.infer_runtime_token_dtype(stage_state),
             )
             if decode_input_ids_buffer is None
             else decode_input_ids_buffer
@@ -1477,7 +1414,7 @@ def _run_text_generate_hybrid_phase_impl(
     phase_kind: str,
     current_token_id: int | None,
     cache_by_layer: dict[int, tuple[torch.Tensor | None, torch.Tensor | None]] | None,
-    stage_kv_cache: StageKVCache | None,
+    stage_kv_cache: qwen_execution.StageKVCache | None,
     comm_dtype: torch.dtype,
     tp_attn_math_mode: str,
     tp_mlp_math_mode: str,
@@ -1502,7 +1439,7 @@ def _run_text_generate_hybrid_phase_impl(
         if rank_stage.local_rank == 0:
             if phase_kind == "prefill":
                 if runtime_state.get("embed_tokens_weight") is not None and "input_ids" in runtime_state:
-                    leader_input = forward_text_embeddings(runtime_state["input_ids"], runtime_state)
+                    leader_input = qwen_execution.forward_text_embeddings(runtime_state["input_ids"], runtime_state)
                 else:
                     leader_input = reference_input
             elif phase_kind == "decode":
@@ -1512,7 +1449,7 @@ def _run_text_generate_hybrid_phase_impl(
                     runtime_state["decode_input_ids"],
                     current_token_id,
                 )
-                leader_input = forward_text_embeddings(decode_input_ids, runtime_state)
+                leader_input = qwen_execution.forward_text_embeddings(decode_input_ids, runtime_state)
                 runtime_state["decode_input_ids_runtime"] = decode_input_ids
             else:
                 raise ValueError(f"不支持的 phase_kind={phase_kind!r}")
@@ -1529,11 +1466,11 @@ def _run_text_generate_hybrid_phase_impl(
             leader_input = None
         boundary_max, boundary_mean = None, None
 
-    stage_input = broadcast_cpu(
+    stage_input = distributed_backend.broadcast_cpu(
         reference_tensor=(
             reference_input
             if reference_input is not None
-            else build_runtime_only_stage_input_template(
+            else tp_backend.build_runtime_only_stage_input_template(
                 runtime_state,
                 query_len=(int(runtime_state["prefill_seq_len"]) if phase_kind == "prefill" else 1),
             )
@@ -1572,8 +1509,8 @@ def _run_text_generate_hybrid_phase_impl(
 
     if phase_kind == "prefill":
         if is_last_stage:
-            prefill_runtime_state = strip_runtime_layer_cache(runtime_state)
-            trace = trace_text_decode_logits_tp_with_runtime_cache(
+            prefill_runtime_state = tp_backend.strip_runtime_layer_cache(runtime_state)
+            trace = qwen_execution.trace_text_decode_logits_tp_with_runtime_cache(
                 stage_input,
                 prefill_runtime_state,
                 rank_stage.local_rank,
@@ -1598,8 +1535,8 @@ def _run_text_generate_hybrid_phase_impl(
                 norm_mean = norm_diff.mean().item()
             updated_cache = trace["cache_by_layer"] if stage_kv_cache is None else None
         else:
-            prefill_runtime_state = strip_runtime_layer_cache(runtime_state)
-            trace = trace_text_decode_stage_tp_with_runtime_cache(
+            prefill_runtime_state = tp_backend.strip_runtime_layer_cache(runtime_state)
+            trace = qwen_execution.trace_text_decode_stage_tp_with_runtime_cache(
                 stage_input,
                 prefill_runtime_state,
                 rank_stage.local_rank,
@@ -1617,7 +1554,7 @@ def _run_text_generate_hybrid_phase_impl(
             updated_cache = trace["cache_by_layer"] if stage_kv_cache is None else None
     elif phase_kind == "decode":
         if is_last_stage:
-            trace = trace_text_decode_logits_tp_with_runtime_cache(
+            trace = qwen_execution.trace_text_decode_logits_tp_with_runtime_cache(
                 stage_input,
                 runtime_state,
                 rank_stage.local_rank,
@@ -1642,7 +1579,7 @@ def _run_text_generate_hybrid_phase_impl(
                 norm_max = norm_diff.max().item()
                 norm_mean = norm_diff.mean().item()
         else:
-            trace = trace_text_decode_stage_tp_with_runtime_cache(
+            trace = qwen_execution.trace_text_decode_stage_tp_with_runtime_cache(
                 stage_input,
                 runtime_state,
                 rank_stage.local_rank,
@@ -1729,7 +1666,7 @@ def _run_text_generate_hybrid_phase_impl(
     if phase_kind == "prefill" and runtime_state.get("video_window_cache") is not None:
         video_window_cache = runtime_state["video_window_cache"]
         stats["video_window_cache"] = video_window_cache
-        video_kv_compression_plan = build_video_kv_compression_plan(
+        video_kv_compression_plan = qwen_execution.build_video_kv_compression_plan(
             video_window_cache=video_window_cache,
             stage_kv_cache_summary=stage_kv_cache_summary,
             stage_kv_cache=stage_kv_cache,
@@ -1740,7 +1677,7 @@ def _run_text_generate_hybrid_phase_impl(
         )
         if video_kv_compression_plan is not None:
             stats["video_kv_compression_plan"] = video_kv_compression_plan
-            video_kv_compression_contract = build_video_kv_compression_contract(
+            video_kv_compression_contract = qwen_execution.build_video_kv_compression_contract(
                 compression_plan=video_kv_compression_plan,
                 prefill_seq_len=int(runtime_state["prefill_seq_len"]),
                 decoded_token_count=0,
@@ -1749,7 +1686,7 @@ def _run_text_generate_hybrid_phase_impl(
             if video_kv_compression_contract is not None:
                 stats["video_kv_compression_contract"] = video_kv_compression_contract
             if stage_kv_cache is not None:
-                video_kv_compaction = compact_stage_kv_cache_for_video_plan(
+                video_kv_compaction = qwen_execution.compact_stage_kv_cache_for_video_plan(
                     stage_kv_cache=stage_kv_cache,
                     compression_plan=video_kv_compression_plan,
                     prefill_seq_len=int(runtime_state["prefill_seq_len"]),
@@ -1770,7 +1707,7 @@ def _run_text_generate_hybrid_phase(
     phase_kind: str,
     current_token_id: int | None,
     cache_by_layer: dict[int, tuple[torch.Tensor | None, torch.Tensor | None]] | None,
-    stage_kv_cache: StageKVCache | None,
+    stage_kv_cache: qwen_execution.StageKVCache | None,
     comm_dtype: torch.dtype,
     tp_attn_math_mode: str,
     tp_mlp_math_mode: str,
@@ -1829,23 +1766,23 @@ def _run_text_generate_hybrid_rank(
     )
     comm_dtype = resolve_comm_dtype(comm_dtype_arg, compute_dtype)
     handoff_transport = StageCommunicator(device=device, comm_dtype=comm_dtype)
-    runtime_only_generate = is_runtime_only_generate_state(stage_state)
+    runtime_only_generate = tp_backend.is_runtime_only_generate_state(stage_state)
     runtime_only_context = None
     if runtime_only_generate:
-        config_spec = load_text_model_config_spec(manifest.runtime_config["model_path"])
+        config_spec = qwen_weights.load_text_model_config_spec(manifest.runtime_config["model_path"])
         runtime_only_context = {
             "config_spec": config_spec,
-            "rotary_emb": build_text_rotary_embedding(config_spec, device=device),
+            "rotary_emb": qwen_weights.build_text_rotary_embedding(config_spec, device=device),
         }
     stage_kv_cache = (
-        build_stage_kv_cache(
+        qwen_execution.build_stage_kv_cache(
             prefill_seq_len=int(stage_state["prefill_seq_len"]),
             max_new_tokens=int(stage_state["max_new_tokens"]),
         )
         if runtime_only_generate
         else None
     )
-    attach_video_window_cache_index(
+    qwen_execution.attach_video_window_cache_index(
         stage_state,
         owner_rank=rank,
         stage_idx=rank_stage.stage_idx,
@@ -1866,7 +1803,7 @@ def _run_text_generate_hybrid_rank(
             rotary_emb=runtime_only_context["rotary_emb"],
         )
     else:
-        prefill_state = build_generate_phase_state(
+        prefill_state = tp_backend.build_generate_phase_state(
             stage_state,
             stage_state["prefill"],
             stage_type=("text_prefill_last" if rank_stage.stage_idx == manifest.num_stages - 1 else "text"),
@@ -1887,7 +1824,7 @@ def _run_text_generate_hybrid_rank(
         return_tensor=return_tensors,
     )
 
-    current_token_id = broadcast_token_id(
+    current_token_id = tp_backend.broadcast_token_id(
         prefill_stats["predicted_token_id"] if rank_stage.stage_idx == manifest.num_stages - 1 and rank_stage.local_rank == 0 else None,
         src=manifest.stage_rank_groups[-1][0],
     )
@@ -1895,7 +1832,7 @@ def _run_text_generate_hybrid_rank(
     cache_by_layer = (
         None
         if stage_kv_cache is not None
-        else prefill_cache if prefill_cache is not None else build_generate_cache_map(stage_state)
+        else prefill_cache if prefill_cache is not None else tp_backend.build_generate_cache_map(stage_state)
     )
     video_kv_compression_plan = prefill_stats.get("video_kv_compression_plan")
     video_kv_compaction = prefill_stats.get("video_kv_compaction")
@@ -1918,14 +1855,14 @@ def _run_text_generate_hybrid_rank(
             )
         decode_input_ids_buffer = torch.empty(
             (int(stage_state["batch_size"]), 1),
-            device=infer_runtime_tensor_device(stage_state),
-            dtype=infer_runtime_token_dtype(stage_state),
+            device=tp_backend.infer_runtime_tensor_device(stage_state),
+            dtype=tp_backend.infer_runtime_token_dtype(stage_state),
         )
         if str(stage_state.get("modality", "text")) == "multimodal":
             mm_dummy_embed_tokens_weight = torch.zeros(
                 (1, int(runtime_only_context["config_spec"].hidden_size)),
-                device=infer_runtime_tensor_device(stage_state),
-                dtype=infer_runtime_tensor_dtype(stage_state),
+                device=tp_backend.infer_runtime_tensor_device(stage_state),
+                dtype=tp_backend.infer_runtime_tensor_dtype(stage_state),
             )
 
     decode_iterable = (
@@ -1938,13 +1875,13 @@ def _run_text_generate_hybrid_rank(
             logical_position_start = None
             video_kv_decode_contract = None
             if compact_video_kv_active:
-                current_attention_mask_2d = build_compact_decode_attention_mask_2d(
+                current_attention_mask_2d = qwen_execution.build_compact_decode_attention_mask_2d(
                     stage_state["prefill_attention_mask_2d"],
                     compression_plan=video_kv_compression_plan,
                     decoded_token_count=int(step_payload),
                     query_len=1,
                 )
-                video_kv_decode_contract = build_video_kv_compression_contract(
+                video_kv_decode_contract = qwen_execution.build_video_kv_compression_contract(
                     compression_plan=video_kv_compression_plan,
                     prefill_seq_len=int(stage_state["prefill_seq_len"]),
                     decoded_token_count=int(step_payload),
@@ -1972,7 +1909,7 @@ def _run_text_generate_hybrid_rank(
             )
         else:
             video_kv_decode_contract = None
-            decode_state = build_generate_phase_state(
+            decode_state = tp_backend.build_generate_phase_state(
                 stage_state,
                 step_payload,
                 stage_type=("text_decode_last" if rank_stage.stage_idx == manifest.num_stages - 1 else "text_decode"),
@@ -1995,7 +1932,7 @@ def _run_text_generate_hybrid_rank(
         if video_kv_decode_contract is not None:
             current_step_stats["video_kv_compression_contract"] = video_kv_decode_contract
             current_step_stats["video_kv_compaction_active"] = True
-        current_token_id = broadcast_token_id(
+        current_token_id = tp_backend.broadcast_token_id(
             current_step_stats["predicted_token_id"] if rank_stage.stage_idx == manifest.num_stages - 1 and rank_stage.local_rank == 0 else None,
             src=manifest.stage_rank_groups[-1][0],
         )
@@ -2030,7 +1967,7 @@ def _run_text_generate_hybrid_rank(
         "reference_generated_token_ids": (
             None
             if runtime_only_generate or stage_state.get("generated_token_ids") is None
-            else token_tensor_to_list(stage_state["generated_token_ids"])
+            else tp_backend.token_tensor_to_list(stage_state["generated_token_ids"])
         ),
     }
     if return_tensors and rank_stage.stage_idx == manifest.num_stages - 1 and rank_stage.local_rank == 0:
@@ -2148,7 +2085,7 @@ def run_text_hybrid_rank(
     else:
         leader_input = None
 
-    stage_input = broadcast_cpu(
+    stage_input = distributed_backend.broadcast_cpu(
         reference_tensor=reference_input,
         tensor=leader_input,
         src=rank_stage.leader_rank,
@@ -2163,7 +2100,7 @@ def run_text_hybrid_rank(
     )
 
     reference_output = stage_state.get("stage_output")
-    tp_stage_stats = run_stage_state_tp(
+    tp_stage_stats = tp_backend.run_stage_state_tp(
         stage_input=stage_input,
         stage_state=stage_state,
         reference_input_override=reference_input,
@@ -2266,3 +2203,27 @@ LEGACY_REPLAY_EXPORTS = [
 ]
 
 __all__ = [*DIRECT_RUNTIME_EXPORTS]
+
+_HYBRID_TP_HELPER_COMPAT_EXPORTS = {
+    "broadcast_token_id",
+    "build_generate_cache_map",
+    "build_generate_phase_state",
+    "build_runtime_only_stage_input_template",
+    "infer_runtime_tensor_device",
+    "infer_runtime_tensor_dtype",
+    "infer_runtime_token_dtype",
+    "is_runtime_only_generate_state",
+    "strip_runtime_layer_cache",
+    "token_tensor_to_list",
+    "run_stage_state_tp",
+}
+
+
+def __getattr__(name: str):
+    if name in _HYBRID_TP_HELPER_COMPAT_EXPORTS:
+        return getattr(tp_backend, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | _HYBRID_TP_HELPER_COMPAT_EXPORTS)

@@ -124,11 +124,14 @@ class RuntimeCliModesTest(unittest.TestCase):
                 "1.0",
                 "--video-end",
                 "3.0",
+                "--prompt",
+                "custom video prompt",
             ]
         )
 
         kwargs = _build_direct_manifest_kwargs(args)
 
+        self.assertEqual(kwargs["prompt"], "custom video prompt")
         self.assertEqual(kwargs["video_path"], "/tmp/sample.mp4")
         self.assertIsNone(kwargs["video_url"])
         self.assertEqual(kwargs["video_nframes"], 8)

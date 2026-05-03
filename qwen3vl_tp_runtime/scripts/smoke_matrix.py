@@ -9,28 +9,28 @@ from dataclasses import dataclass
 TEXT_GENERATE_IDS = [104455, 9909, 9286, 16488]
 TEXT_GENERATE_TEXT = "人工智能（Artificial"
 
-FRAME_MM_GENERATE_IDS = [87140, 15946, 3837, 101177]
-FRAME_MM_GENERATE_TEXT = "视频中，一名"
+FRAME_MM_GENERATE_IDS = [104455, 9909, 9286, 16488]
+FRAME_MM_GENERATE_TEXT = "人工智能（Artificial"
 
 FRAME_MM_LONG_GENERATE_IDS = [
-    87140,
-    15946,
+    104455,
+    9909,
+    9286,
+    16488,
+    21392,
     3837,
-    101177,
-    105611,
-    99194,
-    38035,
-    113727,
-    33108,
-    104362,
-    38035,
-    113233,
-    9370,
-    104253,
-    104224,
-    46944,
+    102500,
+    15469,
+    7552,
+    20412,
+    104564,
+    99891,
+    104111,
+    103799,
+    3837,
+    106166,
 ]
-FRAME_MM_LONG_GENERATE_TEXT = "视频中，一名穿着深色衬衫和浅色裤子的男子站在一个"
+FRAME_MM_LONG_GENERATE_TEXT = "人工智能（Artificial Intelligence，简称AI）是计算机科学的一个分支，旨在"
 
 FULL_VIDEO_GENERATE_IDS = [87140, 108869, 100369, 102122]
 FULL_VIDEO_GENERATE_TEXT = "视频展示了两个场景"
@@ -78,6 +78,17 @@ STEP22_SMOKE_MATRIX: tuple[SmokeCase, ...] = (
         expected_text=FRAME_MM_GENERATE_TEXT,
         backend="pp",
         expected_rank_count=2,
+        modality="multimodal",
+        expected_video_source="frame_paths",
+        require_consume_only=True,
+    ),
+    SmokeCase(
+        case_id="pp3-mm-generate",
+        description="PP=3 frame-dir multimodal generate",
+        expected_ids=FRAME_MM_GENERATE_IDS,
+        expected_text=FRAME_MM_GENERATE_TEXT,
+        backend="pp",
+        expected_rank_count=3,
         modality="multimodal",
         expected_video_source="frame_paths",
         require_consume_only=True,
@@ -211,6 +222,8 @@ def get_smoke_case(case_id: str) -> SmokeCase | None:
 
     if case_id.startswith("pp-mm-generate"):
         return by_id["pp-mm-generate"]
+    if case_id.startswith("pp3-mm-generate"):
+        return by_id["pp3-mm-generate"]
     if case_id.startswith("tp-mm-generate"):
         return by_id["tp-mm-generate"]
     if case_id.startswith("hybrid-mm-generate"):
@@ -220,4 +233,3 @@ def get_smoke_case(case_id: str) -> SmokeCase | None:
     if case_id.startswith("hf-text-generate"):
         return by_id["hf-text-generate"]
     return None
-

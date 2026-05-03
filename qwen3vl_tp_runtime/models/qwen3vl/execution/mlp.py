@@ -14,35 +14,35 @@ from .common import (
 
 
 def _tp_collective_context(
-    bundle: dict,
+    layer_state: dict,
     *,
     module: str,
     reason: str,
 ) -> dict:
     context = {
-        "phase": str(bundle.get("tp_profile_phase") or "unknown"),
+        "phase": str(layer_state.get("tp_profile_phase") or "unknown"),
         "module": module,
         "reason": reason,
     }
-    if "layer_idx" in bundle:
-        context["layer_idx"] = int(bundle["layer_idx"])
+    if "layer_idx" in layer_state:
+        context["layer_idx"] = int(layer_state["layer_idx"])
     return context
 
 
-def forward_mlp(hidden_states: torch.Tensor, bundle: dict) -> torch.Tensor:
-    act_fn = ACT2FN[bundle["hidden_act"]]
-    gate_out = F.linear(hidden_states, bundle["gate_weight"], bundle["gate_bias"])
-    up_out = F.linear(hidden_states, bundle["up_weight"], bundle["up_bias"])
+def forward_mlp(hidden_states: torch.Tensor, layer_state: dict) -> torch.Tensor:
+    act_fn = ACT2FN[layer_state["hidden_act"]]
+    gate_out = F.linear(hidden_states, layer_state["gate_weight"], layer_state["gate_bias"])
+    up_out = F.linear(hidden_states, layer_state["up_weight"], layer_state["up_bias"])
     fused = act_fn(gate_out) * up_out
-    return F.linear(fused, bundle["down_weight"], bundle["down_bias"])
+    return F.linear(fused, layer_state["down_weight"], layer_state["down_bias"])
 
 
-def trace_mlp(hidden_states: torch.Tensor, bundle: dict) -> dict:
-    act_fn = ACT2FN[bundle["hidden_act"]]
-    gate_out = F.linear(hidden_states, bundle["gate_weight"], bundle["gate_bias"])
-    up_out = F.linear(hidden_states, bundle["up_weight"], bundle["up_bias"])
+def trace_mlp(hidden_states: torch.Tensor, layer_state: dict) -> dict:
+    act_fn = ACT2FN[layer_state["hidden_act"]]
+    gate_out = F.linear(hidden_states, layer_state["gate_weight"], layer_state["gate_bias"])
+    up_out = F.linear(hidden_states, layer_state["up_weight"], layer_state["up_bias"])
     fused = act_fn(gate_out) * up_out
-    mlp_output = F.linear(fused, bundle["down_weight"], bundle["down_bias"])
+    mlp_output = F.linear(fused, layer_state["down_weight"], layer_state["down_bias"])
     return {
         "gate_out": gate_out,
         "up_out": up_out,
@@ -53,7 +53,7 @@ def trace_mlp(hidden_states: torch.Tensor, bundle: dict) -> dict:
 
 def trace_mlp_tp(
     hidden_states: torch.Tensor,
-    bundle: dict,
+    layer_state: dict,
     rank: int,
     world_size: int,
     comm_dtype: torch.dtype,
@@ -61,29 +61,29 @@ def trace_mlp_tp(
     tp_src_rank: int = 0,
     math_mode: str = "orig",
 ) -> dict:
-    sharded = bool(bundle.get("tp_weight_sharded"))
-    intermediate_size = int(bundle["gate_weight"].shape[0])
+    sharded = bool(layer_state.get("tp_weight_sharded"))
+    intermediate_size = int(layer_state["gate_weight"].shape[0])
     orig_dtype, _ = _resolve_tp_math_dtype(hidden_states, math_mode)
     device = hidden_states.device
     if not sharded and intermediate_size % world_size != 0:
         raise ValueError("当前 TP MLP 要求 intermediate_size 能被 world_size 整除。")
 
-    act_fn = ACT2FN[bundle["hidden_act"]]
+    act_fn = ACT2FN[layer_state["hidden_act"]]
 
     x = hidden_states.to(dtype=orig_dtype)
-    gate_weight = bundle["gate_weight"].to(device=device, dtype=orig_dtype)
-    gate_bias = _cast_optional_tensor(bundle["gate_bias"], device=device, dtype=orig_dtype)
-    up_weight = bundle["up_weight"].to(device=device, dtype=orig_dtype)
-    up_bias = _cast_optional_tensor(bundle["up_bias"], device=device, dtype=orig_dtype)
-    down_weight = bundle["down_weight"].to(device=device, dtype=orig_dtype)
-    down_bias = _cast_optional_tensor(bundle["down_bias"], device=device, dtype=orig_dtype)
+    gate_weight = layer_state["gate_weight"].to(device=device, dtype=orig_dtype)
+    gate_bias = _cast_optional_tensor(layer_state["gate_bias"], device=device, dtype=orig_dtype)
+    up_weight = layer_state["up_weight"].to(device=device, dtype=orig_dtype)
+    up_bias = _cast_optional_tensor(layer_state["up_bias"], device=device, dtype=orig_dtype)
+    down_weight = layer_state["down_weight"].to(device=device, dtype=orig_dtype)
+    down_bias = _cast_optional_tensor(layer_state["down_bias"], device=device, dtype=orig_dtype)
 
     if sharded:
-        shard_world_size = int(bundle.get("tp_shard_world_size") or world_size)
+        shard_world_size = int(layer_state.get("tp_shard_world_size") or world_size)
         if shard_world_size != world_size:
             raise ValueError(
-                "TP MLP bundle 的 shard world_size 和当前 world_size 不一致，"
-                f"bundle_world_size={shard_world_size} world_size={world_size}"
+                "TP MLP layer_state 的 shard world_size 和当前 world_size 不一致，"
+                f"layer_state_world_size={shard_world_size} world_size={world_size}"
             )
         gate_out = F.linear(x, gate_weight, gate_bias)
         up_out = F.linear(x, up_weight, up_bias)
@@ -106,7 +106,7 @@ def trace_mlp_tp(
             comm_dtype=comm_dtype,
             group=tp_group,
             profile_context=_tp_collective_context(
-                bundle,
+                layer_state,
                 module="mlp",
                 reason="row_parallel_reduce",
             ),
@@ -121,7 +121,7 @@ def trace_mlp_tp(
             comm_dtype,
             group=tp_group,
             profile_context=_tp_collective_context(
-                bundle,
+                layer_state,
                 module="mlp",
                 reason="column_parallel_gather",
             ),
@@ -137,7 +137,7 @@ def trace_mlp_tp(
             comm_dtype=comm_dtype,
             group=tp_group,
             profile_context=_tp_collective_context(
-                bundle,
+                layer_state,
                 module="mlp",
                 reason="full_weight_leader_broadcast",
             ),
@@ -153,7 +153,7 @@ def trace_mlp_tp(
 
 def forward_mlp_tp(
     hidden_states: torch.Tensor,
-    bundle: dict,
+    layer_state: dict,
     rank: int,
     world_size: int,
     comm_dtype: torch.dtype,
@@ -163,7 +163,7 @@ def forward_mlp_tp(
 ) -> torch.Tensor:
     return trace_mlp_tp(
         hidden_states,
-        bundle,
+        layer_state,
         rank,
         world_size,
         comm_dtype,

@@ -41,7 +41,6 @@ from .runtime_mm import (
     resolve_mm_frontend,
     run_mm_decode as _run_live_decode_full,
     run_mm_prefill as _run_live_prefill_full,
-    run_mm_prefill_ref as _run_live_prefill_stage_reference,
     text_pos_ids as _extract_text_position_ids,
 )
 from .runtime_mm_stage import (
@@ -3381,7 +3380,6 @@ def build_direct_stage_state(
                 end_idx=end_idx,
                 num_layers=end_idx - start_idx + 1,
                 save_dtype=runtime_config.get("save_dtype", "auto"),
-                bundle_path=None,
             )
         ],
         runtime_config=runtime_config,
@@ -3630,7 +3628,6 @@ def build_direct_pipeline_manifest(
             end_idx=end_idx,
             num_layers=end_idx - start_idx + 1,
             save_dtype=save_dtype,
-            bundle_path=None,
         )
         for stage_idx, (start_idx, end_idx) in enumerate(stage_ranges)
     ]
@@ -3638,7 +3635,6 @@ def build_direct_pipeline_manifest(
         pipeline_type=_pipeline_type(modality, mode),
         num_stages=len(stages),
         stage_ranges=stage_ranges,
-        bundle_dir=None,
         stages=stages,
         boundaries=[],
         num_frames=0 if modality == "text" else int(video_nframes or num_frames or 8),

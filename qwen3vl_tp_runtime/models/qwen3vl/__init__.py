@@ -13,7 +13,6 @@ from typing import Any
 from ...hexgen_core.schema import StageState
 from .execution import (
     apply_deepstack,
-    compose_layer_bundle,
     compose_layer_state,
     forward_attention_cached,
     forward_attention_cached_tp,
@@ -93,13 +92,11 @@ from .weights import (
     prepare_text_prefill_runtime_inputs_from_weights,
 )
 from .runtime_builder import (
-    DirectStageBundleBuilder,
     DirectStageStateBuilder,
     StageStateLoader,
     build_direct_hybrid_manifest,
     build_direct_pipeline_manifest,
     build_direct_tp_manifest,
-    build_direct_stage_bundle,
     build_direct_stage_state,
     materialize_text_stage_state,
 )
@@ -243,7 +240,6 @@ LEGACY_STAGE_BUNDLE_EXPORTS = [
     "DirectStageBundleBuilder",
     "build_direct_stage_bundle",
     "build_live_multimodal_stage_bundle",
-    "compose_layer_bundle",
 ]
 
 __all__ = [*DIRECT_RUNTIME_EXPORTS]
@@ -251,7 +247,12 @@ __all__ = [*DIRECT_RUNTIME_EXPORTS]
 
 def __getattr__(name: str) -> Any:
     if name in LEGACY_STAGE_BUNDLE_EXPORTS:
-        value = globals()[name]
+        if name in {"DirectStageBundleBuilder", "build_direct_stage_bundle"}:
+            runtime_builder_mod = import_module("qwen3vl_tp_runtime.models.qwen3vl.runtime_builder")
+            value = getattr(runtime_builder_mod, name)
+        else:
+            value = globals()[name]
+        globals()[name] = value
         return value
     if name in LEGACY_CAPTURE_EXPORTS:
         capture_mod = import_module("qwen3vl_tp_runtime.models.qwen3vl.capture")

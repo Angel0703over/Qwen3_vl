@@ -11,7 +11,7 @@ from .common import (
     _resolve_tp_math_dtype,
     _slice_local_past_states,
 )
-from .kv_cache import LayerKVCache
+from ..kv_cache import LayerKVCache
 from ..functional import apply_rope, attn_eager, rms_norm
 
 
@@ -50,8 +50,8 @@ def _validate_attention_mask_shape(
     )
 
 
-def forward_attention(hidden_states: torch.Tensor, bundle: dict) -> torch.Tensor:
-    return trace_attention(hidden_states, bundle)["attn_output"]
+def forward_attention(hidden_states: torch.Tensor, layer_state: dict) -> torch.Tensor:
+    return trace_attention(hidden_states, layer_state)["attn_output"]
 
 
 def _concat_past_key_value(
@@ -92,22 +92,22 @@ def _resolve_full_key_value(
     return layer_kv_cache.append(current_key, current_value)
 
 
-def _is_tp_weight_sharded(bundle: dict) -> bool:
-    return bool(bundle.get("tp_weight_sharded"))
+def _is_tp_weight_sharded(layer_state: dict) -> bool:
+    return bool(layer_state.get("tp_weight_sharded"))
 
 
-def _resolve_tp_attention_layout(bundle: dict, world_size: int) -> tuple[int, int, int, int]:
-    num_heads = int(bundle["num_attention_heads"])
-    num_kv_heads = int(bundle["num_key_value_heads"])
-    if _is_tp_weight_sharded(bundle):
-        shard_world_size = int(bundle.get("tp_shard_world_size") or world_size)
+def _resolve_tp_attention_layout(layer_state: dict, world_size: int) -> tuple[int, int, int, int]:
+    num_heads = int(layer_state["num_attention_heads"])
+    num_kv_heads = int(layer_state["num_key_value_heads"])
+    if _is_tp_weight_sharded(layer_state):
+        shard_world_size = int(layer_state.get("tp_shard_world_size") or world_size)
         if shard_world_size != world_size:
             raise ValueError(
-                "TP attention bundle 的 shard world_size 和当前 world_size 不一致，"
-                f"bundle_world_size={shard_world_size} world_size={world_size}"
+                "TP attention layer_state 的 shard world_size 和当前 world_size 不一致，"
+                f"layer_state_world_size={shard_world_size} world_size={world_size}"
             )
-        local_q_heads = int(bundle["tp_local_num_attention_heads"])
-        local_kv_heads = int(bundle["tp_local_num_key_value_heads"])
+        local_q_heads = int(layer_state["tp_local_num_attention_heads"])
+        local_kv_heads = int(layer_state["tp_local_num_key_value_heads"])
         return num_heads, num_kv_heads, local_q_heads, local_kv_heads
 
     if num_heads % world_size != 0 or num_kv_heads % world_size != 0:
@@ -142,7 +142,7 @@ def _resolve_tp_past_states(
 
 
 def _tp_collective_context(
-    bundle: dict,
+    layer_state: dict,
     *,
     phase: str,
     module: str,
@@ -153,15 +153,15 @@ def _tp_collective_context(
         "module": module,
         "reason": reason,
     }
-    if "layer_idx" in bundle:
-        context["layer_idx"] = int(bundle["layer_idx"])
+    if "layer_idx" in layer_state:
+        context["layer_idx"] = int(layer_state["layer_idx"])
     return context
 
 
 def _reduce_tp_attention_output(
     hidden_states: torch.Tensor,
     projected_attn_context: torch.Tensor,
-    bundle: dict,
+    layer_state: dict,
     *,
     sharded: bool,
     is_leader_rank: bool,
@@ -172,9 +172,9 @@ def _reduce_tp_attention_output(
     profile_phase: str,
 ) -> torch.Tensor:
     device = hidden_states.device
-    o_bias = _cast_optional_tensor(bundle["o_bias"], device=device, dtype=orig_dtype)
+    o_bias = _cast_optional_tensor(layer_state["o_bias"], device=device, dtype=orig_dtype)
     if sharded:
-        local_o_weight = bundle["o_weight"].to(device=device, dtype=orig_dtype)
+        local_o_weight = layer_state["o_weight"].to(device=device, dtype=orig_dtype)
         local_output_partial = F.linear(projected_attn_context, local_o_weight, bias=None)
         attn_output = all_reduce_cpu(
             local_output_partial,
@@ -183,7 +183,7 @@ def _reduce_tp_attention_output(
             comm_dtype=comm_dtype,
             group=tp_group,
             profile_context=_tp_collective_context(
-                bundle,
+                layer_state,
                 phase=profile_phase,
                 module="attention",
                 reason="row_parallel_reduce",
@@ -193,7 +193,7 @@ def _reduce_tp_attention_output(
             attn_output = attn_output + o_bias
         return attn_output
 
-    full_o_weight = bundle["o_weight"].to(device=device, dtype=orig_dtype)
+    full_o_weight = layer_state["o_weight"].to(device=device, dtype=orig_dtype)
     leader_output = None
     if is_leader_rank:
         leader_output = F.linear(projected_attn_context, full_o_weight, o_bias)
@@ -204,7 +204,7 @@ def _reduce_tp_attention_output(
         comm_dtype=comm_dtype,
         group=tp_group,
         profile_context=_tp_collective_context(
-            bundle,
+            layer_state,
             phase=profile_phase,
             module="attention",
             reason="full_weight_leader_broadcast",
@@ -212,27 +212,27 @@ def _reduce_tp_attention_output(
     )
 
 
-def trace_attention(hidden_states: torch.Tensor, bundle: dict) -> dict:
+def trace_attention(hidden_states: torch.Tensor, layer_state: dict) -> dict:
     input_shape = hidden_states.shape[:-1]
-    head_dim = bundle["head_dim"]
-    num_heads = bundle["num_attention_heads"]
-    num_kv_heads = bundle["num_key_value_heads"]
+    head_dim = layer_state["head_dim"]
+    num_heads = layer_state["num_attention_heads"]
+    num_kv_heads = layer_state["num_key_value_heads"]
 
-    query_states = F.linear(hidden_states, bundle["q_weight"], bundle["q_bias"]).view(*input_shape, -1, head_dim)
-    query_states = rms_norm(query_states, bundle["q_norm_weight"], bundle["rms_norm_eps"]).transpose(1, 2)
+    query_states = F.linear(hidden_states, layer_state["q_weight"], layer_state["q_bias"]).view(*input_shape, -1, head_dim)
+    query_states = rms_norm(query_states, layer_state["q_norm_weight"], layer_state["rms_norm_eps"]).transpose(1, 2)
 
-    key_states = F.linear(hidden_states, bundle["k_weight"], bundle["k_bias"]).view(
+    key_states = F.linear(hidden_states, layer_state["k_weight"], layer_state["k_bias"]).view(
         *input_shape, num_kv_heads, head_dim
     )
-    key_states = rms_norm(key_states, bundle["k_norm_weight"], bundle["rms_norm_eps"]).transpose(1, 2)
+    key_states = rms_norm(key_states, layer_state["k_norm_weight"], layer_state["rms_norm_eps"]).transpose(1, 2)
 
-    value_states = F.linear(hidden_states, bundle["v_weight"], bundle["v_bias"]).view(
+    value_states = F.linear(hidden_states, layer_state["v_weight"], layer_state["v_bias"]).view(
         *input_shape, num_kv_heads, head_dim
     ).transpose(1, 2)
 
-    query_states, key_states = apply_rope(query_states, key_states, bundle["cos"], bundle["sin"])
+    query_states, key_states = apply_rope(query_states, key_states, layer_state["cos"], layer_state["sin"])
     _validate_attention_mask_shape(
-        bundle.get("attention_mask"),
+        layer_state.get("attention_mask"),
         query_states=query_states,
         key_states=key_states,
         context="prefill_attention",
@@ -243,58 +243,58 @@ def trace_attention(hidden_states: torch.Tensor, bundle: dict) -> dict:
         query_states,
         key_states,
         value_states,
-        bundle["attention_mask"],
+        layer_state["attention_mask"],
         num_key_value_groups=num_heads // num_kv_heads,
-        scaling=bundle["scaling"],
+        scaling=layer_state["scaling"],
     )
     attn_context = attn_output.reshape(*input_shape, -1).contiguous()
-    attn_output = F.linear(attn_context, bundle["o_weight"], bundle["o_bias"])
+    attn_output = F.linear(attn_context, layer_state["o_weight"], layer_state["o_bias"])
     return {
         "attn_context": attn_context,
         "attn_output": attn_output,
     }
 
 
-def forward_attention_cached(hidden_states: torch.Tensor, bundle: dict) -> torch.Tensor:
-    return trace_attention_cached(hidden_states, bundle)["attn_output"]
+def forward_attention_cached(hidden_states: torch.Tensor, layer_state: dict) -> torch.Tensor:
+    return trace_attention_cached(hidden_states, layer_state)["attn_output"]
 
 
-def trace_attention_cached(hidden_states: torch.Tensor, bundle: dict) -> dict:
+def trace_attention_cached(hidden_states: torch.Tensor, layer_state: dict) -> dict:
     return _trace_attention_cached_core(
         hidden_states,
-        bundle,
-        past_key=bundle.get("past_key"),
-        past_value=bundle.get("past_value"),
-        layer_kv_cache=bundle.get("layer_kv_cache"),
+        layer_state,
+        past_key=layer_state.get("past_key"),
+        past_value=layer_state.get("past_value"),
+        layer_kv_cache=layer_state.get("layer_kv_cache"),
     )
 
 
 def _trace_attention_cached_core(
     hidden_states: torch.Tensor,
-    bundle: dict,
+    layer_state: dict,
     *,
     past_key: torch.Tensor | None,
     past_value: torch.Tensor | None,
     layer_kv_cache: LayerKVCache | None,
 ) -> dict:
     input_shape = hidden_states.shape[:-1]
-    head_dim = bundle["head_dim"]
-    num_heads = bundle["num_attention_heads"]
-    num_kv_heads = bundle["num_key_value_heads"]
+    head_dim = layer_state["head_dim"]
+    num_heads = layer_state["num_attention_heads"]
+    num_kv_heads = layer_state["num_key_value_heads"]
 
-    query_states = F.linear(hidden_states, bundle["q_weight"], bundle["q_bias"]).view(*input_shape, -1, head_dim)
-    query_states = rms_norm(query_states, bundle["q_norm_weight"], bundle["rms_norm_eps"]).transpose(1, 2)
+    query_states = F.linear(hidden_states, layer_state["q_weight"], layer_state["q_bias"]).view(*input_shape, -1, head_dim)
+    query_states = rms_norm(query_states, layer_state["q_norm_weight"], layer_state["rms_norm_eps"]).transpose(1, 2)
 
-    key_states = F.linear(hidden_states, bundle["k_weight"], bundle["k_bias"]).view(
+    key_states = F.linear(hidden_states, layer_state["k_weight"], layer_state["k_bias"]).view(
         *input_shape, num_kv_heads, head_dim
     )
-    key_states = rms_norm(key_states, bundle["k_norm_weight"], bundle["rms_norm_eps"]).transpose(1, 2)
+    key_states = rms_norm(key_states, layer_state["k_norm_weight"], layer_state["rms_norm_eps"]).transpose(1, 2)
 
-    value_states = F.linear(hidden_states, bundle["v_weight"], bundle["v_bias"]).view(
+    value_states = F.linear(hidden_states, layer_state["v_weight"], layer_state["v_bias"]).view(
         *input_shape, num_kv_heads, head_dim
     ).transpose(1, 2)
 
-    query_states, key_states = apply_rope(query_states, key_states, bundle["cos"], bundle["sin"])
+    query_states, key_states = apply_rope(query_states, key_states, layer_state["cos"], layer_state["sin"])
     full_key_states, full_value_states = _resolve_full_key_value(
         key_states,
         value_states,
@@ -303,7 +303,7 @@ def _trace_attention_cached_core(
         layer_kv_cache=layer_kv_cache,
     )
     _validate_attention_mask_shape(
-        bundle.get("attention_mask"),
+        layer_state.get("attention_mask"),
         query_states=query_states,
         key_states=full_key_states,
         context="cached_attention",
@@ -315,12 +315,12 @@ def _trace_attention_cached_core(
         query_states,
         full_key_states,
         full_value_states,
-        bundle["attention_mask"],
+        layer_state["attention_mask"],
         num_key_value_groups=num_heads // num_kv_heads,
-        scaling=bundle["scaling"],
+        scaling=layer_state["scaling"],
     )
     attn_context = attn_output.reshape(*input_shape, -1).contiguous()
-    attn_output = F.linear(attn_context, bundle["o_weight"], bundle["o_bias"])
+    attn_output = F.linear(attn_context, layer_state["o_weight"], layer_state["o_bias"])
     return {
         "attn_context": attn_context,
         "attn_output": attn_output,
@@ -333,7 +333,7 @@ def _trace_attention_cached_core(
 
 def _trace_attention_tp_core(
     hidden_states: torch.Tensor,
-    bundle: dict,
+    layer_state: dict,
     *,
     rank: int,
     world_size: int,
@@ -346,40 +346,40 @@ def _trace_attention_tp_core(
     layer_kv_cache: LayerKVCache | None,
 ) -> dict:
     full_num_heads, full_num_kv_heads, local_q_heads, local_kv_heads = _resolve_tp_attention_layout(
-        bundle,
+        layer_state,
         world_size,
     )
-    sharded = _is_tp_weight_sharded(bundle)
-    head_dim = int(bundle["head_dim"])
+    sharded = _is_tp_weight_sharded(layer_state)
+    head_dim = int(layer_state["head_dim"])
     orig_dtype, _ = _resolve_tp_math_dtype(hidden_states, math_mode)
     device = hidden_states.device
     profile_phase = str(
-        bundle.get("tp_profile_phase")
+        layer_state.get("tp_profile_phase")
         or ("decode" if past_key is not None or past_value is not None else "prefill")
     )
 
     x = hidden_states.to(dtype=orig_dtype)
-    q_weight = bundle["q_weight"].to(device=device, dtype=orig_dtype)
-    q_bias = _cast_optional_tensor(bundle["q_bias"], device=device, dtype=orig_dtype)
-    k_weight = bundle["k_weight"].to(device=device, dtype=orig_dtype)
-    k_bias = _cast_optional_tensor(bundle["k_bias"], device=device, dtype=orig_dtype)
-    v_weight = bundle["v_weight"].to(device=device, dtype=orig_dtype)
-    v_bias = _cast_optional_tensor(bundle["v_bias"], device=device, dtype=orig_dtype)
-    q_norm_weight = bundle["q_norm_weight"].to(device=device, dtype=orig_dtype)
-    k_norm_weight = bundle["k_norm_weight"].to(device=device, dtype=orig_dtype)
+    q_weight = layer_state["q_weight"].to(device=device, dtype=orig_dtype)
+    q_bias = _cast_optional_tensor(layer_state["q_bias"], device=device, dtype=orig_dtype)
+    k_weight = layer_state["k_weight"].to(device=device, dtype=orig_dtype)
+    k_bias = _cast_optional_tensor(layer_state["k_bias"], device=device, dtype=orig_dtype)
+    v_weight = layer_state["v_weight"].to(device=device, dtype=orig_dtype)
+    v_bias = _cast_optional_tensor(layer_state["v_bias"], device=device, dtype=orig_dtype)
+    q_norm_weight = layer_state["q_norm_weight"].to(device=device, dtype=orig_dtype)
+    k_norm_weight = layer_state["k_norm_weight"].to(device=device, dtype=orig_dtype)
 
     q_proj = F.linear(x, q_weight, q_bias)
     query_states = rms_norm(
         q_proj.view(*hidden_states.shape[:-1], local_q_heads if sharded else full_num_heads, head_dim),
         q_norm_weight,
-        bundle["rms_norm_eps"],
+        layer_state["rms_norm_eps"],
     ).transpose(1, 2)
 
     k_proj = F.linear(x, k_weight, k_bias)
     current_key = rms_norm(
         k_proj.view(*hidden_states.shape[:-1], local_kv_heads if sharded else full_num_kv_heads, head_dim),
         k_norm_weight,
-        bundle["rms_norm_eps"],
+        layer_state["rms_norm_eps"],
     ).transpose(1, 2)
 
     v_proj = F.linear(x, v_weight, v_bias)
@@ -389,7 +389,7 @@ def _trace_attention_tp_core(
         head_dim,
     ).transpose(1, 2)
 
-    query_states, current_key = apply_rope(query_states, current_key, bundle["cos"], bundle["sin"])
+    query_states, current_key = apply_rope(query_states, current_key, layer_state["cos"], layer_state["sin"])
     local_past_key = _resolve_tp_past_states(
         past_key,
         rank=rank,
@@ -418,7 +418,7 @@ def _trace_attention_tp_core(
         layer_kv_cache=layer_kv_cache,
     )
     _validate_attention_mask_shape(
-        bundle.get("attention_mask"),
+        layer_state.get("attention_mask"),
         query_states=query_states,
         key_states=full_key,
         context="cached_attention_tp" if past_key is not None or past_value is not None else "prefill_attention_tp",
@@ -430,10 +430,10 @@ def _trace_attention_tp_core(
         query_states,
         full_key,
         full_value,
-        bundle["attention_mask"],
+        layer_state["attention_mask"],
         num_key_value_groups=(local_q_heads if sharded else full_num_heads)
         // (local_kv_heads if sharded else full_num_kv_heads),
-        scaling=bundle["scaling"],
+        scaling=layer_state["scaling"],
         compute_dtype=None,
         score_output_dtype=None,
         probabilities_dtype=orig_dtype,
@@ -455,7 +455,7 @@ def _trace_attention_tp_core(
     reduced_output = _reduce_tp_attention_output(
         hidden_states,
         projected_attn_context,
-        bundle,
+        layer_state,
         sharded=sharded,
         is_leader_rank=rank == 0,
         tp_group=tp_group,
@@ -476,7 +476,7 @@ def _trace_attention_tp_core(
 
 def forward_attention_cached_tp(
     hidden_states: torch.Tensor,
-    bundle: dict,
+    layer_state: dict,
     rank: int,
     world_size: int,
     comm_dtype: torch.dtype,
@@ -486,7 +486,7 @@ def forward_attention_cached_tp(
 ) -> torch.Tensor:
     return trace_attention_cached_tp(
         hidden_states,
-        bundle,
+        layer_state,
         rank,
         world_size,
         comm_dtype,
@@ -498,7 +498,7 @@ def forward_attention_cached_tp(
 
 def trace_attention_cached_tp(
     hidden_states: torch.Tensor,
-    bundle: dict,
+    layer_state: dict,
     rank: int,
     world_size: int,
     comm_dtype: torch.dtype,
@@ -508,22 +508,22 @@ def trace_attention_cached_tp(
 ) -> dict:
     return _trace_attention_tp_core(
         hidden_states,
-        bundle,
+        layer_state,
         rank=rank,
         world_size=world_size,
         comm_dtype=comm_dtype,
         tp_group=tp_group,
         tp_src_rank=tp_src_rank,
         math_mode=math_mode,
-        past_key=bundle.get("past_key"),
-        past_value=bundle.get("past_value"),
-        layer_kv_cache=bundle.get("layer_kv_cache"),
+        past_key=layer_state.get("past_key"),
+        past_value=layer_state.get("past_value"),
+        layer_kv_cache=layer_state.get("layer_kv_cache"),
     )
 
 
 def forward_attention_tp(
     hidden_states: torch.Tensor,
-    bundle: dict,
+    layer_state: dict,
     rank: int,
     world_size: int,
     comm_dtype: torch.dtype,
@@ -533,7 +533,7 @@ def forward_attention_tp(
 ) -> torch.Tensor:
     return trace_attention_tp(
         hidden_states,
-        bundle,
+        layer_state,
         rank,
         world_size,
         comm_dtype,
@@ -545,7 +545,7 @@ def forward_attention_tp(
 
 def trace_attention_tp(
     hidden_states: torch.Tensor,
-    bundle: dict,
+    layer_state: dict,
     rank: int,
     world_size: int,
     comm_dtype: torch.dtype,
@@ -555,7 +555,7 @@ def trace_attention_tp(
 ) -> dict:
     trace = _trace_attention_tp_core(
         hidden_states,
-        bundle,
+        layer_state,
         rank=rank,
         world_size=world_size,
         comm_dtype=comm_dtype,

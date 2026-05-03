@@ -10,16 +10,7 @@ from pathlib import Path
 import torch
 import torch.distributed as dist
 
-from ..distributed import (
-    broadcast_tensor_payload_cpu,
-    broadcast_object_cpu,
-    recv_tensor_payload_cpu,
-    recv_object_cpu,
-    send_tensor_payload_cpu,
-    send_object_cpu,
-    startup_log,
-    startup_timer,
-)
+from .. import distributed as distributed_backend
 from ..schema import (
     BoundaryStats,
     StageHandoffPayload,
@@ -40,44 +31,13 @@ from ..generate_buffers import (
     decode_attention_mask_view,
     fill_decode_input_ids,
 )
-from ...models.qwen3vl.capture import (
-    capture_multimodal_decode_stage_bundle,
-    capture_multimodal_generate_stage_bundle,
-    capture_multimodal_prefill_stage_bundle,
-    capture_text_decode_stage_bundle,
-    capture_text_generate_stage_bundle,
-    capture_text_prefill_stage_bundle,
-    capture_text_stage_bundle,
-    load_bundle,
-    move_bundle,
-)
-from ...models.qwen3vl.runtime_builder import (
-    DirectStageStateBuilder,
-    build_direct_stage_state,
-    prepare_text_prompt_meta,
-    restore_mm_startup_transport,
-    seed_mm_startup_runtime_config,
-)
-from ...models.qwen3vl.execution import (
-    StageKVCache,
-    attach_video_window_cache_index,
-    build_compact_decode_attention_mask_2d,
-    build_video_kv_compression_contract,
-    build_video_kv_compression_plan,
-    build_stage_kv_cache,
-    compact_stage_kv_cache_for_video_plan,
-    forward_text_embeddings,
-    trace_text_decode_logits_with_runtime_cache,
-    trace_text_decode_stage_with_runtime_cache,
-)
+from ...models.qwen3vl import capture as qwen_capture
+from ...models.qwen3vl import execution as qwen_execution
+from ...models.qwen3vl import runtime_builder as qwen_runtime_builder
+from ...models.qwen3vl import weights as qwen_weights
 from ...models.qwen3vl.functional import dtype_from_name, resolve_comm_dtype
 from ...models.qwen3vl.runtime_mm_stage import build_mm_decode_state_from_weights
 from ...models.qwen3vl.runtime_text_stage import summarize_text_weight_load
-from ...models.qwen3vl.weights import (
-    build_text_rotary_embedding,
-    build_text_runtime_aux_tensors,
-    load_text_model_config_spec,
-)
 
 
 def tensor_diff_stats(lhs: torch.Tensor, rhs: torch.Tensor) -> tuple[float, float]:
@@ -139,7 +99,7 @@ def prepare_text_pipeline(
     stage_bundles = []
     for stage_idx, (start_idx, end_idx) in enumerate(stage_ranges):
         bundle_path = build_stage_bundle_path(bundle_dir, stage_idx, start_idx, end_idx)
-        stage_bundle = capture_text_stage_bundle(
+        stage_bundle = qwen_capture.capture_text_stage_bundle(
             start_idx=start_idx,
             end_idx=end_idx,
             num_frames=num_frames,
@@ -205,7 +165,7 @@ def prepare_text_prefill_pipeline(
     stage_bundles = []
     for stage_idx, (start_idx, end_idx) in enumerate(stage_ranges):
         bundle_path = build_stage_bundle_path(bundle_dir, stage_idx, start_idx, end_idx)
-        stage_bundle = capture_text_prefill_stage_bundle(
+        stage_bundle = qwen_capture.capture_text_prefill_stage_bundle(
             start_idx=start_idx,
             end_idx=end_idx,
             prompt=prompt,
@@ -285,7 +245,7 @@ def prepare_multimodal_prefill_pipeline(
             flush=True,
         )
         bundle_path = build_stage_bundle_path(bundle_dir, stage_idx, start_idx, end_idx)
-        stage_bundle = capture_multimodal_prefill_stage_bundle(
+        stage_bundle = qwen_capture.capture_multimodal_prefill_stage_bundle(
             start_idx=start_idx,
             end_idx=end_idx,
             num_frames=num_frames,
@@ -381,7 +341,7 @@ def prepare_multimodal_decode_pipeline(
             flush=True,
         )
         bundle_path = build_stage_bundle_path(bundle_dir, stage_idx, start_idx, end_idx)
-        stage_bundle = capture_multimodal_decode_stage_bundle(
+        stage_bundle = qwen_capture.capture_multimodal_decode_stage_bundle(
             start_idx=start_idx,
             end_idx=end_idx,
             num_frames=num_frames,
@@ -470,7 +430,7 @@ def prepare_multimodal_generate_pipeline(
     stage_bundles = []
     for stage_idx, (start_idx, end_idx) in enumerate(stage_ranges):
         bundle_path = build_stage_bundle_path(bundle_dir, stage_idx, start_idx, end_idx)
-        stage_bundle = capture_multimodal_generate_stage_bundle(
+        stage_bundle = qwen_capture.capture_multimodal_generate_stage_bundle(
             start_idx=start_idx,
             end_idx=end_idx,
             num_frames=num_frames,
@@ -541,7 +501,7 @@ def prepare_text_decode_pipeline(
     resolved_decode_token_id = decode_token_id
     for stage_idx, (start_idx, end_idx) in enumerate(stage_ranges):
         bundle_path = build_stage_bundle_path(bundle_dir, stage_idx, start_idx, end_idx)
-        stage_bundle = capture_text_decode_stage_bundle(
+        stage_bundle = qwen_capture.capture_text_decode_stage_bundle(
             start_idx=start_idx,
             end_idx=end_idx,
             prompt=prompt,
@@ -615,7 +575,7 @@ def prepare_text_generate_pipeline(
     stage_bundles = []
     for stage_idx, (start_idx, end_idx) in enumerate(stage_ranges):
         bundle_path = build_stage_bundle_path(bundle_dir, stage_idx, start_idx, end_idx)
-        stage_bundle = capture_text_generate_stage_bundle(
+        stage_bundle = qwen_capture.capture_text_generate_stage_bundle(
             start_idx=start_idx,
             end_idx=end_idx,
             prompt=prompt,
@@ -684,11 +644,11 @@ def load_stage_state_by_index(
     runtime_modality = str(manifest.runtime_config.get("modality", "multimodal"))
     replay_bundle_path = getattr(stage_meta, "replay_bundle_path", None)
     if replay_bundle_path:
-        stage_state = load_bundle(replay_bundle_path)
+        stage_state = qwen_capture.load_bundle(replay_bundle_path)
     elif not manifest.is_direct:
         raise RuntimeError(f"replay manifest 缺少 stage_idx={stage_idx} 的 bundle path。")
     else:
-        stage_state = build_direct_stage_state(
+        stage_state = qwen_runtime_builder.build_direct_stage_state(
             stage_idx=stage_idx,
             start_idx=stage_meta.start_idx,
             end_idx=stage_meta.end_idx,
@@ -699,7 +659,7 @@ def load_stage_state_by_index(
         )
     compute_dtype_name = stage_state["save_dtype"] if compute_dtype_arg == "auto" else compute_dtype_arg
     compute_dtype = dtype_from_name(compute_dtype_name)
-    return move_bundle(stage_state, device, compute_dtype), compute_dtype
+    return qwen_capture.move_bundle(stage_state, device, compute_dtype), compute_dtype
 
 
 def load_stage_bundle_by_index(
@@ -738,14 +698,14 @@ def _seed_text_prompt_meta(manifest: TextPipelineManifest, *, rank: int) -> None
 
     prompt_metadata = None
     if rank == 0:
-        with startup_timer("pp-direct-loader", "prepare runtime-only text prompt metadata"):
-            prompt_metadata = prepare_text_prompt_meta(runtime_config)
+        with distributed_backend.startup_timer("pp-direct-loader", "prepare runtime-only text prompt metadata"):
+            prompt_metadata = qwen_runtime_builder.prepare_text_prompt_meta(runtime_config)
 
-    startup_log(
+    distributed_backend.startup_log(
         "pp-direct-loader",
         f"rank={rank} waiting runtime-only text prompt metadata broadcast from src=0",
     )
-    prompt_metadata = broadcast_tensor_payload_cpu(
+    prompt_metadata = distributed_backend.broadcast_tensor_payload_cpu(
         prompt_metadata,
         src=0,
         label="runtime_only_text_prompt_metadata",
@@ -777,8 +737,8 @@ def _seed_mm_startup_contract(manifest: TextPipelineManifest, *, rank: int) -> N
     label = f"multimodal_startup_contract stage_idx={stage_idx}"
     startup_contract = None
     if rank == 0:
-        with startup_timer("pp-direct-loader", "prepare multimodal startup payloads"):
-            with DirectStageStateBuilder(
+        with distributed_backend.startup_timer("pp-direct-loader", "prepare multimodal startup payloads"):
+            with qwen_runtime_builder.DirectStageStateBuilder(
                 stage_specs=manifest.stages,
                 runtime_config=dict(runtime_config),
                 include_text_weights=False,
@@ -787,7 +747,7 @@ def _seed_mm_startup_contract(manifest: TextPipelineManifest, *, rank: int) -> N
                 startup_meta, startup_tensors = builder.export_mm_startup_transport(
                     local_stage_indices=[stage_idx],
                 )
-                startup_contract = restore_mm_startup_transport(
+                startup_contract = qwen_runtime_builder.restore_mm_startup_transport(
                     startup_meta,
                     startup_tensors,
                 )
@@ -797,35 +757,35 @@ def _seed_mm_startup_contract(manifest: TextPipelineManifest, *, rank: int) -> N
                     dst_meta, dst_tensors = builder.export_mm_startup_transport(
                         local_stage_indices=[int(stage_meta.stage_idx)],
                     )
-                    send_object_cpu(
+                    distributed_backend.send_object_cpu(
                         dst_meta,
                         dst=dst_rank,
                         label=f"multimodal_startup_contract_meta stage_idx={stage_meta.stage_idx}",
                     )
-                    send_tensor_payload_cpu(
+                    distributed_backend.send_tensor_payload_cpu(
                         dst_tensors,
                         dst=dst_rank,
                         label=f"multimodal_startup_contract_tensors stage_idx={stage_meta.stage_idx}",
                     )
     else:
-        startup_log(
+        distributed_backend.startup_log(
             "pp-direct-loader",
             f"rank={rank} waiting {label} from src=0",
         )
-        startup_meta = recv_object_cpu(
+        startup_meta = distributed_backend.recv_object_cpu(
             src=0,
             label=f"multimodal_startup_contract_meta stage_idx={stage_idx}",
         )
-        startup_tensors = recv_tensor_payload_cpu(
+        startup_tensors = distributed_backend.recv_tensor_payload_cpu(
             src=0,
             label=f"multimodal_startup_contract_tensors stage_idx={stage_idx}",
         )
-        startup_contract = restore_mm_startup_transport(
+        startup_contract = qwen_runtime_builder.restore_mm_startup_transport(
             startup_meta,
             startup_tensors,
         )
 
-    seed_mm_startup_runtime_config(
+    qwen_runtime_builder.seed_mm_startup_runtime_config(
         runtime_config,
         startup_contract,
         local_stage_indices=[stage_idx],
@@ -842,7 +802,7 @@ def load_stage_state_for_rank(
         _seed_text_prompt_meta(manifest, rank=rank)
         _seed_mm_startup_contract(manifest, rank=rank)
         stage_meta = manifest.stages[rank]
-        startup_log(
+        distributed_backend.startup_log(
             "pp-direct-loader",
             f"rank={rank} locally building stage_idx={stage_meta.stage_idx} "
             f"range={stage_meta.start_idx}:{stage_meta.end_idx}",
@@ -853,10 +813,10 @@ def load_stage_state_for_rank(
             device,
             compute_dtype_arg,
         )
-        startup_log("pp-direct-loader", f"rank={rank} entering post-load barrier")
-        with startup_timer("pp-direct-loader", f"post-load barrier rank={rank}"):
+        distributed_backend.startup_log("pp-direct-loader", f"rank={rank} entering post-load barrier")
+        with distributed_backend.startup_timer("pp-direct-loader", f"post-load barrier rank={rank}"):
             dist.barrier()
-        startup_log("pp-direct-loader", f"rank={rank} local stage ready compute_dtype={compute_dtype}")
+        distributed_backend.startup_log("pp-direct-loader", f"rank={rank} local stage ready compute_dtype={compute_dtype}")
         return stage_state, compute_dtype
 
     return load_stage_state_by_index(manifest, rank, device, compute_dtype_arg)
@@ -1044,7 +1004,7 @@ def _build_runtime_only_text_generate_phase_state(
         runtime_state["deepstack_by_layer"] = {}
         runtime_state["deepstack_layer_indices"] = []
     else:
-        runtime_aux = build_text_runtime_aux_tensors(
+        runtime_aux = qwen_weights.build_text_runtime_aux_tensors(
             attention_mask_2d=attention_mask_2d,
             batch_size=int(stage_state["batch_size"]),
             seq_len=query_len,
@@ -1098,7 +1058,7 @@ def _run_text_generate_phase_impl(
     phase_kind: str,
     current_token_id: int | None,
     cache_by_layer: dict[int, tuple[torch.Tensor | None, torch.Tensor | None]] | None,
-    stage_kv_cache: StageKVCache | None,
+    stage_kv_cache: qwen_execution.StageKVCache | None,
     return_tensor: bool,
 ) -> tuple[dict, dict[int, tuple[torch.Tensor | None, torch.Tensor | None]] | None]:
     is_last_stage = rank == world_size - 1
@@ -1113,7 +1073,7 @@ def _run_text_generate_phase_impl(
         stage_input = reference_input
         if runtime_state.get("embed_tokens_weight") is not None:
             if phase_kind == "prefill" and "input_ids" in runtime_state:
-                stage_input = forward_text_embeddings(runtime_state["input_ids"], runtime_state)
+                stage_input = qwen_execution.forward_text_embeddings(runtime_state["input_ids"], runtime_state)
                 if reference_input is not None:
                     embedding_max, embedding_mean = tensor_diff_stats(stage_input, reference_input)
             elif phase_kind == "decode" and current_token_id is not None and "decode_input_ids" in runtime_state:
@@ -1121,7 +1081,7 @@ def _run_text_generate_phase_impl(
                     runtime_state["decode_input_ids"],
                     current_token_id,
                 )
-                stage_input = forward_text_embeddings(decode_input_ids, runtime_state)
+                stage_input = qwen_execution.forward_text_embeddings(decode_input_ids, runtime_state)
                 if reference_input is not None:
                     embedding_max, embedding_mean = tensor_diff_stats(stage_input, reference_input)
                 runtime_state["decode_input_ids_runtime"] = decode_input_ids
@@ -1157,7 +1117,7 @@ def _run_text_generate_phase_impl(
     if phase_kind == "prefill":
         if is_last_stage:
             prefill_runtime_state = _strip_runtime_layer_cache(runtime_state)
-            trace = trace_text_decode_logits_with_runtime_cache(
+            trace = qwen_execution.trace_text_decode_logits_with_runtime_cache(
                 stage_input,
                 prefill_runtime_state,
                 cache_by_layer={} if stage_kv_cache is None else None,
@@ -1175,7 +1135,7 @@ def _run_text_generate_phase_impl(
             updated_cache = trace["cache_by_layer"] if stage_kv_cache is None else None
         else:
             prefill_runtime_state = _strip_runtime_layer_cache(runtime_state)
-            trace = trace_text_decode_stage_with_runtime_cache(
+            trace = qwen_execution.trace_text_decode_stage_with_runtime_cache(
                 stage_input,
                 prefill_runtime_state,
                 cache_by_layer={} if stage_kv_cache is None else None,
@@ -1185,7 +1145,7 @@ def _run_text_generate_phase_impl(
             updated_cache = trace["cache_by_layer"] if stage_kv_cache is None else None
     elif phase_kind == "decode":
         if is_last_stage:
-            trace = trace_text_decode_logits_with_runtime_cache(
+            trace = qwen_execution.trace_text_decode_logits_with_runtime_cache(
                 stage_input,
                 runtime_state,
                 cache_by_layer=cache_by_layer,
@@ -1202,7 +1162,7 @@ def _run_text_generate_phase_impl(
                 norm_max, norm_mean = tensor_diff_stats(trace["norm_output"], runtime_state["norm_output"])
             updated_cache = trace["cache_by_layer"] if stage_kv_cache is None else None
         else:
-            trace = trace_text_decode_stage_with_runtime_cache(
+            trace = qwen_execution.trace_text_decode_stage_with_runtime_cache(
                 stage_input,
                 runtime_state,
                 cache_by_layer=cache_by_layer,
@@ -1270,7 +1230,7 @@ def _run_text_generate_phase_impl(
     if phase_kind == "prefill" and runtime_state.get("video_window_cache") is not None:
         video_window_cache = runtime_state["video_window_cache"]
         stats["video_window_cache"] = video_window_cache
-        video_kv_compression_plan = build_video_kv_compression_plan(
+        video_kv_compression_plan = qwen_execution.build_video_kv_compression_plan(
             video_window_cache=video_window_cache,
             stage_kv_cache_summary=stage_kv_cache_summary,
             stage_kv_cache=stage_kv_cache,
@@ -1281,7 +1241,7 @@ def _run_text_generate_phase_impl(
         )
         if video_kv_compression_plan is not None:
             stats["video_kv_compression_plan"] = video_kv_compression_plan
-            video_kv_compression_contract = build_video_kv_compression_contract(
+            video_kv_compression_contract = qwen_execution.build_video_kv_compression_contract(
                 compression_plan=video_kv_compression_plan,
                 prefill_seq_len=int(runtime_state["prefill_seq_len"]),
                 decoded_token_count=0,
@@ -1290,7 +1250,7 @@ def _run_text_generate_phase_impl(
             if video_kv_compression_contract is not None:
                 stats["video_kv_compression_contract"] = video_kv_compression_contract
             if stage_kv_cache is not None:
-                video_kv_compaction = compact_stage_kv_cache_for_video_plan(
+                video_kv_compaction = qwen_execution.compact_stage_kv_cache_for_video_plan(
                     stage_kv_cache=stage_kv_cache,
                     compression_plan=video_kv_compression_plan,
                     prefill_seq_len=int(runtime_state["prefill_seq_len"]),
@@ -1314,7 +1274,7 @@ def _run_text_generate_phase(
     current_token_id: int | None,
     cache_by_layer: dict[int, tuple[torch.Tensor | None, torch.Tensor | None]] | None,
     return_tensor: bool,
-    stage_kv_cache: StageKVCache | None,
+    stage_kv_cache: qwen_execution.StageKVCache | None,
 ) -> tuple[dict, dict[int, tuple[torch.Tensor | None, torch.Tensor | None]] | None]:
     return _run_text_generate_phase_impl(
         rank=rank,
@@ -1364,20 +1324,20 @@ class TextGeneratePipelineRunner:
         runtime_only_generate = _is_runtime_only_generate_state(stage_state)
         runtime_only_context = None
         if runtime_only_generate:
-            config_spec = load_text_model_config_spec(self.manifest.runtime_config["model_path"])
+            config_spec = qwen_weights.load_text_model_config_spec(self.manifest.runtime_config["model_path"])
             runtime_only_context = {
                 "config_spec": config_spec,
-                "rotary_emb": build_text_rotary_embedding(config_spec, device=self.device),
+                "rotary_emb": qwen_weights.build_text_rotary_embedding(config_spec, device=self.device),
             }
         stage_kv_cache = (
-            build_stage_kv_cache(
+            qwen_execution.build_stage_kv_cache(
                 prefill_seq_len=int(stage_state["prefill_seq_len"]),
                 max_new_tokens=int(stage_state["max_new_tokens"]),
             )
             if runtime_only_generate
             else None
         )
-        attach_video_window_cache_index(
+        qwen_execution.attach_video_window_cache_index(
             stage_state,
             owner_rank=rank,
             stage_idx=int(stage_state.get("stage_idx", rank)),
@@ -1467,13 +1427,13 @@ class TextGeneratePipelineRunner:
                 logical_position_start = None
                 video_kv_decode_contract = None
                 if compact_video_kv_active:
-                    current_attention_mask_2d = build_compact_decode_attention_mask_2d(
+                    current_attention_mask_2d = qwen_execution.build_compact_decode_attention_mask_2d(
                         stage_state["prefill_attention_mask_2d"],
                         compression_plan=video_kv_compression_plan,
                         decoded_token_count=int(step_payload),
                         query_len=1,
                     )
-                    video_kv_decode_contract = build_video_kv_compression_contract(
+                    video_kv_decode_contract = qwen_execution.build_video_kv_compression_contract(
                         compression_plan=video_kv_compression_plan,
                         prefill_seq_len=int(stage_state["prefill_seq_len"]),
                         decoded_token_count=int(step_payload),

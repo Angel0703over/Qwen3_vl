@@ -18,7 +18,10 @@
 | `20260502-step20c3-compaction/` | Step 20C-3 `uniform` compaction |
 | `20260502-step20c4-infinipot-selector/` | Step 20C-4 `infinipot-v` selector |
 | `20260502-step21-video-input/` | Step 21 完整视频输入 smoke |
-| `20260502-step22-2node-smoke/` | Step 22 两节点 smoke matrix 子集，checker/perf table 产物完整 |
+| `20260502-step22-2node-smoke/` | Step 22 两节点 smoke matrix 子集 |
+| `20260502-step22-full-smoke/` | Step 22 required smoke matrix 完整 baseline，含 PP=3 和 3-rank HYBRID |
+| `20260502-step23c-prompt-smoke/` | Step 23C prompt 贯通后 frame-dir multimodal smoke |
+| `20260503-step24h-verify/` | Step 24H 代码整理冻结验证，`pp-mm` / `tp-mm` / `hybrid-mm` 真实 Jetson 子集 |
 
 ## 已移出
 

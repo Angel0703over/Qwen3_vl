@@ -157,22 +157,22 @@ class TensorParallelDirectRunnerTest(unittest.TestCase):
         }
 
         with patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel.DirectStageStateBuilder",
+            "qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel.qwen_runtime_builder.DirectStageStateBuilder",
             return_value=builder_instance,
         ) as builder_cls, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel.broadcast_object_cpu",
+            "qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel.distributed_backend.broadcast_object_cpu",
             return_value=startup_meta,
         ) as bcast_meta_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel.broadcast_tensor_payload_cpu",
+            "qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel.distributed_backend.broadcast_tensor_payload_cpu",
             return_value=startup_tensors,
         ) as bcast_tensor_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel.build_direct_stage_state",
+            "qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel.qwen_runtime_builder.build_direct_stage_state",
             return_value=scaffold,
         ) as build_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel.materialize_text_stage_state",
+            "qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel.qwen_runtime_builder.materialize_text_stage_state",
             return_value=local_state,
         ) as materialize_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel.move_bundle",
+            "qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel.qwen_capture_common.move_bundle",
             return_value=local_state,
         ):
             stage_state, compute_dtype = load_stage_state_for_tp_rank(
@@ -240,21 +240,21 @@ class TensorParallelDirectRunnerTest(unittest.TestCase):
         }
 
         with patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel.DirectStageStateBuilder",
+            "qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel.qwen_runtime_builder.DirectStageStateBuilder",
         ) as builder_cls, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel.broadcast_object_cpu",
+            "qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel.distributed_backend.broadcast_object_cpu",
             return_value=startup_meta,
         ) as bcast_meta_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel.broadcast_tensor_payload_cpu",
+            "qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel.distributed_backend.broadcast_tensor_payload_cpu",
             return_value=startup_tensors,
         ) as bcast_tensor_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel.build_direct_stage_state",
+            "qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel.qwen_runtime_builder.build_direct_stage_state",
             return_value=scaffold,
         ) as build_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel.materialize_text_stage_state",
+            "qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel.qwen_runtime_builder.materialize_text_stage_state",
             return_value=local_state,
         ) as materialize_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel.move_bundle",
+            "qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel.qwen_capture_common.move_bundle",
             return_value=local_state,
         ):
             stage_state, compute_dtype = load_stage_state_for_tp_rank(
@@ -319,10 +319,10 @@ class TensorParallelDirectRunnerTest(unittest.TestCase):
         }
 
         with patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel.broadcast_cpu",
+            "qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel.distributed_backend.broadcast_cpu",
             side_effect=AssertionError("stage_input broadcast should be skipped"),
         ), patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel.trace_text_decode_logits_tp_with_runtime_cache",
+            "qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel.qwen_execution.trace_text_decode_logits_tp_with_runtime_cache",
             return_value=trace_result,
         ) as trace_mock:
             stats, cache = tensor_parallel_module._run_generate_phase_tp(
@@ -373,10 +373,10 @@ class TensorParallelDirectRunnerTest(unittest.TestCase):
         }
 
         with patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel.broadcast_cpu",
+            "qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel.distributed_backend.broadcast_cpu",
             side_effect=AssertionError("stage_input broadcast should be skipped"),
         ), patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel.trace_text_decode_logits_tp_with_runtime_cache",
+            "qwen3vl_tp_runtime.hexgen_core.modules.tensor_parallel.qwen_execution.trace_text_decode_logits_tp_with_runtime_cache",
             return_value=trace_result,
         ) as trace_mock:
             stats, cache = tensor_parallel_module._run_generate_phase_tp(

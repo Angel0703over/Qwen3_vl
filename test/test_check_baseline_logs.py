@@ -183,6 +183,67 @@ class CheckBaselineLogsTest(unittest.TestCase):
             with self.assertRaises(BaselineCheckError):
                 check_baseline_logs("tp-mm-generate-frame-regression", paths)
 
+    def test_hybrid_video_source_allows_consume_only_rank_without_video_input(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            paths = []
+            common = {
+                "backend": "hybrid",
+                "generated_token_ids": FRAME_MM_GENERATE_IDS,
+                "generated_text": FRAME_MM_GENERATE_TEXT,
+            }
+            rank_summaries = [
+                {
+                    **common,
+                    "rank": 0,
+                    "stage_idx": 0,
+                    "local_rank": 0,
+                    "tp_degree": 2,
+                    "prefill": {"video_input": {"source": "frame_paths"}},
+                    "weight_load": {
+                        "stage_weight_scope_ok": True,
+                        "tp_weight_sharded": True,
+                        "tp_shard_rank": 0,
+                        "tp_shard_world_size": 2,
+                        "tp_shard_shape_ok": True,
+                        "loaded_top_level_weight_names": ["embed_tokens_weight"],
+                    },
+                },
+                {
+                    **common,
+                    "rank": 1,
+                    "stage_idx": 0,
+                    "local_rank": 1,
+                    "tp_degree": 2,
+                    "weight_load": {
+                        "stage_weight_scope_ok": True,
+                        "tp_weight_sharded": True,
+                        "tp_shard_rank": 1,
+                        "tp_shard_world_size": 2,
+                        "tp_shard_shape_ok": True,
+                        "loaded_top_level_weight_names": ["embed_tokens_weight"],
+                    },
+                },
+                {
+                    **common,
+                    "rank": 2,
+                    "stage_idx": 1,
+                    "local_rank": 0,
+                    "tp_degree": 1,
+                    "weight_load": {
+                        "stage_weight_scope_ok": True,
+                        "tp_weight_sharded": False,
+                        "loaded_top_level_weight_names": ["final_norm_weight", "lm_head_weight"],
+                        "multimodal_frontend_mode": "consume-only",
+                    },
+                },
+            ]
+            for rank, summary in enumerate(rank_summaries):
+                paths.append(_write(Path(tmpdir) / f"hybrid-mm-generate-rank{rank}.log", json.dumps(summary)))
+
+            items = check_baseline_logs("hybrid-mm-generate", paths)
+
+        self.assertEqual(len(items), 3)
+
     def test_smoke_matrix_reports_missing_cases(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             with self.assertRaises(BaselineCheckError):

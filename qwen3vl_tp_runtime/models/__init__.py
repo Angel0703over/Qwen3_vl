@@ -132,7 +132,6 @@ LEGACY_STAGE_BUNDLE_EXPORTS = [
     "DirectStageBundleBuilder",
     "build_direct_stage_bundle",
     "build_live_multimodal_stage_bundle",
-    "compose_layer_bundle",
 ]
 
 __all__ = [*DIRECT_RUNTIME_EXPORTS]

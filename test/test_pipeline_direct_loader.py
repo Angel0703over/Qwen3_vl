@@ -293,17 +293,17 @@ class PipelineDirectLoaderTest(unittest.TestCase):
         local_startup_meta, local_startup_tensors = pack_mm_startup_transport(local_startup_contract)
 
         with patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.prepare_text_prompt_meta",
+            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.qwen_runtime_builder.prepare_text_prompt_meta",
         ) as prepare_meta_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.DirectStageStateBuilder",
+            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.qwen_runtime_builder.DirectStageStateBuilder",
         ) as builder_cls, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.recv_object_cpu",
+            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.distributed_backend.recv_object_cpu",
             return_value=local_startup_meta,
         ) as recv_meta_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.recv_tensor_payload_cpu",
+            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.distributed_backend.recv_tensor_payload_cpu",
             return_value=local_startup_tensors,
         ) as recv_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.build_direct_stage_state",
+            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.qwen_runtime_builder.build_direct_stage_state",
             return_value=direct_bundle,
         ) as build_mock, patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.dist.is_available",
@@ -381,16 +381,16 @@ class PipelineDirectLoaderTest(unittest.TestCase):
         ]
 
         with patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.prepare_text_prompt_meta",
+            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.qwen_runtime_builder.prepare_text_prompt_meta",
         ) as prepare_meta_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.DirectStageStateBuilder",
+            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.qwen_runtime_builder.DirectStageStateBuilder",
             return_value=builder_instance,
         ) as builder_cls, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.send_object_cpu",
+            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.distributed_backend.send_object_cpu",
         ) as send_meta_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.send_tensor_payload_cpu",
+            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.distributed_backend.send_tensor_payload_cpu",
         ) as send_tensor_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.build_direct_stage_state",
+            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.qwen_runtime_builder.build_direct_stage_state",
             return_value=direct_bundle,
         ) as build_mock, patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.dist.is_available",
@@ -469,13 +469,13 @@ class PipelineDirectLoaderTest(unittest.TestCase):
         }
 
         with patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.prepare_text_prompt_meta",
+            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.qwen_runtime_builder.prepare_text_prompt_meta",
             return_value=prompt_metadata,
         ) as prepare_meta_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.broadcast_tensor_payload_cpu",
+            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.distributed_backend.broadcast_tensor_payload_cpu",
             side_effect=lambda payload, **_kwargs: payload,
         ) as bcast_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.build_direct_stage_state",
+            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.qwen_runtime_builder.build_direct_stage_state",
             return_value=direct_bundle,
         ) as build_mock, patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.dist.is_available",
@@ -522,12 +522,12 @@ class PipelineDirectLoaderTest(unittest.TestCase):
         }
 
         with patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.prepare_text_prompt_meta",
+            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.qwen_runtime_builder.prepare_text_prompt_meta",
         ) as prepare_meta_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.broadcast_tensor_payload_cpu",
+            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.distributed_backend.broadcast_tensor_payload_cpu",
             return_value={"input_ids": torch.tensor([[7, 8, 9]], dtype=torch.int64)},
         ) as bcast_mock, patch(
-            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.build_direct_stage_state",
+            "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.qwen_runtime_builder.build_direct_stage_state",
             return_value=direct_bundle,
         ) as build_mock, patch(
             "qwen3vl_tp_runtime.hexgen_core.modules.pipeline_parallel.dist.is_available",

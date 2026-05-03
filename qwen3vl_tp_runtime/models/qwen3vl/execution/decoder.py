@@ -23,29 +23,29 @@ from .mlp import (
 from ..functional import rms_norm
 
 
-def forward_decoder_layer(layer_input: torch.Tensor, bundle: dict) -> torch.Tensor:
-    attn_input = rms_norm(layer_input, bundle["input_ln_weight"], bundle["input_ln_eps"])
-    attn_output = forward_attention(attn_input, bundle)
+def forward_decoder_layer(layer_input: torch.Tensor, layer_state: dict) -> torch.Tensor:
+    attn_input = rms_norm(layer_input, layer_state["input_ln_weight"], layer_state["input_ln_eps"])
+    attn_output = forward_attention(attn_input, layer_state)
     after_attn = layer_input + attn_output
 
-    mlp_input = rms_norm(after_attn, bundle["post_attn_ln_weight"], bundle["post_attn_ln_eps"])
-    mlp_output = forward_mlp(mlp_input, bundle)
+    mlp_input = rms_norm(after_attn, layer_state["post_attn_ln_weight"], layer_state["post_attn_ln_eps"])
+    mlp_output = forward_mlp(mlp_input, layer_state)
     return after_attn + mlp_output
 
 
-def forward_decoder_layer_cached(layer_input: torch.Tensor, bundle: dict) -> torch.Tensor:
-    attn_input = rms_norm(layer_input, bundle["input_ln_weight"], bundle["input_ln_eps"])
-    attn_output = forward_attention_cached(attn_input, bundle)
+def forward_decoder_layer_cached(layer_input: torch.Tensor, layer_state: dict) -> torch.Tensor:
+    attn_input = rms_norm(layer_input, layer_state["input_ln_weight"], layer_state["input_ln_eps"])
+    attn_output = forward_attention_cached(attn_input, layer_state)
     after_attn = layer_input + attn_output
 
-    mlp_input = rms_norm(after_attn, bundle["post_attn_ln_weight"], bundle["post_attn_ln_eps"])
-    mlp_output = forward_mlp(mlp_input, bundle)
+    mlp_input = rms_norm(after_attn, layer_state["post_attn_ln_weight"], layer_state["post_attn_ln_eps"])
+    mlp_output = forward_mlp(mlp_input, layer_state)
     return after_attn + mlp_output
 
 
 def forward_decoder_layer_cached_tp(
     layer_input: torch.Tensor,
-    bundle: dict,
+    layer_state: dict,
     rank: int,
     world_size: int,
     comm_dtype: torch.dtype,
@@ -54,10 +54,10 @@ def forward_decoder_layer_cached_tp(
     attn_math_mode: str = "orig",
     mlp_math_mode: str = "orig",
 ) -> torch.Tensor:
-    attn_input = rms_norm(layer_input, bundle["input_ln_weight"], bundle["input_ln_eps"])
+    attn_input = rms_norm(layer_input, layer_state["input_ln_weight"], layer_state["input_ln_eps"])
     attn_output = forward_attention_cached_tp(
         attn_input,
-        bundle,
+        layer_state,
         rank,
         world_size,
         comm_dtype,
@@ -67,10 +67,10 @@ def forward_decoder_layer_cached_tp(
     )
     after_attn = layer_input + attn_output
 
-    mlp_input = rms_norm(after_attn, bundle["post_attn_ln_weight"], bundle["post_attn_ln_eps"])
+    mlp_input = rms_norm(after_attn, layer_state["post_attn_ln_weight"], layer_state["post_attn_ln_eps"])
     mlp_output = forward_mlp_tp(
         mlp_input,
-        bundle,
+        layer_state,
         rank,
         world_size,
         comm_dtype,
@@ -81,16 +81,16 @@ def forward_decoder_layer_cached_tp(
     return after_attn + mlp_output
 
 
-def trace_decoder_layer(layer_input: torch.Tensor, bundle: dict) -> dict:
+def trace_decoder_layer(layer_input: torch.Tensor, layer_state: dict) -> dict:
     # 返回中间张量，方便逐层定位数值偏差来源。
-    attn_input = rms_norm(layer_input, bundle["input_ln_weight"], bundle["input_ln_eps"])
-    attn_trace = trace_attention(attn_input, bundle)
+    attn_input = rms_norm(layer_input, layer_state["input_ln_weight"], layer_state["input_ln_eps"])
+    attn_trace = trace_attention(attn_input, layer_state)
     attn_context = attn_trace["attn_context"]
     attn_output = attn_trace["attn_output"]
     after_attn = layer_input + attn_output
 
-    mlp_input = rms_norm(after_attn, bundle["post_attn_ln_weight"], bundle["post_attn_ln_eps"])
-    mlp_trace = trace_mlp(mlp_input, bundle)
+    mlp_input = rms_norm(after_attn, layer_state["post_attn_ln_weight"], layer_state["post_attn_ln_eps"])
+    mlp_trace = trace_mlp(mlp_input, layer_state)
     mlp_output = mlp_trace["mlp_output"]
     layer_output = after_attn + mlp_output
 
@@ -109,15 +109,15 @@ def trace_decoder_layer(layer_input: torch.Tensor, bundle: dict) -> dict:
     }
 
 
-def trace_decoder_layer_cached(layer_input: torch.Tensor, bundle: dict) -> dict:
-    attn_input = rms_norm(layer_input, bundle["input_ln_weight"], bundle["input_ln_eps"])
-    attn_trace = trace_attention_cached(attn_input, bundle)
+def trace_decoder_layer_cached(layer_input: torch.Tensor, layer_state: dict) -> dict:
+    attn_input = rms_norm(layer_input, layer_state["input_ln_weight"], layer_state["input_ln_eps"])
+    attn_trace = trace_attention_cached(attn_input, layer_state)
     attn_context = attn_trace["attn_context"]
     attn_output = attn_trace["attn_output"]
     after_attn = layer_input + attn_output
 
-    mlp_input = rms_norm(after_attn, bundle["post_attn_ln_weight"], bundle["post_attn_ln_eps"])
-    mlp_trace = trace_mlp(mlp_input, bundle)
+    mlp_input = rms_norm(after_attn, layer_state["post_attn_ln_weight"], layer_state["post_attn_ln_eps"])
+    mlp_trace = trace_mlp(mlp_input, layer_state)
     mlp_output = mlp_trace["mlp_output"]
     layer_output = after_attn + mlp_output
 
@@ -142,7 +142,7 @@ def trace_decoder_layer_cached(layer_input: torch.Tensor, bundle: dict) -> dict:
 
 def trace_decoder_layer_cached_tp(
     layer_input: torch.Tensor,
-    bundle: dict,
+    layer_state: dict,
     rank: int,
     world_size: int,
     comm_dtype: torch.dtype,
@@ -151,10 +151,10 @@ def trace_decoder_layer_cached_tp(
     attn_math_mode: str = "orig",
     mlp_math_mode: str = "orig",
 ) -> dict:
-    attn_input = rms_norm(layer_input, bundle["input_ln_weight"], bundle["input_ln_eps"])
+    attn_input = rms_norm(layer_input, layer_state["input_ln_weight"], layer_state["input_ln_eps"])
     attn_trace = trace_attention_cached_tp(
         attn_input,
-        bundle,
+        layer_state,
         rank,
         world_size,
         comm_dtype,
@@ -166,10 +166,10 @@ def trace_decoder_layer_cached_tp(
     attn_output = attn_trace["attn_output"]
     after_attn = layer_input + attn_output
 
-    mlp_input = rms_norm(after_attn, bundle["post_attn_ln_weight"], bundle["post_attn_ln_eps"])
+    mlp_input = rms_norm(after_attn, layer_state["post_attn_ln_weight"], layer_state["post_attn_ln_eps"])
     mlp_trace = trace_mlp_tp(
         mlp_input,
-        bundle,
+        layer_state,
         rank,
         world_size,
         comm_dtype,
@@ -201,7 +201,7 @@ def trace_decoder_layer_cached_tp(
 
 def forward_decoder_layer_tp(
     layer_input: torch.Tensor,
-    bundle: dict,
+    layer_state: dict,
     rank: int,
     world_size: int,
     comm_dtype: torch.dtype,
@@ -210,10 +210,10 @@ def forward_decoder_layer_tp(
     attn_math_mode: str = "orig",
     mlp_math_mode: str = "orig",
 ) -> torch.Tensor:
-    attn_input = rms_norm(layer_input, bundle["input_ln_weight"], bundle["input_ln_eps"])
+    attn_input = rms_norm(layer_input, layer_state["input_ln_weight"], layer_state["input_ln_eps"])
     attn_output = forward_attention_tp(
         attn_input,
-        bundle,
+        layer_state,
         rank,
         world_size,
         comm_dtype,
@@ -223,10 +223,10 @@ def forward_decoder_layer_tp(
     )
     after_attn = layer_input + attn_output
 
-    mlp_input = rms_norm(after_attn, bundle["post_attn_ln_weight"], bundle["post_attn_ln_eps"])
+    mlp_input = rms_norm(after_attn, layer_state["post_attn_ln_weight"], layer_state["post_attn_ln_eps"])
     mlp_output = forward_mlp_tp(
         mlp_input,
-        bundle,
+        layer_state,
         rank,
         world_size,
         comm_dtype,
@@ -239,7 +239,7 @@ def forward_decoder_layer_tp(
 
 def trace_decoder_layer_tp(
     layer_input: torch.Tensor,
-    bundle: dict,
+    layer_state: dict,
     rank: int,
     world_size: int,
     comm_dtype: torch.dtype,
@@ -248,10 +248,10 @@ def trace_decoder_layer_tp(
     attn_math_mode: str = "orig",
     mlp_math_mode: str = "orig",
 ) -> dict:
-    attn_input = rms_norm(layer_input, bundle["input_ln_weight"], bundle["input_ln_eps"])
+    attn_input = rms_norm(layer_input, layer_state["input_ln_weight"], layer_state["input_ln_eps"])
     attn_trace = trace_attention_tp(
         attn_input,
-        bundle,
+        layer_state,
         rank,
         world_size,
         comm_dtype,
@@ -263,10 +263,10 @@ def trace_decoder_layer_tp(
     attn_output = attn_trace["attn_output"]
     after_attn = layer_input + attn_output
 
-    mlp_input = rms_norm(after_attn, bundle["post_attn_ln_weight"], bundle["post_attn_ln_eps"])
+    mlp_input = rms_norm(after_attn, layer_state["post_attn_ln_weight"], layer_state["post_attn_ln_eps"])
     mlp_trace = trace_mlp_tp(
         mlp_input,
-        bundle,
+        layer_state,
         rank,
         world_size,
         comm_dtype,
